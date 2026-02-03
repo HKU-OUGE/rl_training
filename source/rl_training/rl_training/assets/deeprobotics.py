@@ -117,6 +117,7 @@ DEEPROBOTICS_M20_CFG = ArticulationCfg(
             max_delay=5,
         ),
     },
+    actuator_value_resolution_debug_print = True,
 )
 
 

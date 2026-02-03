@@ -783,3 +783,56 @@ def lin_vel_xy_l2_with_ang_z_command(
     # reward *= torch.sum(torch.square(env.command_manager.get_command(command_name)[:, 2:]), dim=1) > command_threshold
     # reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
     return reward
+
+def lin_vel_z_l2_curriculum(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """
+    Penalize z-axis velocity, but relax the penalty on harder terrains.
+    Assuming max terrain level is roughly 20-30.
+    """
+    # 1. 计算原始惩罚
+    asset: RigidObject = env.scene[asset_cfg.name]
+    raw_penalty = torch.square(asset.data.root_lin_vel_b[:, 2])
+    
+    # 2. 获取当前地形等级 (0 ~ max_level)
+    # 注意：如果未启用 terrain curriculum，这将全是 0
+    curr_levels = env.scene.terrain.terrain_levels.float()
+    
+    # 3. 计算缩放因子 (Curriculum Factor)
+    # 在 Level 0，因子为 1.0 (全额惩罚)
+    # 在 Level 15+，因子逐渐降低到 0.1 或更低
+    # 这里的 20.0 是一个软上限，你可以根据 num_rows 调整
+    scale = torch.clamp(1.0 - (curr_levels / 20.0), min=0.1, max=1.0)
+    
+    return raw_penalty * scale
+
+def base_height_l2_curriculum(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_cfg: SceneEntityCfg | None = None,
+) -> torch.Tensor:
+    """
+    Penalize height deviation, but relax strictly on harder terrains to allow crouching/jumping.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    
+    # 标准的高度计算逻辑
+    if sensor_cfg is not None:
+        sensor: RayCaster = env.scene[sensor_cfg.name]
+        ray_hits = sensor.data.ray_hits_w[..., 2]
+        if torch.isnan(ray_hits).any() or torch.isinf(ray_hits).any() or torch.max(torch.abs(ray_hits)) > 1e6:
+            adjusted_target_height = asset.data.root_link_pos_w[:, 2]
+        else:
+            adjusted_target_height = target_height + torch.mean(ray_hits, dim=1)
+    else:
+        adjusted_target_height = target_height
+
+    # 计算偏差
+    error = torch.square(asset.data.root_pos_w[:, 2] - adjusted_target_height)
+    
+    # --- 课程逻辑 ---
+    # 高难度地形下（如钻圈、高台阶），允许更大的高度误差
+    curr_levels = env.scene.terrain.terrain_levels.float()
+    scale = torch.clamp(1.0 - (curr_levels / 15.0), min=0.2, max=1.0)
+    
+    return error * scale

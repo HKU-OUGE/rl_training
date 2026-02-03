@@ -115,7 +115,7 @@ class CommandsCfg:
         rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
-        debug_vis=True,
+        debug_vis=False,
         ranges=mdp.UniformThresholdVelocityCommandCfg.Ranges(
             lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
         ),
@@ -269,8 +269,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.3, 1.0),
-            "dynamic_friction_range": (0.3, 0.8),
+            "static_friction_range": (1.0, 1.0),
+            "dynamic_friction_range": (1.0, 1.0),
             "restitution_range": (0.0, 0.4),
             "num_buckets": 1024,
         },
@@ -383,17 +383,23 @@ class RewardsCfg:
     is_terminated = RewTerm(func=mdp.is_terminated, weight=0.0)
 
     # Root penalties
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
+    # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
+    lin_vel_z_l2 = RewTerm(
+        func=mdp.lin_vel_z_l2_curriculum,
+        weight=0.0,
+        params={"asset_cfg": SceneEntityCfg("robot")}
+    )
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=0.0)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
     base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
-        weight=0.0,
+        func=mdp.base_height_l2_curriculum,
+        weight=0.0, # 从 -0.5 降低到 -0.2
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=""),
-            "sensor_cfg": SceneEntityCfg("height_scanner_base"),
-            "target_height": 0.0,
-        },
+            "target_height": 0.40,
+            "asset_cfg": SceneEntityCfg("robot"),
+            # 建议暂时移除 sensor_cfg，因为 height_scanner 会扫到圆环顶部导致目标高度突变
+            "sensor_cfg": SceneEntityCfg("height_scanner_base"), 
+        }
     )
     body_lin_acc_l2 = RewTerm(
         func=mdp.body_lin_acc_l2,

@@ -16,13 +16,16 @@
 import argparse
 import os
 import sys
+import struct
+import threading
+import time
 
 from isaaclab.app import AppLauncher
 
 # local imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import cli_args
-from rl_utils import camera_follow
+
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -39,6 +42,9 @@ parser.add_argument(
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--keyboard", action="store_true", default=False, help="Whether to use keyboard.")
+# [Mod] 添加手柄参数
+parser.add_argument("--joystick", action="store_true", default=False, help="Whether to use joystick/gamepad.")
+
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -57,9 +63,8 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 """Rest everything follows."""
-
+from rl_utils import camera_follow 
 import gymnasium as gym
-import time
 import torch
 
 from rsl_rl.runners import OnPolicyRunner
@@ -81,6 +86,106 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import rl_training.tasks  # noqa: F401
 
+# ==============================================================================
+#  [Mod] DirectLinuxGamepad Class (Robust Version)
+# ==============================================================================
+class DirectLinuxGamepad:
+    def __init__(self, device_path="/dev/input/js0", x_scale=1.0, y_scale=1.0, w_scale=1.0, deadzone=0.1):
+        self.device_path = device_path
+        self.axes = {}
+        self.buttons = {}
+        self.x_scale = x_scale
+        self.y_scale = y_scale
+        self.w_scale = w_scale
+        self.deadzone = deadzone
+        
+        # 状态标志
+        self.running = True  # 控制线程生命周期
+        self.connected = False # 控制当前连接状态
+        self.js_file = None
+        
+        # 启动后台线程
+        self.thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.thread.start()
+
+    def _read_loop(self):
+        event_size = 8
+        while self.running:
+            # --- 阶段 1: 尝试连接设备 ---
+            if self.js_file is None:
+                if os.path.exists(self.device_path):
+                    try:
+                        self.js_file = open(self.device_path, "rb")
+                        self.connected = True
+                        print(f"[DirectGamepad] Connected to {self.device_path}")
+                    except Exception as e:
+                        print(f"[DirectGamepad] Error opening device: {e}")
+                        time.sleep(1)
+                else:
+                    # 设备文件不存在，等待一会再检查
+                    time.sleep(1)
+                    continue
+
+            # --- 阶段 2: 读取数据 ---
+            try:
+                event_data = self.js_file.read(event_size)
+                if not event_data:
+                    # 读取为空，说明设备可能已断开
+                    raise OSError("Device disconnected (empty read)")
+                
+                time_ms, value, type_, number = struct.unpack("Ihbb", event_data)
+                
+                if type_ == 2: # Axis
+                    norm_val = value / 32767.0
+                    if abs(norm_val) < self.deadzone: norm_val = 0.0
+                    self.axes[number] = norm_val
+                elif type_ == 1: # Button
+                    self.buttons[number] = (value == 1)
+                    
+            except (OSError, IOError):
+                # 发生读取错误，执行断开处理逻辑
+                print(f"[DirectGamepad] Disconnected from {self.device_path}, searching...")
+                if self.js_file:
+                    try: self.js_file.close()
+                    except: pass
+                self.js_file = None
+                self.connected = False
+                # self.axes = {} # 可选：断开时重置输入
+                time.sleep(1) # 防止死循环占用 CPU
+
+    def advance(self):
+        # 即使没连接，也返回零向量，保证仿真不报错
+        if not self.connected:
+            return torch.zeros(3)
+
+        # --- 1. 获取摇杆输入 ---
+        stick_vx = -self.axes.get(1, 0.0) 
+        stick_vy = -self.axes.get(0, 0.0)
+        
+        # --- 2. 获取十字键输入 (D-Pad) ---
+        dpad_vx = -self.axes.get(7, 0.0) 
+        dpad_vy = -self.axes.get(6, 0.0)
+
+        # --- 3. 优先级逻辑 ---
+        if abs(dpad_vx) > 0.1 or abs(dpad_vy) > 0.1:
+            vx = dpad_vx * self.x_scale
+            vy = dpad_vy * self.y_scale
+        else:
+            vx = stick_vx * self.x_scale
+            vy = stick_vy * self.y_scale
+
+        wz = -self.axes.get(3, 0.0) * self.w_scale
+        
+        return torch.tensor([vx, vy, wz])
+
+    def close(self):
+        self.running = False
+        if self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        if self.js_file:
+            self.js_file.close()
+
+# ==============================================================================
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
@@ -110,10 +215,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.events.push_robot = None
     env_cfg.curriculum.command_levels = None
 
+    # [Mod] Keyboard Configuration
     if args_cli.keyboard:
         env_cfg.scene.num_envs = 1
         env_cfg.terminations.time_out = None
-        env_cfg.commands.base_velocity.debug_vis = False
+        env_cfg.commands.base_velocity.debug_vis = True # Enable debug vis
         config = Se2KeyboardCfg(
             v_x_sensitivity=env_cfg.commands.base_velocity.ranges.lin_vel_x[1]/2,
             v_y_sensitivity=env_cfg.commands.base_velocity.ranges.lin_vel_y[1],
@@ -122,6 +228,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         controller = Se2Keyboard(config)
         env_cfg.observations.policy.velocity_commands = ObsTerm(
             func=lambda env: torch.tensor(controller.advance(), dtype=torch.float32).unsqueeze(0).to(env.device),
+        )
+    # [Mod] Joystick Configuration
+    elif args_cli.joystick:
+        print("[Info] Enabling Direct Linux Joystick Control")
+        env_cfg.scene.num_envs = 1
+        env_cfg.terminations.time_out = None
+        env_cfg.commands.base_velocity.debug_vis = True # Enable debug vis
+        
+        # Initialize Gamepad
+        controller = DirectLinuxGamepad(
+            device_path="/dev/input/js0",
+            x_scale=float(env_cfg.commands.base_velocity.ranges.lin_vel_x[1]),
+            y_scale=float(env_cfg.commands.base_velocity.ranges.lin_vel_y[1]),
+            w_scale=float(env_cfg.commands.base_velocity.ranges.ang_vel_z[1]),
+            deadzone=0.05
+        )
+        
+        # Override velocity commands observation
+        env_cfg.observations.policy.velocity_commands = ObsTerm(
+            func=lambda env: controller.advance().unsqueeze(0).to(env.device, dtype=torch.float32),
         )
 
     # specify directory for logging experiments
@@ -212,7 +338,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if timestep == args_cli.video_length:
                 break
 
-        if args_cli.keyboard:
+        # [Mod] Update camera for both keyboard and joystick
+        if args_cli.keyboard or args_cli.joystick:
             camera_follow(env)
 
         # time delay for real-time evaluation
@@ -222,6 +349,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # close the simulator
     env.close()
+    
+    # [Mod] Close controller thread
+    if args_cli.joystick and 'controller' in locals():
+        controller.close()
 
 
 if __name__ == "__main__":
