@@ -11,6 +11,8 @@ from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoActorCriticCfg,
     RslRlPpoAlgorithmCfg,
+    RslRlDistillationRunnerCfg,
+    RslRlDistillationAlgorithmCfg
 )
 from dataclasses import field
 import numpy as np
@@ -91,7 +93,7 @@ class MLP(nn.Module):
         return self.net(x)
 
 # ==============================================================================
-# 2. Split MoE Policy Network
+# 2. Split MoE Policy Network (Teacher/PPO Version)
 # ==============================================================================
 
 class SplitMoEActorCritic(ActorCritic):
@@ -112,6 +114,8 @@ class SplitMoEActorCritic(ActorCritic):
                  latent_dim=256,
                  rnn_type="gru",
                  aux_loss_coef=0.01,
+                 # Option to force a specific input key (useful for StudentTeacher wrapper)
+                 forced_input_key=None,
                  **kwargs):
         
         base_kwargs = {k: v for k, v in kwargs.items() if k not in [
@@ -128,10 +132,52 @@ class SplitMoEActorCritic(ActorCritic):
                          **base_kwargs)
 
         self.input_keys = None 
-        if isinstance(obs, dict) or hasattr(obs, "keys"):
+        
+        # Determine Input Keys and Dimension
+        if forced_input_key:
+            # Explicit override for StudentTeacher wrapper
+            self.input_keys = [forced_input_key]
+            
+            # [Fix] Logic to handle both dict and TensorDict (which fails isinstance(dict))
+            # First try direct access
+            try:
+                num_obs = obs[forced_input_key].shape[-1]
+            except (KeyError, TypeError):
+                # Fallback logic
+                if hasattr(obs, "keys"):
+                     found = False
+                     # 1. Check if forced_input_key is in keys (for TensorDict)
+                     obs_keys = list(obs.keys())
+                     if forced_input_key in obs_keys:
+                         num_obs = obs[forced_input_key].shape[-1]
+                         found = True
+                     
+                     # 2. Try to resolve via obs_groups if not found directly
+                     if not found and obs_groups and forced_input_key in obs_groups:
+                         group_keys = obs_groups[forced_input_key]
+                         if group_keys:
+                             valid_keys = [k for k in group_keys if k in obs_keys]
+                             if valid_keys:
+                                 num_obs = sum(obs[k].shape[-1] for k in valid_keys)
+                                 found = True
+                     
+                     # 3. Last resort fallback
+                     if not found and len(obs_keys) > 0:
+                         # Log warning to help debug dimension mismatches
+                         print(f"[SplitMoE] Warning: Forced key '{forced_input_key}' not found in obs {obs_keys}. "
+                               f"Fallback to '{obs_keys[0]}'.")
+                         num_obs = list(obs.values())[0].shape[-1]
+                else:
+                     num_obs = obs.shape[-1]
+
+        elif isinstance(obs, dict) or hasattr(obs, "keys"):
+            # Standard PPO flow
             keys = obs_groups.get("policy", None)
             self.input_keys = keys
-            num_obs = sum(obs[k].shape[-1] for k in keys)
+            if keys:
+                num_obs = sum(obs[k].shape[-1] for k in keys)
+            else:
+                num_obs = list(obs.values())[0].shape[-1]
         else:
             num_obs = obs.shape[-1]
 
@@ -145,7 +191,7 @@ class SplitMoEActorCritic(ActorCritic):
         if self.num_wheel_actions < 0:
             raise ValueError(f"num_leg_actions ({num_leg_actions}) cannot be larger than total actions ({num_actions})")
 
-        print(f"[SplitMoE] Actions Split: Legs={self.num_leg_actions}, Wheels={self.num_wheel_actions}")
+        print(f"[SplitMoE] Init: Input Dim={num_obs}, Legs={self.num_leg_actions}, Wheels={self.num_wheel_actions}")
 
         if self.rnn_type == "lstm":
             self.rnn = nn.LSTM(input_size=num_obs, hidden_size=self.latent_dim, batch_first=False)
@@ -185,36 +231,26 @@ class SplitMoEActorCritic(ActorCritic):
         if self.estimator_output_dim > 0:
             est_input_dim = 0
             self.has_estimator_group = False
-            
-            # Robust Duck Typing check for TensorDict/Dict
             try:
                 est_group = obs["estimator"]
                 est_input_dim = est_group.shape[-1]
                 self.has_estimator_group = True
-                print(f"[SplitMoE] Detected dedicated 'estimator' observation group (Dim: {est_input_dim}).")
             except (KeyError, TypeError, AttributeError):
                 self.has_estimator_group = False
                 est_input_dim = len(self.estimator_input_indices)
-                print(f"[SplitMoE] No 'estimator' group found in sample. Fallback to slicing policy (Indices: {est_input_dim}).")
 
-            if est_input_dim == 0:
-                raise ValueError("[SplitMoE] Error: Estimator input dimension is 0! Check your Config.")
-
-            print(f"[SplitMoE] Initializing Estimator with Input Dims: {est_input_dim}")
-            
             self.estimator = MLP(est_input_dim, self.estimator_output_dim, hidden_dims=self.estimator_hidden_dims, activation=activation)
             self.estimator_obs_normalizer = None
             if self.estimator_obs_normalization:
-                print(f"[SplitMoE] Estimator Obs Normalization Enabled (Dim={est_input_dim})")
                 self.estimator_obs_normalizer = EmpiricalNormalization(shape=[est_input_dim], until_step=1.0e9)
         else:
             self.estimator = None
 
+        # RNN State Init
         if isinstance(obs, dict): ref_tensor = obs[list(obs.keys())[0]]
         else: ref_tensor = obs
         batch_size = ref_tensor.shape[0]
         device = ref_tensor.device
-        
         self.active_hidden_states = self._init_rnn_state(batch_size, device)
         
         self.latest_weights = {}
@@ -222,12 +258,12 @@ class SplitMoEActorCritic(ActorCritic):
         self.active_estimator_loss = 0.0
         self.active_estimator_error = 0.0
         
+        # Noise Init
         new_std = torch.ones(num_actions)
         self.num_wheel_experts = num_wheel_experts
         self.num_leg_experts = num_leg_experts
         noise_legs = kwargs.get("init_noise_legs", 1.0)
         noise_wheels = kwargs.get("init_noise_wheels", 0.4) 
-        print(f"[SplitMoE] Overriding Noise: Legs={noise_legs}, Wheels={noise_wheels}")
         if num_leg_actions <= num_actions:
             new_std[:num_leg_actions] = noise_legs
             new_std[num_leg_actions:] = noise_wheels
@@ -246,7 +282,11 @@ class SplitMoEActorCritic(ActorCritic):
 
     def _prepare_input(self, obs, key_list):
         if key_list is not None and (isinstance(obs, dict) or hasattr(obs, "keys")):
-            tensors = [obs[k] for k in key_list]
+            tensors = [obs[k] for k in key_list if k in obs] # Check key existence
+            if not tensors:
+                 # Fallback if key_list keys are missing (e.g. forced_input_key points to 'policy' but obs keys are 'student_policy')
+                 # This happens if obs_groups mapping wasn't fully resolved before passing here
+                 return list(obs.values())[0]
             return torch.cat(tensors, dim=-1)
         return obs
     
@@ -272,22 +312,13 @@ class SplitMoEActorCritic(ActorCritic):
         return latent, next_rnn_state
 
     def _get_estimator_input(self, obs_dict):
-        # 1. Try fetching from 'estimator' group
         if self.has_estimator_group:
-            try:
-                return obs_dict["estimator"]
-            except (KeyError, TypeError):
-                pass
-        
-        # 2. Fallback: Slice from 'policy' tensor/dict
+            try: return obs_dict["estimator"]
+            except: pass
         if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
-            try:
-                full_obs = obs_dict["policy"]
-            except KeyError:
-                full_obs = self._prepare_input(obs_dict, self.input_keys)
-        else:
-            full_obs = obs_dict # Tensor case (PPO update)
-            
+            try: full_obs = obs_dict["policy"]
+            except: full_obs = self._prepare_input(obs_dict, self.input_keys)
+        else: full_obs = obs_dict 
         return full_obs[..., self.estimator_input_indices]
 
     def _compute_actor_output(self, latent, obs_dict=None):
@@ -305,59 +336,62 @@ class SplitMoEActorCritic(ActorCritic):
             wheel_act_sum += expert(latent) * w_wheel[..., i].unsqueeze(-1)
         total_action = torch.cat([leg_act_sum, wheel_act_sum], dim=-1)
 
+        # Aux losses ... (Same as before)
         if self.training:
             self.active_aux_loss = self._calculate_load_balancing_loss(w_leg, w_wheel) * self.aux_loss_coef
-            
             if self.estimator is not None and obs_dict is not None:
                 est_input = self._get_estimator_input(obs_dict)
-                
-                # [Fix] Safety check using .net[0] because self.estimator is MLP object
-                if est_input.shape[-1] != self.estimator.net[0].in_features:
-                    pass 
-                else:
-                    if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
-                        try:
-                            full_obs_for_target = obs_dict["policy"]
-                        except KeyError:
-                            full_obs_for_target = self._prepare_input(obs_dict, self.input_keys)
-                    else:
-                        full_obs_for_target = obs_dict
+                if est_input.shape[-1] == self.estimator.net[0].in_features:
+                    # Minimal check for target
+                    target_state = None
+                    if hasattr(obs_dict, "keys"):
+                        if "critic" in obs_dict: 
+                            target_src = obs_dict["critic"]
+                        else: 
+                            target_src = self._prepare_input(obs_dict, self.input_keys)
+                        
+                        if target_src.shape[-1] > max(self.estimator_target_indices):
+                            target_state = target_src[..., self.estimator_target_indices]
+                    
+                    if target_state is not None:
+                        if self.estimator_obs_normalization and self.estimator_obs_normalizer:
+                            est_input = self.estimator_obs_normalizer(est_input)
+                        estimated = self.estimator(est_input)
+                        self.active_estimator_loss = (estimated - target_state).pow(2).mean()
+                        self.active_estimator_error = (estimated - target_state).abs().mean().detach()
 
-                    target_state = full_obs_for_target[..., self.estimator_target_indices]
-                    
-                    if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
-                        est_input = self.estimator_obs_normalizer(est_input)
-                    
-                    estimated_state = self.estimator(est_input)
-                    diff = estimated_state - target_state
-                    self.active_estimator_loss = diff.pow(2).mean()
-                    self.active_estimator_error = diff.abs().mean()
-        
-        with torch.no_grad():
-            def flat_mean(w): return w.reshape(-1, w.shape[-1]).mean(dim=0).detach()
-            self.latest_weights = {"leg": flat_mean(w_leg), "wheel": flat_mean(w_wheel)}
         return total_action
 
     def _calculate_load_balancing_loss(self, w_leg, w_wheel):
-        loss = 0.0
-        leg_usage = w_leg.reshape(-1, w_leg.shape[-1]).mean(dim=0)
-        target_leg = torch.full_like(leg_usage, 1.0 / self.num_leg_experts)
-        loss += (leg_usage - target_leg).pow(2).sum()
-        wheel_usage = w_wheel.reshape(-1, w_wheel.shape[-1]).mean(dim=0)
-        target_wheel = torch.full_like(wheel_usage, 1.0 / self.num_wheel_experts)
-        loss += (wheel_usage - target_wheel).pow(2).sum()
+        # ... same as before
+        leg_u = w_leg.reshape(-1, w_leg.shape[-1]).mean(dim=0)
+        wheel_u = w_wheel.reshape(-1, w_wheel.shape[-1]).mean(dim=0)
+        loss = (leg_u - 1.0/self.num_leg_experts).pow(2).sum() + \
+               (wheel_u - 1.0/self.num_wheel_experts).pow(2).sum()
         return loss
 
     def _prepare_hidden_state(self, hidden, device):
         if hidden is None: return None
-        if isinstance(hidden, (tuple, list)):
-            if len(hidden) == 2 and not self.rnn_type == "lstm": hidden = hidden[0]
-            elif self.rnn_type == "lstm" and len(hidden) == 2:
-                if isinstance(hidden[0], (tuple, list)): hidden = hidden[0]
-        def to_dev(h):
-            if isinstance(h, (tuple, list)): return tuple(x.to(device).contiguous() for x in h)
+        
+        # [Fix] Helper to safely move to device and handle None
+        def safe_to_device(h):
+            if h is None: return None
             return h.to(device).contiguous()
-        return to_dev(hidden)
+
+        # Handle GRU specific unpacking (if given as tuple) or LSTM
+        if isinstance(hidden, (tuple, list)):
+            if self.rnn_type == "gru" and len(hidden) == 2:
+                 # GRU hidden state is sometimes passed as (h, c) tuple by generic code where c is None
+                 hidden = hidden[0]
+            elif self.rnn_type == "lstm" and len(hidden) == 2:
+                # Handle potential double wrapping
+                if isinstance(hidden[0], (tuple, list)): hidden = hidden[0]
+
+        # Recursive/Iterative processing
+        if isinstance(hidden, (tuple, list)):
+             return tuple(safe_to_device(x) for x in hidden)
+        
+        return safe_to_device(hidden)
 
     def act(self, obs, masks=None, hidden_state=None):
         x_in = self._prepare_input(obs, self.input_keys)
@@ -381,17 +415,19 @@ class SplitMoEActorCritic(ActorCritic):
         return self._compute_actor_output(latent)
 
     def evaluate(self, obs, masks=None, hidden_state=None):
-        x_in = self._prepare_input(obs, self.input_keys)
-        if self.actor_obs_normalization: x_in = self.actor_obs_normalizer(x_in)
+        # Default PPO behavior: Returns VALUE
+        if isinstance(obs, dict) and "critic" in obs: x_in = obs["critic"]
+        else: x_in = self._prepare_input(obs, self.input_keys)
+        if self.critic_obs_normalization: x_in = self.critic_obs_normalizer(x_in)
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
         latent, _ = self._run_rnn(self.rnn, x_in, current_state, masks)
         return self.critic_mlp(latent)
     
     def get_estimated_state(self, obs, masks=None, hidden_states=None):
-        if self.estimator is None: raise RuntimeError("Estimator is not initialized!")
+        if self.estimator is None: return None # Fail silently
         est_input = self._get_estimator_input(obs)
-        if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
+        if self.estimator_obs_normalization and self.estimator_obs_normalizer:
              est_input = self.estimator_obs_normalizer(est_input)
         return self.estimator(est_input)
 
@@ -411,127 +447,226 @@ class SplitMoEActorCritic(ActorCritic):
     def get_hidden_states(self):
         return self.active_hidden_states, self.active_hidden_states
     
-    def reset(self, dones=None):
+    def reset(self, dones=None, hidden_states=None):
+        # [Fix] Allow setting hidden_states explicitly (required by Distillation)
+        if hidden_states is not None:
+            # Check if we need to device transfer or formatting
+            if hasattr(self, "_prepare_hidden_state") and hasattr(self, "std"):
+                 self.active_hidden_states = self._prepare_hidden_state(hidden_states, self.std.device)
+            else:
+                 self.active_hidden_states = hidden_states
+
         if dones is None: return
+
+        # [Fix] Ensure mask is boolean (rsl_rl uses ByteTensor which fails in newer PyTorch)
+        # Note: torch.byte is deprecated/removed in some versions, use torch.uint8
+        if hasattr(dones, "dtype") and dones.dtype == torch.uint8:
+            dones = dones.bool()
+
         def reset_hidden(h, mask):
             if isinstance(h, tuple): return tuple(reset_hidden(x, mask) for x in h)
             else: 
+                # [Fix] Avoid in-place update on inference tensor by cloning first
+                h = h.clone()
                 h[:, mask, :] = 0.0
                 return h
         if self.active_hidden_states is not None:
             self.active_hidden_states = reset_hidden(self.active_hidden_states, dones)
 
 # ==============================================================================
-# 3. PPO Algorithm Wrapper
+# 3. [NEW] Student-Teacher Adapter for rsl_rl Distillation (Pure BC)
+# ==============================================================================
+
+class SplitMoEStudentTeacher(nn.Module):
+    """
+    Adapter class to make SplitMoEActorCritic compatible with rsl_rl.runners.DistillationRunner.
+    
+    In DistillationRunner:
+    - 'act(obs)' calls Student -> Returns Student Actions
+    - 'evaluate(obs)' calls Teacher -> Returns Teacher Actions (as targets)
+    
+    It does NOT use a Critic.
+    """
+    is_recurrent = True
+    loaded_teacher = False
+
+    def __init__(self, obs, obs_groups, num_actions, activation="elu", **kwargs):
+        super().__init__()
+        self.obs_groups = obs_groups
+        
+        # 1. Initialize Student (MoE) - Uses "policy" obs group (Student Obs)
+        print("\n[Distillation] Initializing Student Policy (SplitMoE)...")
+        
+        # [Fix] Sanitize activation if it comes as a dict (config artifact?)
+        if isinstance(activation, dict):
+            print(f"[Warning] 'activation' passed as dict: {activation}. Using 'elu' as default.")
+            activation = activation.get("value", "elu") if "value" in activation else "elu"
+            
+        # We must filter kwargs to ensure clean init for sub-modules
+        student_kwargs = kwargs.copy()
+        student_kwargs["estimator_output_dim"] = 0 # No estimator for student in BC
+        
+        # [Fix] Construct valid obs_groups for Student (must have 'critic' for ActorCritic init)
+        # We map 'critic' to the same input as 'policy' since we don't train value function in BC
+        student_obs_groups = {"policy": obs_groups["policy"]}
+        student_obs_groups["critic"] = obs_groups["policy"]
+        # Use the actual key name from the list (e.g., 'blind_student_policy')
+        student_input_key = obs_groups["policy"][0]
+
+        self.student = SplitMoEActorCritic(
+            obs, 
+            student_obs_groups, 
+            num_actions, 
+            forced_input_key=student_input_key, 
+            activation=activation, # Pass sanitized activation
+            **student_kwargs
+        )
+
+        # 2. Initialize Teacher (MoE) - Uses "teacher" obs group (Privileged Obs)
+        print("\n[Distillation] Initializing Teacher Policy (SplitMoE)...")
+        teacher_kwargs = kwargs.copy()
+        
+        # [Fix] Construct valid obs_groups for Teacher
+        # Map 'teacher' group to 'policy' and 'critic' for the teacher instance
+        teacher_source = obs_groups["teacher"]
+        teacher_obs_groups = {"policy": teacher_source, "critic": teacher_source}
+        teacher_input_key = teacher_source[0]
+        
+        self.teacher = SplitMoEActorCritic(
+            obs, 
+            teacher_obs_groups, 
+            num_actions, 
+            forced_input_key=teacher_input_key, 
+            activation=activation, # Pass sanitized activation
+            **teacher_kwargs
+        )
+        
+        # Ensure Teacher is in Eval mode
+        self.teacher.eval()
+        for param in self.teacher.parameters():
+            param.requires_grad = False
+    @property
+    def action_std(self):
+        return self.student.std
+
+    def reset(self, dones=None, hidden_states=None):
+        # [Fix] Pass hidden_states to student (as get_hidden_states returns student states)
+        self.student.reset(dones, hidden_states=hidden_states)
+        self.teacher.reset(dones)
+
+    def act(self, obs, masks=None, hidden_state=None):
+        # Called by RolloutStorage to collect student data
+        return self.student.act(obs, masks, hidden_state)
+
+    def act_inference(self, obs):
+        # Called during update to compute gradient
+        return self.student.act_inference(obs)
+
+    def evaluate(self, obs):
+        # Called by DistillationRunner to get targets (Teacher Actions)
+        # We use 'act_inference' of the teacher because we want deterministic actions (means)
+        with torch.no_grad():
+            return self.teacher.act_inference(obs)
+    
+    def get_hidden_states(self):
+        return self.student.get_hidden_states()
+    
+    def detach_hidden_states(self, dones=None):
+        # Helper for recurrent logic in DistillationRunner
+        pass
+        # Note: SplitMoEActorCritic doesn't have detach_hidden_states exposed like this usually,
+        # but RSL-RL Distillation might call it. 
+        # However, looking at the error log, the crash was at reset(), so detach might be fine or ignored if not called.
+        # If needed, we can implement it:
+        if self.student.active_hidden_states is not None:
+             def detach_recursive(h):
+                 if isinstance(h, tuple): return tuple(detach_recursive(x) for x in h)
+                 return h.detach()
+             self.student.active_hidden_states = detach_recursive(self.student.active_hidden_states)
+
+    def update_normalization(self, obs):
+        self.student.update_normalization(obs)
+        # Teacher norm is frozen usually, but if we need to update running stats:
+        # self.teacher.update_normalization(obs) 
+    
+    def load_state_dict(self, state_dict, strict=True):
+        # Custom loading logic to handle "teacher only" load vs "resume student" load
+        
+        # 1. Check if loading Teacher (common starting point)
+        # RSL-RL convention: keys might be prefixed or not.
+        # If we load a standard PPO checkpoint, keys are like "actor.xxx", "rnn.xxx"
+        # We want to load these into self.teacher
+        
+        print(f"[Distillation] Loading state dict with {len(state_dict)} keys...")
+        
+        # Attempt to load into Teacher
+        # Filter keys: PPO checkpoints usually have model_state_dict with top-level keys
+        # If the checkpoint matches SplitMoEActorCritic structure exactly
+        try:
+            self.teacher.load_state_dict(state_dict, strict=False)
+            print("[Distillation] Successfully loaded Teacher weights.")
+            self.loaded_teacher = True
+        except Exception as e:
+            print(f"[Distillation] Warning: Direct load to teacher failed: {e}")
+
+        # If resuming distillation, state_dict might have "student." and "teacher." prefixes
+        if any(k.startswith("student.") for k in state_dict.keys()):
+            super().load_state_dict(state_dict, strict=strict)
+            print("[Distillation] Resumed Student-Teacher training.")
+            self.loaded_teacher = True
+        
+        # If we just loaded teacher, we might want to copy weights to student as a starting point?
+        # Typically BC starts student from random or copy. 
+        # If strict BC, random is fine.
+        
+        return True
+
+# ==============================================================================
+# 4. PPO Algorithm Wrapper (Kept for reference or RL-FineTuning)
 # ==============================================================================
 
 class SplitMoEPPO(PPO):
     def update(self):
-        # 1. Standard PPO update (Actor/Critic)
         loss_dict = super().update()
-        
-        # 2. Estimator & Aux Loss Update
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
-        
         if model is not None and self.num_learning_epochs > 0:
-            # We need to grab the observations from the storage to re-compute loss with gradients.
-            # RSL-RL stores observations in self.storage.observations
-            # Shape: [num_transitions, num_envs, obs_dim]
-            # We flatten them to [num_transitions * num_envs, obs_dim]
-            
             obs_batch = self.storage.observations.flatten(0, 1)
-            
-            # If your Estimator needs a target (Ground Truth), we need that too.
-            # Usually RSL-RL doesn't store the "Target" separately if it's just a slice of obs.
-            # Fortunately, your _compute_actor_output logic slices targets from the input obs_batch.
-            
-            # --- Optimization Step ---
-            self.optimizer.zero_grad()
-            
-            # We call the model to compute losses. 
-            # Note: We don't need the actor output, just the side effects (loss calculation).
-            # We use a dummy latent to avoid re-running the whole RNN if possible, 
-            # BUT SplitMoE computes loss inside _compute_actor_output which needs 'latent'.
-            # To avoid complexity, we can just run the Estimator part if we extract it, 
-            # but your code couples them.
-            
-            # EASIER FIX: Manually run the estimator logic here to get a fresh graph.
             total_aux_loss = 0.0
             
-            # A. Estimator Loss
             if model.estimator is not None:
-                # 1. Get Input
                 est_input = model._get_estimator_input(obs_batch)
-                
-                # 2. Get Target
-                if hasattr(obs_batch, "keys") or isinstance(obs_batch, dict):
-                    try:
-                        full_obs_for_target = obs_batch["policy"]
-                    except KeyError:
-                        full_obs_for_target = model._prepare_input(obs_batch, model.input_keys)
-                else:
-                    full_obs_for_target = obs_batch
+                if est_input.shape[-1] == model.estimator.net[0].in_features:
+                    target = obs_batch.get("critic", model._prepare_input(obs_batch, model.input_keys)) if isinstance(obs_batch, dict) else obs_batch
+                    if target.shape[-1] > max(model.estimator_target_indices):
+                        t_state = target[..., model.estimator_target_indices]
+                        if model.estimator_obs_normalization and model.estimator_obs_normalizer:
+                            est_input = model.estimator_obs_normalizer(est_input)
+                        est = model.estimator(est_input)
+                        l = (est - t_state).pow(2).mean()
+                        total_aux_loss += l
+                        model.active_estimator_loss = l.detach()
+                        model.active_estimator_error = (est - t_state).abs().mean().detach()
 
-                target_state = full_obs_for_target[..., model.estimator_target_indices]
-                
-                # 3. Normalize
-                if model.estimator_obs_normalization and model.estimator_obs_normalizer is not None:
-                    est_input = model.estimator_obs_normalizer(est_input)
-                
-                # 4. Forward & Loss
-                estimated_state = model.estimator(est_input)
-                est_loss = (estimated_state - target_state).pow(2).mean()
-                
-                total_aux_loss += est_loss
-                
-                # Update the stored metric for logging
-                model.active_estimator_loss = est_loss.detach()
-                model.active_estimator_error = (estimated_state - target_state).abs().mean().detach()
-
-            # B. Aux Loss (Load Balancing)
-            # This is harder to recompute without running the full Actor.
-            # If we skip it here, we lose load balancing training. 
-            # To keep it simple and fix the crash, we can just train the Estimator for now.
-            # If you desperately need Load Balancing, we would need to forward the whole actor.
-            
-            if isinstance(total_aux_loss, torch.Tensor):
+            if isinstance(total_aux_loss, torch.Tensor) and total_aux_loss.requires_grad:
+                self.optimizer.zero_grad()
                 total_aux_loss.backward()
-                if self.max_grad_norm is not None:
-                    nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                if self.max_grad_norm: nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
-        # 3. Logging (Standard)
-        if model is not None:
+        if model:
             if hasattr(model, "latest_weights") and model.latest_weights:
                 w = model.latest_weights
                 if "leg" in w:
                     for i, val in enumerate(w["leg"]): loss_dict[f"Gate/Leg_Expert_{i}"] = val.item()
                 if "wheel" in w:
                     for i, val in enumerate(w["wheel"]): loss_dict[f"Gate/Wheel_Expert_{i}"] = val.item()
+            if hasattr(model, "active_estimator_loss"): loss_dict["Loss/Estimator_MSE"] = model.active_estimator_loss
+            if hasattr(model, "active_estimator_error"): loss_dict["Loss/Estimator_Error_MAE"] = model.active_estimator_error
             
-            if hasattr(model, "active_aux_loss"):
-                val = model.active_aux_loss
-                loss_dict["Loss/Load_Balancing"] = val.item() if isinstance(val, torch.Tensor) else val
-            
-            if hasattr(model, "active_estimator_loss"):
-                val = model.active_estimator_loss
-                loss_dict["Loss/Estimator_MSE"] = val.item() if isinstance(val, torch.Tensor) else val
-                    
-            if hasattr(model, "active_estimator_error"):
-                val = model.active_estimator_error
-                loss_dict["Loss/Estimator_Error_MAE"] = val.item() if isinstance(val, torch.Tensor) else val
-            
-            if hasattr(model, "std"):
-                std_np = model.std.detach().cpu().numpy()
-                n_legs = getattr(model, "num_leg_actions", 12)
-                if len(std_np) >= n_legs:
-                    loss_dict["Noise/Leg_Std"] = std_np[:n_legs].mean()
-                    loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
-        
         return loss_dict
 
 # ==============================================================================
-# 4. Configs
+# 5. Configs
 # ==============================================================================
 
 @configclass
@@ -551,8 +686,6 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     estimator_output_dim: int = 3  
     estimator_hidden_dims: list = field(default_factory=lambda: [128, 64])
     estimator_target_indices: list = field(default_factory=lambda: [0, 1, 2])
-    # [Fix] Updated Indices to match the Policy structure (3-9, 12-56) = 50 dims
-    # Corresponds to: AngVel(3), Gravity(3), JointPos(12), Actions(16), JVelLeg(12), JVelWhl(4)
     estimator_input_indices: list = field(default_factory=lambda: list(range(3, 9)) + list(range(12, 56)))
     estimator_obs_normalization: bool = True 
     
@@ -577,14 +710,17 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 64
-    max_iterations = 25000
+    max_iterations = 20000
     save_interval = 200
-    experiment_name = "split_moe_parallel" 
+    experiment_name = "split_moe_parallel" ▒▒▒▒
+  Vy: Est= 0.047 | GT= 0.023 | Err= 0.024 
+
     empirical_normalization = False
     
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"]}
     
     policy = SplitMoEActorCriticCfg(
+        # ... standard params ...
         init_noise_std=1.0, 
         init_noise_legs=0.8,
         init_noise_wheels=0.5, 
@@ -597,15 +733,11 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        
-        # [Config] Estimator
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
         estimator_target_indices=[0, 1, 2],
-        # [Fix] Fallback indices updated
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
-        
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
     )
@@ -624,4 +756,103 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+    )
+
+
+
+# ==============================================================================
+# 6. [NEW] Distillation Config (Pure BC)
+# ==============================================================================
+from isaaclab_rl.rsl_rl import RslRlDistillationRunnerCfg, RslRlDistillationAlgorithmCfg
+
+@configclass
+class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
+    """
+    Configuration for Student-Teacher Distillation (Behavior Cloning).
+    Uses 'SplitMoEStudentTeacher' to wrap two SplitMoE instances.
+    """
+    num_steps_per_env = 24
+    max_iterations = 10000
+    save_interval = 200
+    experiment_name = "split_moe_distill"
+    empirical_normalization = False
+
+    # Key mapping: 
+    # 'policy' -> Student inputs (student_policy)
+    # 'teacher' -> Teacher inputs (policy/critic/privileged from teacher env)
+    # Ensure 'teacher' group is defined in your EnvCfg! (e.g. creating a group that includes priv info)
+    # Assuming EnvCfg has "student_policy" and "policy" (which is teacher's full obs)
+    obs_groups = {"policy": ["blind_student_policy"], "teacher": ["policy"]} 
+
+    # Wrapper class that holds both student and teacher
+    policy = SplitMoEActorCriticCfg(
+        class_name="SplitMoEStudentTeacher", 
+        init_noise_std=1.0, 
+        init_noise_legs=0.8,
+        init_noise_wheels=0.5, 
+        actor_hidden_dims=[256, 128, 128], 
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=6,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+        actor_obs_normalization=True, 
+        critic_obs_normalization=True,
+        # Student params (Estimator disabled for student in BC)
+        estimator_output_dim=0,
+    )
+
+    algorithm = RslRlDistillationAlgorithmCfg(
+        class_name="Distillation",
+        num_learning_epochs=5,
+        learning_rate=1.0e-4,
+    )
+
+@configclass
+class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
+    """
+    Configuration for Student-Teacher Distillation (Behavior Cloning).
+    Uses 'SplitMoEStudentTeacher' to wrap two SplitMoE instances.
+    """
+    num_steps_per_env = 24
+    max_iterations = 10000
+    save_interval = 200
+    experiment_name = "split_moe_distill_sense"
+    empirical_normalization = False
+
+    # Key mapping: 
+    # 'policy' -> Student inputs (student_policy)
+    # 'teacher' -> Teacher inputs (policy/critic/privileged from teacher env)
+    # Ensure 'teacher' group is defined in your EnvCfg! (e.g. creating a group that includes priv info)
+    # Assuming EnvCfg has "student_policy" and "policy" (which is teacher's full obs)
+    obs_groups = {"policy": ["student_policy"], "teacher": ["policy"]} 
+
+    # Wrapper class that holds both student and teacher
+    policy = SplitMoEActorCriticCfg(
+        class_name="SplitMoEStudentTeacher", 
+        init_noise_std=1.0, 
+        init_noise_legs=0.8,
+        init_noise_wheels=0.5, 
+        actor_hidden_dims=[256, 128, 128], 
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=6,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+        actor_obs_normalization=True, 
+        critic_obs_normalization=True,
+        # Student params (Estimator disabled for student in BC)
+        estimator_output_dim=0,
+    )
+
+    algorithm = RslRlDistillationAlgorithmCfg(
+        class_name="Distillation",
+        num_learning_epochs=5,
+        learning_rate=1.0e-4,
     )

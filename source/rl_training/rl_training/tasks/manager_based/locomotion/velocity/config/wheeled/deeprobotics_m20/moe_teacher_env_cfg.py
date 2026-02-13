@@ -113,6 +113,121 @@ class DeeproboticsM20ObservationsCfg:
         )
 
     @configclass
+    class BlindStudentPolicyCfg(ObsGroup):
+        """Student Policy Observations (No Privileged Info).
+        Removed: base_lin_vel, height_scan
+        Kept: Proprioception (IMU, Joints, Actions, Commands) with Noise
+        """
+        base_lin_vel = None
+        # IMU - Angular Velocity (Noisy)
+        base_ang_vel = ObsTerm(
+            func=mdp.base_ang_vel,
+            noise=Unoise(n_min=-0.2, n_max=0.2),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # IMU - Gravity Vector (Noisy)
+        projected_gravity = ObsTerm(
+            func=mdp.projected_gravity,
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # User Commands
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "base_velocity"},
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # Joint Positions (Noisy)
+        joint_pos = ObsTerm(
+            func=mdp.joint_pos_rel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # Joint Velocities (Noisy)
+        joint_vel = ObsTerm(
+            func=mdp.joint_vel_rel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
+            noise=Unoise(n_min=-1.5, n_max=1.5),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # Action History
+        actions = ObsTerm(
+            func=mdp.last_action,
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # height_scan = ObsTerm(
+        #     func=mdp.height_scan,
+        #     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+        #     noise=Unoise(n_min=-0.1, n_max=0.1),
+        #     clip=(-1.0, 1.0),
+        #     scale=1.0,
+        # )
+        height_scan = None
+    @configclass
+    class StudentPolicyCfg(ObsGroup):
+        """Student Policy Observations (No Privileged Info).
+        Removed: base_lin_vel, height_scan
+        Kept: Proprioception (IMU, Joints, Actions, Commands) with Noise
+        """
+        base_lin_vel = None
+        # IMU - Angular Velocity (Noisy)
+        base_ang_vel = ObsTerm(
+            func=mdp.base_ang_vel,
+            noise=Unoise(n_min=-0.2, n_max=0.2),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # IMU - Gravity Vector (Noisy)
+        projected_gravity = ObsTerm(
+            func=mdp.projected_gravity,
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # User Commands
+        velocity_commands = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "base_velocity"},
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # Joint Positions (Noisy)
+        joint_pos = ObsTerm(
+            func=mdp.joint_pos_rel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # Joint Velocities (Noisy)
+        joint_vel = ObsTerm(
+            func=mdp.joint_vel_rel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
+            noise=Unoise(n_min=-1.5, n_max=1.5),
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        # Action History
+        actions = ObsTerm(
+            func=mdp.last_action,
+            clip=(-100.0, 100.0),
+            scale=1.0,
+        )
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            clip=(-1.0, 1.0),
+            scale=1.0,
+        )
+    @configclass
     class CriticCfg(PolicyCfg):
         """Critic gets the same info as Teacher Policy."""
         base_lin_vel = ObsTerm(
@@ -196,6 +311,8 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
     policy: PolicyCfg = PolicyCfg()
+    blind_student_policy: BlindStudentPolicyCfg = BlindStudentPolicyCfg() # Register Student Policy
+    student_policy: StudentPolicyCfg = StudentPolicyCfg() # Register Student Policy
     critic: CriticCfg = CriticCfg()
     estimator: EstimatorCfg = EstimatorCfg()
 
@@ -242,22 +359,44 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
 
         # ------------------------------Observations------------------------------
+        # Apply special logic to Policy (Teacher)
         self.observations.policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
         self.observations.policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
         )
+        
+        # Apply same logic to Student Policy (Crucial for correct joint mapping)
+        self.observations.blind_student_policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
+        self.observations.blind_student_policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
+            "robot", joint_names=self.wheel_joint_names
+        )
+
+        # Critic logic
         self.observations.critic.joint_pos.func = mdp.joint_pos_rel_without_wheel
         self.observations.critic.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
         )
+        
+        # Scales
         self.observations.policy.base_lin_vel.scale = 2.0
         self.observations.policy.base_ang_vel.scale = 0.25
         self.observations.policy.joint_pos.scale = 1.0
         self.observations.policy.joint_vel.scale = 0.05
+        
+        # Scales for Blind Student
+        self.observations.blind_student_policy.base_ang_vel.scale = 0.25
+        self.observations.blind_student_policy.joint_pos.scale = 1.0
+        self.observations.blind_student_policy.joint_vel.scale = 0.05
+
         # self.observations.policy.base_lin_vel = None
         # self.observations.policy.height_scan = None
+        
+        # Set Joint Names pattern
         self.observations.policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
         self.observations.policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
+        
+        self.observations.blind_student_policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
+        self.observations.blind_student_policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
 
         # ------------------------------Actions------------------------------
         # reduce action scale
@@ -363,16 +502,16 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.35
+        self.rewards.hipx_joint_pos_penalty.weight = -1.0
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.25
+        self.rewards.hipy_joint_pos_penalty.weight = -0.75
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.05
+        self.rewards.knee_joint_pos_penalty.weight = -0.25
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.1
+        self.rewards.joint_mirror.weight = -0.05
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -394,7 +533,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # Velocity-tracking rewards
         self.rewards.track_lin_vel_xy_exp.weight = 2.5 # 1.8
         self.rewards.track_ang_vel_z_exp.weight = 1.5 # 1.2
-
+        self.rewards.track_lin_vel_xy_pre_exp.weight = 2.0
+        self.rewards.track_ang_vel_z_pre_exp.weight = 3.0
         # Others
         self.rewards.feet_air_time.weight = 0.0
         self.rewards.feet_air_time.params["threshold"] = 0.5

@@ -58,10 +58,10 @@ import isaaclab.utils.math as math_utils
 # === 导入自定义模块 ===
 try:
     sys.path.append(os.getcwd())
-    from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO
+    from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, SplitMoEStudentTeacher
 except ImportError:
     try:
-        from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO
+        from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, SplitMoEStudentTeacher
     except ImportError:
         pass 
 
@@ -74,6 +74,11 @@ if "SplitMoEActorCritic" in globals():
     runner_module.SplitMoEActorCritic = SplitMoEActorCritic
     rsl_modules.SharedBackboneMoEActorCritic = SplitMoEActorCritic 
     runner_module.SplitMoEPPO = SplitMoEPPO
+    
+    # [Fix] Inject SplitMoEStudentTeacher for DistillationRunner
+    if "SplitMoEStudentTeacher" in globals():
+        import rsl_rl.runners.distillation_runner as dist_runner_module
+        dist_runner_module.SplitMoEStudentTeacher = SplitMoEStudentTeacher
 
 # ==============================================================================
 #  Joystick Controller (Robust Hot-Swap)
@@ -257,25 +262,66 @@ def export_model_files(policy, log_dir, obs_dim, device):
     exported_dir = os.path.join(log_dir, "exported")
     os.makedirs(exported_dir, exist_ok=True)
     print(f"\n[Export] Exporting models to: {exported_dir}")
+    
+    # ---------------------------------------------------------
+    # 1. 准备模型和虚拟输入
+    # ---------------------------------------------------------
     try:
+        # 使用包装类确保只输出 action 和 hidden_state
         base_model = ExportablePolicy(policy).to(device)
         base_model.eval()
+        
         batch_size = 1
         dummy_obs = torch.zeros(batch_size, obs_dim, device=device)
         latent_dim = getattr(policy, "latent_dim", 256)
+        
+        # 准备 RNN 隐状态
         if getattr(policy, "rnn_type", "gru") == "lstm":
-            dummy_hidden = (torch.zeros(1, 1, latent_dim, device=device), torch.zeros(1, 1, latent_dim, device=device))
+            dummy_hidden = (torch.zeros(1, 1, latent_dim, device=device), 
+                           torch.zeros(1, 1, latent_dim, device=device))
         else:
             dummy_hidden = torch.zeros(1, 1, latent_dim, device=device)
-        
-        torch.onnx.export(base_model, (dummy_obs, dummy_hidden), os.path.join(exported_dir, "policy.onnx"), 
-                         input_names=["obs", "hidden_state"], output_names=["action", "next_hidden"], opset_version=13)
+            
+        # ---------------------------------------------------------
+        # 2. 导出 ONNX
+        # ---------------------------------------------------------
+        torch.onnx.export(
+            base_model, 
+            (dummy_obs, dummy_hidden), 
+            os.path.join(exported_dir, "policy.onnx"), 
+            input_names=["obs", "hidden_state"], 
+            output_names=["action", "next_hidden"], 
+            opset_version=13
+        )
         print(f"  - Policy ONNX saved")
+
+        # ---------------------------------------------------------
+        # 3. [新增] 导出 TorchScript (.pt)
+        # ---------------------------------------------------------
+        # 尝试使用 JIT Script 编译
+        try:
+            scripted_model = torch.jit.script(base_model)
+            scripted_model.save(os.path.join(exported_dir, "policy.pt"))
+            print(f"  - Policy TorchScript (Script) saved")
+        except Exception as e_script:
+            print(f"  [Warning] JIT Script failed: {e_script}. Trying JIT Trace...")
+            # 如果 Script 失败，尝试 Trace
+            try:
+                traced_model = torch.jit.trace(base_model, (dummy_obs, dummy_hidden))
+                traced_model.save(os.path.join(exported_dir, "policy.pt"))
+                print(f"  - Policy TorchScript (Trace) saved")
+            except Exception as e_trace:
+                print(f"  - Policy TorchScript Export Error: {e_trace}")
+
     except Exception as e:
         print(f"  - Policy Export Error: {e}")
     
+    # ---------------------------------------------------------
+    # 4. 导出 Estimator (如果有)
+    # ---------------------------------------------------------
     if hasattr(policy, "estimator") and policy.estimator is not None:
         try:
+            # ... (这部分保持你原有的逻辑不变) ...
             if hasattr(policy.estimator, "net") and len(policy.estimator.net) > 0:
                 est_input_dim = policy.estimator.net[0].in_features
             elif isinstance(policy.estimator, nn.Linear):
@@ -286,9 +332,17 @@ def export_model_files(policy, log_dir, obs_dim, device):
             
             dummy_est_obs = torch.zeros(1, est_input_dim, device=device)
             est_wrapper = ExportableEstimator(policy).to(device)
+            
+            # 导出 Estimator ONNX
             torch.onnx.export(est_wrapper, dummy_est_obs, os.path.join(exported_dir, "estimator.onnx"),
                 input_names=["proprioception"], output_names=["estimated_state"], opset_version=13)
             print(f"  - Estimator ONNX saved (Input Dim: {est_input_dim})")
+            
+            # [新增] 导出 Estimator TorchScript
+            traced_est = torch.jit.trace(est_wrapper, dummy_est_obs)
+            traced_est.save(os.path.join(exported_dir, "estimator.pt"))
+            print(f"  - Estimator TorchScript saved")
+            
         except Exception as e:
             print(f"  - Estimator Export Error: {e}")
 
@@ -298,7 +352,12 @@ def export_model_files(policy, log_dir, obs_dim, device):
 
 def main():
     # 1. 环境配置
-    env_cfg = parse_env_cfg(args.task, device="cuda:0", num_envs=args.num_envs)
+    # [Fix] 动态设备选择，虽然单机推理通常是 cuda:0，但保持灵活
+    device = "cuda:0"
+    env_cfg = parse_env_cfg(args.task, device=device, num_envs=args.num_envs)
+    
+    # [Fix] 准备观测项（用于替换）
+    # 我们需要在判断是否使用手柄后再创建这个 ObsTerm
     
     controller = None
     if args.keyboard:
@@ -312,9 +371,7 @@ def main():
             omega_z_sensitivity=float(env_cfg.commands.base_velocity.ranges.ang_vel_z[1]),
         )
         controller = Se2Keyboard(kb_cfg)
-        env_cfg.observations.policy.velocity_commands = ObsTerm(
-            func=lambda env: controller.advance().unsqueeze(0).to(env.device, dtype=torch.float32),
-        )
+        
     elif args.joystick:
         print("[Info] Enabling Direct Linux Joystick Control")
         print("[Controls] RT/LT: Difficulty +/- | RB/LB: Sub-Terrain +/- | Y: Camera | X: Reset")
@@ -329,9 +386,36 @@ def main():
             w_scale=float(env_cfg.commands.base_velocity.ranges.ang_vel_z[1]),
             deadzone=0.05
         )
-        env_cfg.observations.policy.velocity_commands = ObsTerm(
+
+    # [Critical Fix] Inject Joystick into ALL relevant observation groups
+    # Student Policy typically reads from 'student_policy' or 'blind_student_policy', NOT 'policy' (which is for Teacher)
+    if controller is not None:
+        cmd_term = ObsTerm(
             func=lambda env: controller.advance().unsqueeze(0).to(env.device, dtype=torch.float32),
         )
+        
+        # 1. Patch 'policy' (Teacher default)
+        if hasattr(env_cfg.observations, "policy"):
+            env_cfg.observations.policy.velocity_commands = cmd_term
+            print("[Info] Patched velocity_commands for 'policy' group.")
+        
+        # 2. Patch 'student_policy' (Common Student name)
+        if hasattr(env_cfg.observations, "student_policy"):
+            env_cfg.observations.student_policy.velocity_commands = cmd_term
+            print("[Info] Patched velocity_commands for 'student_policy' group.")
+
+        # 3. Patch 'blind_student_policy' (Your specific Student name from logs)
+        if hasattr(env_cfg.observations, "blind_student_policy"):
+            env_cfg.observations.blind_student_policy.velocity_commands = cmd_term
+            print("[Info] Patched velocity_commands for 'blind_student_policy' group.")
+            
+        # 4. Fallback search (Patch anything that looks like a policy group with commands)
+        for attr_name in dir(env_cfg.observations):
+            if attr_name.startswith("__") or attr_name in ["policy", "student_policy", "blind_student_policy"]: continue
+            group = getattr(env_cfg.observations, attr_name)
+            if hasattr(group, "velocity_commands"):
+                setattr(group, "velocity_commands", cmd_term)
+                print(f"[Info] Patched velocity_commands for '{attr_name}' group.")
 
     # 2. 创建环境
     env_gym = gym.make(args.task, cfg=env_cfg)
@@ -356,15 +440,26 @@ def main():
     
     try:
         obs_sample, _ = base_env.reset()
-        if isinstance(obs_sample, dict): obs_dim = obs_sample["policy"].shape[-1]
-        else: obs_dim = obs_sample.shape[-1]
-    except: obs_dim = 48
+        if isinstance(obs_sample, dict): 
+            # [Fix] 适配 rsl_rl 观测组逻辑，尝试 policy -> student_policy -> blind_student_policy
+            if "policy" in obs_sample: obs_dim = obs_sample["policy"].shape[-1]
+            elif "student_policy" in obs_sample: obs_dim = obs_sample["student_policy"].shape[-1]
+            elif "blind_student_policy" in obs_sample: obs_dim = obs_sample["blind_student_policy"].shape[-1]
+            else: obs_dim = list(obs_sample.values())[0].shape[-1]
+        else: 
+            obs_dim = obs_sample.shape[-1]
+    except: 
+        obs_dim = 48 # Fallback
 
-    # 3. 加载模型
+    # 3. 加载模型配置
     train_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
     if hasattr(train_cfg, "to_dict"): train_cfg_dict = train_cfg.to_dict()
     else: train_cfg_dict = train_cfg
+    
+    # [Fix] 强制使用 SplitMoEActorCritic 进行推理
+    # 即使训练时用的是 SplitMoEStudentTeacher，推理时只需要 Student 部分（它是 SplitMoEActorCritic 实例）
     train_cfg_dict["policy"]["class_name"] = "SplitMoEActorCritic"
+    
     if args.num_wheel_experts: train_cfg_dict["policy"]["num_wheel_experts"] = args.num_wheel_experts
     if args.num_leg_experts: train_cfg_dict["policy"]["num_leg_experts"] = args.num_leg_experts
     for k in ["checkpoint_wheel", "checkpoint_leg", "freeze_experts"]: train_cfg_dict["policy"].pop(k, None)
@@ -389,17 +484,91 @@ def main():
         print(f"\n[Error] {e}")
         sys.exit(1)
 
-    # 5. 包装环境
+    # 5. 包装环境并加载权重
     clip_actions = train_cfg_dict.get("clip_actions", True) 
     env_wrapped = RslRlVecEnvWrapper(env_gym, clip_actions=clip_actions)
-    runner = OnPolicyRunner(env_wrapped, train_cfg_dict, log_dir=log_dir, device="cuda:0")
-    runner.load(model_path)
-    policy = runner.get_inference_policy(device="cuda:0")
+    
+    # [Fix] 手动加载权重以处理蒸馏模型的 'student.' 前缀
+    # 因为 OnPolicyRunner 只能加载标准的 ActorCritic 结构
+    
+    # [New Fix] Use DistillationRunner if Algorithm is Distillation (to avoid NameError)
+    # But force Policy to be SplitMoEActorCritic (because we only want student for inference)
+    # Actually, simpler hack: If class_name is Distillation, change it to PPO for OnPolicyRunner
+    # OnPolicyRunner doesn't check algorithm logic during init, just instantiates it.
+    # BUT, PPO class requires actor_critic to have 'evaluate'. SplitMoEActorCritic has it.
+    
+    if train_cfg_dict["algorithm"]["class_name"] == "Distillation":
+        print("[Info] Detected Distillation algorithm in config. Switching to PPO for inference compatibility.")
+        train_cfg_dict["algorithm"]["class_name"] = "PPO"
+        
+        # [Fix] Remove Distillation-specific args that PPO doesn't support
+        for k in ["gradient_length", "loss_type", "optimizer"]:
+            train_cfg_dict["algorithm"].pop(k, None)
+            
+        # [Fix] Ensure PPO specific args exist (even if dummy) to pass validation
+        if "value_loss_coef" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["value_loss_coef"] = 1.0
+        if "use_clipped_value_loss" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["use_clipped_value_loss"] = True
+        if "clip_param" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["clip_param"] = 0.2
+        if "entropy_coef" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["entropy_coef"] = 0.01
+        if "num_learning_epochs" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["num_learning_epochs"] = 5
+        if "num_mini_batches" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["num_mini_batches"] = 4
+        if "learning_rate" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["learning_rate"] = 1.0e-3
+        if "schedule" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["schedule"] = "adaptive"
+        if "gamma" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["gamma"] = 0.99
+        if "lam" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["lam"] = 0.95
+        if "desired_kl" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["desired_kl"] = 0.01
+        if "max_grad_norm" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["max_grad_norm"] = 1.0
+
+    runner = OnPolicyRunner(env_wrapped, train_cfg_dict, log_dir=log_dir, device=device)
+    
+    loaded_dict = torch.load(model_path, map_location=device)
+    state_dict = loaded_dict["model_state_dict"]
+    
+    # 检查是否是蒸馏 Checkpoint
+    is_distilled = any(k.startswith("student.") for k in state_dict.keys())
+    
+    if is_distilled:
+        print("[Info] Detected Distillation Checkpoint. Loading 'student' subnet...")
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("student."):
+                # 剥离前缀 'student.'
+                new_key = k.replace("student.", "", 1)
+                
+                # [Fix] Filter out critic keys because inference model might init critic with different input dims
+                # (e.g. Teacher dims) than the student checkpoint (Student dims), causing size mismatch.
+                # We don't need critic for inference anyway.
+                if "critic" in new_key:
+                    continue
+                    
+                new_state_dict[new_key] = v
+        
+        # 加载剥离前缀后的权重到 runner 的 policy (SplitMoEActorCritic)
+        # Note: rsl_rl ActorCritic.load_state_dict returns bool, not (missing, unexpected)
+        # We call the nn.Module version directly to get feedback on keys
+        missing, unexpected = torch.nn.Module.load_state_dict(runner.alg.policy, new_state_dict, strict=False)
+        if len(missing) > 0: print(f"[Warning] Missing keys: {len(missing)}")
+        if len(unexpected) > 0: print(f"[Warning] Unexpected keys: {len(unexpected)}")
+    else:
+        # 普通 PPO Checkpoint，直接加载
+        print("[Info] Detected Standard PPO Checkpoint.")
+        runner.load(model_path)
+
+    policy = runner.get_inference_policy(device=device)
     model_instance = policy.__self__ if hasattr(policy, "__self__") else policy
 
     if args.export:
         save_configs(log_dir, env_cfg, train_cfg_dict)
-        export_model_files(model_instance, log_dir, obs_dim, device="cuda:0")
+        # [Fix] 自动修正 obs_dim，使用模型真实的输入维度
+        if hasattr(model_instance, "rnn"):
+            print(f"[Info] Overwriting obs_dim from Model RNN: {obs_dim} -> {model_instance.rnn.input_size}")
+            obs_dim = model_instance.rnn.input_size
+        elif hasattr(model_instance, "net") and isinstance(model_instance.net, nn.Sequential): # MLP case
+             first_layer = model_instance.net[0]
+             if hasattr(first_layer, "in_features"):
+                 print(f"[Info] Overwriting obs_dim from Model MLP: {obs_dim} -> {first_layer.in_features}")
+                 obs_dim = first_layer.in_features
+        export_model_files(model_instance, log_dir, obs_dim, device=device)
 
     # 6. Hooks
     monitor_data = {}
