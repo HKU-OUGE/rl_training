@@ -31,46 +31,54 @@ from rl_training.assets.deeprobotics import DEEPROBOTICS_M20_CFG  # isort: skip
 from rl_training.terrains.config.rough import *
 
 # ==============================================================================
-# Helper Functions
+# Helper Functions (Modified for Sim2Real & CNN)
 # ==============================================================================
 
-def lidar_depth_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """
-    Calculates the Euclidean distance (depth) from the sensor to the ray hit points.
-    Returns a tensor of shape (num_envs, num_rays).
-    """
-    # Access the sensor object
-    sensor = env.scene.sensors[sensor_cfg.name]
-    
-    # sensor.data.pos_w is the sensor position in world frame: [num_envs, 3]
-    # sensor.data.ray_hits_w is the hit position in world frame: [num_envs, num_rays, 3]
-    
-    # Compute the vector from sensor origin to hit point
-    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
-    
-    # Compute Euclidean distance (L2 norm) along the last dimension (x,y,z)
-    depths = torch.norm(rel_vec, dim=-1)
-    
-    return depths
-
 def euler_xyz_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
-    """
-    Converts Euler angles (in radians) to a quaternion (w, x, y, z).
-    Rotation order: X -> Y -> Z (intrinsic).
-    """
     cx = math.cos(roll * 0.5)
     sx = math.sin(roll * 0.5)
     cy = math.cos(pitch * 0.5)
     sy = math.sin(pitch * 0.5)
     cz = math.cos(yaw * 0.5)
     sz = math.sin(yaw * 0.5)
-
     w = cx * cy * cz - sx * sy * sz
     x = sx * cy * cz + cx * sy * sz
     y = cx * sy * cz - sx * cy * sz
     z = cx * cy * sz + sx * sy * cz
-
     return (w, x, y, z)
+
+def process_lidar_data(depths: torch.Tensor, is_student: bool) -> torch.Tensor:
+    """
+    统一的Lidar数据处理管道：
+    1. 盲区模拟 (仅Student): <0.2m 置为 0
+    2. 归一化: tanh(depth / 10.0) -> 将 [0, 60] 映射到 [0, 1] 附近
+    """
+    # 1. 盲区处理
+    if is_student:
+        # 模拟真机盲区：小于 0.2m 的数据通常无效或为噪声
+        depths = torch.where(depths < 0.2, torch.zeros_like(depths), depths)
+    
+    # 2. 归一化 (Tanh)
+    # Scale = 10.0 意味着 10m 处的数值为 tanh(1) ~= 0.76，能很好地区分近处障碍物
+    scale = 10.0
+    return torch.tanh(depths / scale)
+
+def lidar_depth_scan_teacher(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Teacher 版本：无盲区，全知视角"""
+    sensor = env.scene.sensors[sensor_cfg.name]
+    # 计算欧式距离
+    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
+    depths = torch.norm(rel_vec, dim=-1)
+    
+    return process_lidar_data(depths, is_student=False)
+
+def lidar_depth_scan_student(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Student 版本：模拟物理盲区"""
+    sensor = env.scene.sensors[sensor_cfg.name]
+    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
+    depths = torch.norm(rel_vec, dim=-1)
+    
+    return process_lidar_data(depths, is_student=True)
 
 @configclass
 class DeeproboticsM20ActionsCfg(ActionsCfg):
@@ -97,50 +105,53 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
 
 # ==============================================================================
-# New: Custom Scene Configuration with Dual LiDARS
+# Custom Scene Configuration (High Density for CNN)
 # ==============================================================================
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
-    """Scene configuration with M20 Robot and Dual LiDARS."""
+    """
+    Scene configuration with M20 Robot and Dual LiDARS.
+    Updated for CNN Input: High density, sector-based scanning.
+    """
     
-    # 1. Front Lidar (Data from config.yaml: x=0.32028, y=0, z=-0.013, pitch=-1.57079, yaw=-3.14159)
-    # frequency: 10Hz -> update_period = 0.1s
+    # 1. Front Lidar: Covers Forward Sector (-90 to +90 degrees)
+    # Total coverage: 180 degrees.
+    # Resolution: 2.0 degrees -> 90 points horizontal.
+    # Channels: 16 -> 16 points vertical.
+    # Shape: (16, 90) = 1440 points.
     lidar_front = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base_link",
         offset=RayCasterCfg.OffsetCfg(
             pos=(0.32028, 0.0, -0.013),
-            # Convert Euler (Roll=0, Pitch=-1.57079, Yaw=-3.14159) to Quaternion
             rot=euler_xyz_to_quat(0.0, -1.57079, -3.14159)
         ),
         update_period=0.1, # 10Hz
         ray_alignment="yaw",
         pattern_cfg=patterns.LidarPatternCfg(
-            channels=4, # CHANGED: 32 -> 4 (Sparse sampling for MLP input)
+            channels=16,          # 增加密度：16线，形成深度图高度
             vertical_fov_range=(-15.0, 15.0), 
-            horizontal_fov_range=(0.0, 360.0), 
-            horizontal_res=10.0, # CHANGED: 2.0 -> 10.0 (36 points horizontal * 4 channels = 144 points)
-            # Total Size: 144 floats
+            horizontal_fov_range=(-90.0, 90.0), # 扇区扫描：前向180度
+            horizontal_res=2.0,   # 增加密度：2度分辨率 -> 90个点
         ),
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
 
-    # 2. Rear Lidar (Data from config.yaml: x=-0.32028, y=0, z=-0.013, pitch=-1.57079, yaw=0)
+    # 2. Rear Lidar: Covers Backward Sector (-90 to +90 degrees relative to rear)
+    # Combined with Front, this provides 360 degree coverage for omni-directional policy.
     lidar_rear = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base_link",
         offset=RayCasterCfg.OffsetCfg(
             pos=(-0.32028, 0.0, -0.013),
-            # Convert Euler (Roll=0, Pitch=-1.57079, Yaw=0) to Quaternion
             rot=euler_xyz_to_quat(0.0, -1.57079, 0.0)
         ),
         update_period=0.1, # 10Hz
         ray_alignment="yaw",
         pattern_cfg=patterns.LidarPatternCfg(
-            channels=4, # CHANGED: 32 -> 4
+            channels=16,          # 16线
             vertical_fov_range=(-15.0, 15.0),
-            horizontal_fov_range=(0.0, 360.0),
-            horizontal_res=10.0, # CHANGED: 2.0 -> 10.0
-            # Total Size: 144 floats
+            horizontal_fov_range=(-90.0, 90.0), # 后向180度
+            horizontal_res=2.0,   # 2度分辨率
         ),
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
@@ -156,9 +167,9 @@ class DeeproboticsM20ObservationsCfg:
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Teacher Policy: Has Privileged Height Scan + Proprioception + Both Lidars."""
+        """Teacher Policy"""
         
-        # --- Proprioception ---
+        # ... Proprioception ...
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             noise=Unoise(n_min=-0.1, n_max=0.1),
@@ -203,7 +214,7 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         
-        # --- Privileged Information (Global Height Map) ---
+        # --- Privileged Information ---
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
@@ -212,30 +223,29 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
 
-        # --- New Lidar Sensors (Front & Rear) ---
+        # --- Teacher Lidars (无盲区, tanh归一化) ---
         lidar_front_scan = ObsTerm(
-            func=lidar_depth_scan, # CHANGED: Use depth/range instead of height
+            func=lidar_depth_scan_teacher, 
             params={"sensor_cfg": SceneEntityCfg("lidar_front")},
-            noise=Unoise(n_min=-0.05, n_max=0.05), # Depth noise
-            clip=(0.0, 60.0), # Depth is positive. Max range is 60m per config.yaml
-            scale=1.0,
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+            clip=None, # Removed: Handled in func
+            scale=1.0, # Removed: Handled in func
         )
         lidar_rear_scan = ObsTerm(
-            func=lidar_depth_scan, # CHANGED: Use depth/range instead of height
+            func=lidar_depth_scan_teacher,
             params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
             noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=(0.0, 60.0),
+            clip=None,
             scale=1.0,
         )
 
     @configclass
     class BlindStudentPolicyCfg(ObsGroup):
-        """Student Policy: Only Lidar (Front/Rear) + Proprioception. NO Global Height Map."""
+        """Student Policy: Uses CNN-ready dense Lidar + Blind Spot Simulation."""
         
-        # Removed: base_lin_vel (Privileged)
         base_lin_vel = None
         
-        # --- Proprioception ---
+        # ... Proprioception ...
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
             noise=Unoise(n_min=-0.2, n_max=0.2),
@@ -274,33 +284,31 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         
-        # --- Removed Global Height Scan ---
         height_scan = None
         
-        # --- Added Lidar Sensors (Only inputs for terrain perception) ---
+        # --- Student Lidars (含盲区, tanh归一化) ---
         lidar_front_scan = ObsTerm(
-            func=lidar_depth_scan, # CHANGED: Use depth/range
+            func=lidar_depth_scan_student, 
             params={"sensor_cfg": SceneEntityCfg("lidar_front")},
             noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=(0.0, 60.0),
+            clip=None, 
             scale=1.0,
         )
         lidar_rear_scan = ObsTerm(
-            func=lidar_depth_scan, # CHANGED: Use depth/range
+            func=lidar_depth_scan_student,
             params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
             noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=(0.0, 60.0),
+            clip=None,
             scale=1.0,
         )
 
     @configclass
     class StudentPolicyCfg(BlindStudentPolicyCfg):
-        """Student Policy alias."""
         pass
 
     @configclass
     class CriticCfg(PolicyCfg):
-        """Critic gets everything (Teacher inputs) but without noise."""
+        """Critic gets everything clean."""
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             noise=Unoise(n_min=0.0, n_max=0.0),
@@ -341,19 +349,19 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         
-        # Critic also sees clean Lidar data (Depth)
+        # Critic also sees clean Lidar data (Teacher version)
         lidar_front_scan = ObsTerm(
-            func=lidar_depth_scan, # CHANGED
+            func=lidar_depth_scan_teacher,
             params={"sensor_cfg": SceneEntityCfg("lidar_front")},
             noise=Unoise(n_min=0.0, n_max=0.0),
-            clip=(0.0, 60.0),
+            clip=None,
             scale=1.0,
         )
         lidar_rear_scan = ObsTerm(
-            func=lidar_depth_scan, # CHANGED
+            func=lidar_depth_scan_teacher,
             params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
             noise=Unoise(n_min=0.0, n_max=0.0),
-            clip=(0.0, 60.0),
+            clip=None,
             scale=1.0,
         )
 
@@ -398,7 +406,7 @@ class DeeproboticsM20ObservationsCfg:
         )
 
     policy: PolicyCfg = PolicyCfg()
-    blind_student_policy: BlindStudentPolicyCfg = BlindStudentPolicyCfg() # Student now uses Lidar
+    blind_student_policy: BlindStudentPolicyCfg = BlindStudentPolicyCfg()
     student_policy: StudentPolicyCfg = StudentPolicyCfg() 
     critic: CriticCfg = CriticCfg()
     estimator: EstimatorCfg = EstimatorCfg()
@@ -408,10 +416,8 @@ class DeeproboticsM20ObservationsCfg:
 class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
     actions: DeeproboticsM20ActionsCfg = DeeproboticsM20ActionsCfg()
     rewards: DeeproboticsM20RewardsCfg = DeeproboticsM20RewardsCfg()
-    # 使用自定义的观测配置
     observations: DeeproboticsM20ObservationsCfg = DeeproboticsM20ObservationsCfg()
-    # Use custom scene with 2 Lidars
-    scene: DeeproboticsM20SceneCfg = DeeproboticsM20SceneCfg(num_envs=2048, env_spacing=2.5) # Reduced Envs to save memory
+    scene: DeeproboticsM20SceneCfg = DeeproboticsM20SceneCfg(num_envs=2048, env_spacing=2.5)
 
     base_link_name = "base_link"
     foot_link_name = ".*_wheel"
@@ -439,7 +445,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
     # fmt: on
 
     def __post_init__(self):
-        # post init of parent
         super().__post_init__()
 
         # ------------------------------Sence------------------------------
@@ -447,32 +452,27 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         
-        # Ensure new lidars are attached to base
         if self.scene.lidar_front is not None:
              self.scene.lidar_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         if self.scene.lidar_rear is not None:
              self.scene.lidar_rear.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
 
         # ------------------------------Observations------------------------------
-        # Apply special logic to Policy (Teacher)
         self.observations.policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
         self.observations.policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
         )
         
-        # Apply same logic to Student Policy (Crucial for correct joint mapping)
         self.observations.blind_student_policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
         self.observations.blind_student_policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
         )
         
-        # Apply to StudentPolicy as well
         self.observations.student_policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
         self.observations.student_policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
         )
 
-        # Critic logic
         self.observations.critic.joint_pos.func = mdp.joint_pos_rel_without_wheel
         self.observations.critic.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
@@ -484,7 +484,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.policy.joint_pos.scale = 1.0
         self.observations.policy.joint_vel.scale = 0.05
         
-        # Scales for Blind Student
         self.observations.blind_student_policy.base_ang_vel.scale = 0.25
         self.observations.blind_student_policy.joint_pos.scale = 1.0
         self.observations.blind_student_policy.joint_vel.scale = 0.05
@@ -499,9 +498,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.student_policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
         self.observations.student_policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
 
-
         # ------------------------------Actions------------------------------
-        # reduce action scale
         self.actions.joint_pos.scale = {".*_hipx_joint": 0.25, "^(?!.*_hipx_joint).*": 0.25}
         self.actions.joint_vel.scale = 5.0
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
@@ -569,10 +566,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             pass
 
         # ------------------------------Rewards------------------------------
-        # General
         self.rewards.is_terminated.weight = 0
-
-        # Root penalties
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.02
         self.rewards.flat_orientation_l2.weight = -0.5
@@ -582,7 +576,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.body_lin_acc_l2.weight = 0
         self.rewards.body_lin_acc_l2.params["asset_cfg"].body_names = [self.base_link_name]
 
-        # Joint penalties
         self.rewards.joint_torques_l2.weight = -1.0e-5
         self.rewards.joint_torques_l2.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.joint_torques_wheel_l2.weight = 0
@@ -595,7 +588,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_acc_l2.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.joint_acc_wheel_l2.weight = -1e-7
         self.rewards.joint_acc_wheel_l2.params["asset_cfg"].joint_names = self.wheel_joint_names
-        # self.rewards.create_joint_deviation_l1_rewterm("joint_deviation_hip_l1", -0.2, [".*_hip_joint"])
+        
         self.rewards.joint_pos_limits.weight = -1.0
         self.rewards.joint_pos_limits.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.joint_vel_limits.weight = 0
@@ -623,21 +616,19 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        # Action penalties
+        
         self.rewards.action_rate_l2.weight = -0.01
 
-        # Contact sensor
         self.rewards.undesired_contacts.weight = -1.0
         self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [f"^(?!.*{self.foot_link_name}).*"]
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        # Velocity-tracking rewards
-        self.rewards.track_lin_vel_xy_exp.weight = 2.5 # 1.8
-        self.rewards.track_ang_vel_z_exp.weight = 1.5 # 1.2
+        self.rewards.track_lin_vel_xy_exp.weight = 2.5 
+        self.rewards.track_ang_vel_z_exp.weight = 1.5 
         self.rewards.track_lin_vel_xy_pre_exp.weight = 2.0
         self.rewards.track_ang_vel_z_pre_exp.weight = 3.0
-        # Others
+        
         self.rewards.feet_air_time.weight = 0.0
         self.rewards.feet_air_time.params["threshold"] = 0.5
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -660,20 +651,13 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
         self.rewards.upward.weight = 0.08
 
-        # If the weight of rewards is 0, set rewards to None
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()
 
-        # ------------------------------Terminations------------------------------
-        # self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name]
         self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
-
-        # ------------------------------Curriculums------------------------------
-        # self.curriculum.command_levels.params["range_multiplier"] = (0.2, 1.0)
         self.curriculum.command_levels = None
 
-        # ------------------------------Commands------------------------------
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
         self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)

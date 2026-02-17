@@ -24,7 +24,6 @@ def orthogonal_init(layer, gain=1.0):
     if layer.bias is not None:
         nn.init.constant_(layer.bias, 0)
 
-# [Fix] Modified EmpiricalNormalization for robustness (Supports 3D inputs)
 class EmpiricalNormalization(nn.Module):
     def __init__(self, shape, epsilon=1e-4, until_step=None):
         super().__init__()
@@ -35,10 +34,8 @@ class EmpiricalNormalization(nn.Module):
         self.register_buffer("count", torch.tensor(0, dtype=torch.long))
 
     def update(self, x):
-        # [Fix] Handle 3D inputs (Batch, Time, Dim) from Recurrent Policy
         if x.ndim > 2:
             x = x.reshape(-1, x.shape[-1])
-
         batch_mean = x.mean(dim=0)
         batch_var = x.var(dim=0, unbiased=False)
         batch_count = x.shape[0]
@@ -46,7 +43,6 @@ class EmpiricalNormalization(nn.Module):
         delta = batch_mean - self.mean
         tot_count = self.count + batch_count
         
-        # Welford's algorithm
         new_mean = self.mean + delta * batch_count / tot_count
         m_a = self.var * self.count
         m_b = batch_var * batch_count
@@ -91,7 +87,34 @@ class MLP(nn.Module):
         return self.net(x)
 
 # ==============================================================================
-# 2. Split MoE Policy Network
+# 2. CNN Encoder for Lidar
+# ==============================================================================
+
+class LidarCNN(nn.Module):
+    def __init__(self, input_channels=1, output_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(input_channels, 16, kernel_size=(3, 5), stride=(1, 2), padding=(1, 2)),
+            nn.ELU(),
+            nn.Conv2d(16, 32, kernel_size=(3, 3), stride=(1, 2), padding=(1, 1)),
+            nn.ELU(),
+            nn.Conv2d(32, 64, kernel_size=(3, 3), stride=1, padding=(1, 1)),
+            nn.ELU(),
+        )
+        self.global_pool = nn.AdaptiveAvgPool2d((4, 4)) 
+        self.projection = nn.Linear(64 * 4 * 4, output_dim)
+        self.act = nn.ELU()
+
+    def forward(self, x):
+        if x.ndim == 3:
+            x = x.unsqueeze(1)
+        features = self.net(x)
+        features = self.global_pool(features)
+        features = features.flatten(1)
+        return self.act(self.projection(features))
+
+# ==============================================================================
+# 3. Split MoE Policy Network
 # ==============================================================================
 
 class SplitMoEActorCritic(ActorCritic):
@@ -112,12 +135,17 @@ class SplitMoEActorCritic(ActorCritic):
                  latent_dim=256,
                  rnn_type="gru",
                  aux_loss_coef=0.01,
+                 # === CNN Params ===
+                 use_cnn=False,
+                 lidar_channels=16,
+                 lidar_res_points=182, 
                  **kwargs):
         
         base_kwargs = {k: v for k, v in kwargs.items() if k not in [
             "estimator_output_dim", "estimator_hidden_dims", 
             "estimator_input_indices", "estimator_target_indices", 
-            "estimator_obs_normalization", "init_noise_legs", "init_noise_wheels"
+            "estimator_obs_normalization", "init_noise_legs", "init_noise_wheels",
+            "actor_obs_normalization", "critic_obs_normalization"
         ]}
 
         super().__init__(obs, obs_groups, num_actions, 
@@ -134,6 +162,33 @@ class SplitMoEActorCritic(ActorCritic):
             num_obs = sum(obs[k].shape[-1] for k in keys)
         else:
             num_obs = obs.shape[-1]
+            
+        self.use_cnn = use_cnn
+        self.lidar_channels = lidar_channels
+        self.lidar_res_points = lidar_res_points
+        self.lidar_raw_dim = lidar_channels * lidar_res_points 
+        
+        self.proprio_dim = num_obs - self.lidar_raw_dim if self.use_cnn else num_obs
+        
+        print(f"[SplitMoE] Total Obs: {num_obs}, Lidar Raw: {self.lidar_raw_dim}, Proprio: {self.proprio_dim}")
+
+        if self.use_cnn:
+            self.cnn_output_dim = 128
+            self.lidar_encoder = LidarCNN(output_dim=self.cnn_output_dim)
+            rnn_input_dim = self.proprio_dim + self.cnn_output_dim
+        else:
+            rnn_input_dim = num_obs
+
+        self.actor_obs_normalization = kwargs.get("actor_obs_normalization", True)
+        self.critic_obs_normalization = kwargs.get("critic_obs_normalization", True)
+
+        if self.actor_obs_normalization:
+            print(f"[SplitMoE] Re-initializing Actor Normalizer for Proprio dim only: {self.proprio_dim}")
+            self.actor_obs_normalizer = EmpiricalNormalization(shape=[self.proprio_dim], until_step=1.0e9)
+        
+        if self.critic_obs_normalization:
+            print(f"[SplitMoE] Re-initializing Critic Normalizer for Proprio dim only: {self.proprio_dim}")
+            self.critic_obs_normalizer = EmpiricalNormalization(shape=[self.proprio_dim], until_step=1.0e9)
 
         self.latent_dim = latent_dim
         self.rnn_type = rnn_type.lower()
@@ -141,16 +196,13 @@ class SplitMoEActorCritic(ActorCritic):
         
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
-        
-        if self.num_wheel_actions < 0:
-            raise ValueError(f"num_leg_actions ({num_leg_actions}) cannot be larger than total actions ({num_actions})")
 
-        print(f"[SplitMoE] Actions Split: Legs={self.num_leg_actions}, Wheels={self.num_wheel_actions}")
+        print(f"[SplitMoE] RNN Input Dim: {rnn_input_dim}")
 
         if self.rnn_type == "lstm":
-            self.rnn = nn.LSTM(input_size=num_obs, hidden_size=self.latent_dim, batch_first=False)
+            self.rnn = nn.LSTM(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
         else:
-            self.rnn = nn.GRU(input_size=num_obs, hidden_size=self.latent_dim, batch_first=False)
+            self.rnn = nn.GRU(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
 
         for name, param in self.rnn.named_parameters():
             if 'weight' in name: nn.init.orthogonal_(param)
@@ -175,7 +227,6 @@ class SplitMoEActorCritic(ActorCritic):
 
         self.critic_mlp = MLP(self.latent_dim, 1, hidden_dims=critic_hidden_dims, activation=activation, output_gain=1.0)
 
-        # === Estimator Setup ===
         self.estimator_output_dim = kwargs.get("estimator_output_dim", 0)
         self.estimator_hidden_dims = kwargs.get("estimator_hidden_dims", [128, 64])
         self.estimator_obs_normalization = kwargs.get("estimator_obs_normalization", True)
@@ -185,28 +236,19 @@ class SplitMoEActorCritic(ActorCritic):
         if self.estimator_output_dim > 0:
             est_input_dim = 0
             self.has_estimator_group = False
-            
-            # Robust Duck Typing check for TensorDict/Dict
             try:
                 est_group = obs["estimator"]
                 est_input_dim = est_group.shape[-1]
                 self.has_estimator_group = True
-                print(f"[SplitMoE] Detected dedicated 'estimator' observation group (Dim: {est_input_dim}).")
             except (KeyError, TypeError, AttributeError):
                 self.has_estimator_group = False
                 est_input_dim = len(self.estimator_input_indices)
-                print(f"[SplitMoE] No 'estimator' group found in sample. Fallback to slicing policy (Indices: {est_input_dim}).")
 
-            if est_input_dim == 0:
-                raise ValueError("[SplitMoE] Error: Estimator input dimension is 0! Check your Config.")
-
-            print(f"[SplitMoE] Initializing Estimator with Input Dims: {est_input_dim}")
-            
-            self.estimator = MLP(est_input_dim, self.estimator_output_dim, hidden_dims=self.estimator_hidden_dims, activation=activation)
-            self.estimator_obs_normalizer = None
-            if self.estimator_obs_normalization:
-                print(f"[SplitMoE] Estimator Obs Normalization Enabled (Dim={est_input_dim})")
-                self.estimator_obs_normalizer = EmpiricalNormalization(shape=[est_input_dim], until_step=1.0e9)
+            if est_input_dim > 0:
+                self.estimator = MLP(est_input_dim, self.estimator_output_dim, hidden_dims=self.estimator_hidden_dims, activation=activation)
+                self.estimator_obs_normalizer = None
+                if self.estimator_obs_normalization:
+                    self.estimator_obs_normalizer = EmpiricalNormalization(shape=[est_input_dim], until_step=1.0e9)
         else:
             self.estimator = None
 
@@ -227,7 +269,6 @@ class SplitMoEActorCritic(ActorCritic):
         self.num_leg_experts = num_leg_experts
         noise_legs = kwargs.get("init_noise_legs", 1.0)
         noise_wheels = kwargs.get("init_noise_wheels", 0.4) 
-        print(f"[SplitMoE] Overriding Noise: Legs={noise_legs}, Wheels={noise_wheels}")
         if num_leg_actions <= num_actions:
             new_std[:num_leg_actions] = noise_legs
             new_std[num_leg_actions:] = noise_wheels
@@ -244,12 +285,68 @@ class SplitMoEActorCritic(ActorCritic):
         orthogonal_init(gate_net[0], gain=np.sqrt(2))
         orthogonal_init(gate_net[2], gain=0.01)
 
-    def _prepare_input(self, obs, key_list):
+    def _extract_raw_obs(self, obs, key_list):
         if key_list is not None and (isinstance(obs, dict) or hasattr(obs, "keys")):
             tensors = [obs[k] for k in key_list]
             return torch.cat(tensors, dim=-1)
         return obs
+
+    # === [Fix] 新增: 覆盖 update_normalization 以解决维度不匹配问题 ===
+    def update_normalization(self, obs):
+        """
+        覆盖父类方法。
+        RSL_RL 会传入完整的 obs (3159维)，但我们的 Normalizer 初始化为 247维。
+        必须在这里切片。
+        """
+        # 1. 提取完整 Obs (如果 obs 是 dict)
+        x_raw = self._extract_raw_obs(obs, self.input_keys)
+        
+        # 2. 仅截取 Proprio 部分 (前 247 维)
+        proprio = x_raw[..., :self.proprio_dim]
+        
+        # 3. 更新 Normalizer
+        if self.actor_obs_normalization:
+            self.actor_obs_normalizer.update(proprio)
+            
+        if self.critic_obs_normalization:
+            # Critic 输入结构通常与 Actor 相同 (Sim)
+            self.critic_obs_normalizer.update(proprio)
+
+    def _process_obs(self, x, normalizer=None):
+        if not self.use_cnn:
+            pass
+
+        proprio = x[..., :self.proprio_dim]
+        lidar_raw = x[..., self.proprio_dim:]
+        
+        if normalizer is not None:
+            proprio = normalizer(proprio)
+            
+        if self.use_cnn:
+            if lidar_raw.shape[-1] != self.lidar_raw_dim:
+                pass
+            
+            original_shape = lidar_raw.shape[:-1] 
+            lidar_image = lidar_raw.view(*original_shape, self.lidar_channels, self.lidar_res_points)
+            
+            if lidar_image.ndim == 4: 
+                B, T, C, H = lidar_image.shape
+                lidar_image = lidar_image.view(B*T, C, H)
+                lidar_feat = self.lidar_encoder(lidar_image)
+                lidar_feat = lidar_feat.view(B, T, -1)
+            else:
+                lidar_feat = self.lidar_encoder(lidar_image)
+            
+            x_out = torch.cat([proprio, lidar_feat], dim=-1)
+        else:
+            x_out = torch.cat([proprio, lidar_raw], dim=-1)
+            
+        return x_out
     
+    def _prepare_input(self, obs, key_list):
+        x = self._extract_raw_obs(obs, key_list)
+        return self._process_obs(x, normalizer=None) 
+
     def _run_rnn(self, rnn_module, x_in, hidden_states, masks):
         if hidden_states is None:
             B = x_in.shape[1] if x_in.ndim == 3 else x_in.shape[0]
@@ -257,11 +354,11 @@ class SplitMoEActorCritic(ActorCritic):
         else:
             rnn_state = hidden_states
 
-        if x_in.ndim == 3: # Training
+        if x_in.ndim == 3: 
             rnn_out, next_rnn_state = rnn_module(x_in, rnn_state)
             if masks is not None: latent = unpad_trajectories(rnn_out, masks)
             else: latent = rnn_out
-        elif x_in.ndim == 2: # Inference
+        elif x_in.ndim == 2: 
             x_rnn = x_in.unsqueeze(0)
             if masks is not None:
                 m = masks.view(1, -1, 1)
@@ -272,21 +369,17 @@ class SplitMoEActorCritic(ActorCritic):
         return latent, next_rnn_state
 
     def _get_estimator_input(self, obs_dict):
-        # 1. Try fetching from 'estimator' group
         if self.has_estimator_group:
-            try:
-                return obs_dict["estimator"]
-            except (KeyError, TypeError):
-                pass
+            try: return obs_dict["estimator"]
+            except (KeyError, TypeError): pass
         
-        # 2. Fallback: Slice from 'policy' tensor/dict
         if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
-            try:
-                full_obs = obs_dict["policy"]
-            except KeyError:
-                full_obs = self._prepare_input(obs_dict, self.input_keys)
-        else:
-            full_obs = obs_dict # Tensor case (PPO update)
+            try: 
+                full_obs = self._extract_raw_obs(obs_dict, self.input_keys)
+            except KeyError: 
+                full_obs = self._extract_raw_obs(obs_dict, self.input_keys)
+        else: 
+            full_obs = obs_dict 
             
         return full_obs[..., self.estimator_input_indices]
 
@@ -310,21 +403,14 @@ class SplitMoEActorCritic(ActorCritic):
             
             if self.estimator is not None and obs_dict is not None:
                 est_input = self._get_estimator_input(obs_dict)
-                
-                # [Fix] Safety check using .net[0] because self.estimator is MLP object
-                if est_input.shape[-1] != self.estimator.net[0].in_features:
-                    pass 
+                if est_input.shape[-1] != self.estimator.net[0].in_features: pass 
                 else:
                     if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
-                        try:
-                            full_obs_for_target = obs_dict["policy"]
-                        except KeyError:
-                            full_obs_for_target = self._prepare_input(obs_dict, self.input_keys)
-                    else:
-                        full_obs_for_target = obs_dict
+                        try: full_obs_for_target = obs_dict["policy"] 
+                        except KeyError: full_obs_for_target = self._extract_raw_obs(obs_dict, self.input_keys)
+                    else: full_obs_for_target = obs_dict
 
                     target_state = full_obs_for_target[..., self.estimator_target_indices]
-                    
                     if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
                         est_input = self.estimator_obs_normalizer(est_input)
                     
@@ -360,8 +446,10 @@ class SplitMoEActorCritic(ActorCritic):
         return to_dev(hidden)
 
     def act(self, obs, masks=None, hidden_state=None):
-        x_in = self._prepare_input(obs, self.input_keys)
-        if self.actor_obs_normalization: x_in = self.actor_obs_normalizer(x_in)
+        x_raw = self._extract_raw_obs(obs, self.input_keys)
+        normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
+        x_in = self._process_obs(x_raw, normalizer)
+        
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
         latent, next_state = self._run_rnn(self.rnn, x_in, current_state, masks)
@@ -372,8 +460,10 @@ class SplitMoEActorCritic(ActorCritic):
         return self.distribution.sample()
 
     def act_inference(self, obs, masks=None, hidden_states=None):
-        x_in = self._prepare_input(obs, self.input_keys)
-        if self.actor_obs_normalization: x_in = self.actor_obs_normalizer(x_in)
+        x_raw = self._extract_raw_obs(obs, self.input_keys)
+        normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
+        x_in = self._process_obs(x_raw, normalizer)
+
         current_state = self._prepare_hidden_state(hidden_states, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
         latent, next_state = self._run_rnn(self.rnn, x_in, current_state, masks)
@@ -381,8 +471,10 @@ class SplitMoEActorCritic(ActorCritic):
         return self._compute_actor_output(latent)
 
     def evaluate(self, obs, masks=None, hidden_state=None):
-        x_in = self._prepare_input(obs, self.input_keys)
-        if self.actor_obs_normalization: x_in = self.actor_obs_normalizer(x_in)
+        x_raw = self._extract_raw_obs(obs, self.input_keys)
+        normalizer = self.critic_obs_normalizer if self.critic_obs_normalization else None
+        x_in = self._process_obs(x_raw, normalizer)
+
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
         latent, _ = self._run_rnn(self.rnn, x_in, current_state, masks)
@@ -396,8 +488,10 @@ class SplitMoEActorCritic(ActorCritic):
         return self.estimator(est_input)
 
     def forward(self, obs, masks=None, hidden_states=None, save_dist=True):
-        x_in = self._prepare_input(obs, self.input_keys)
-        if self.actor_obs_normalization: x_in = self.actor_obs_normalizer(x_in)
+        x_raw = self._extract_raw_obs(obs, self.input_keys)
+        normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
+        x_in = self._process_obs(x_raw, normalizer)
+
         current_state = self._prepare_hidden_state(hidden_states, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
         latent, next_state = self._run_rnn(self.rnn, x_in, current_state, masks)
@@ -422,85 +516,40 @@ class SplitMoEActorCritic(ActorCritic):
             self.active_hidden_states = reset_hidden(self.active_hidden_states, dones)
 
 # ==============================================================================
-# 3. PPO Algorithm Wrapper
+# 4. PPO Algorithm Wrapper & Configs
 # ==============================================================================
 
 class SplitMoEPPO(PPO):
     def update(self):
-        # 1. Standard PPO update (Actor/Critic)
         loss_dict = super().update()
-        
-        # 2. Estimator & Aux Loss Update
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
         
         if model is not None and self.num_learning_epochs > 0:
-            # We need to grab the observations from the storage to re-compute loss with gradients.
-            # RSL-RL stores observations in self.storage.observations
-            # Shape: [num_transitions, num_envs, obs_dim]
-            # We flatten them to [num_transitions * num_envs, obs_dim]
-            
             obs_batch = self.storage.observations.flatten(0, 1)
-            
-            # If your Estimator needs a target (Ground Truth), we need that too.
-            # Usually RSL-RL doesn't store the "Target" separately if it's just a slice of obs.
-            # Fortunately, your _compute_actor_output logic slices targets from the input obs_batch.
-            
-            # --- Optimization Step ---
             self.optimizer.zero_grad()
-            
-            # We call the model to compute losses. 
-            # Note: We don't need the actor output, just the side effects (loss calculation).
-            # We use a dummy latent to avoid re-running the whole RNN if possible, 
-            # BUT SplitMoE computes loss inside _compute_actor_output which needs 'latent'.
-            # To avoid complexity, we can just run the Estimator part if we extract it, 
-            # but your code couples them.
-            
-            # EASIER FIX: Manually run the estimator logic here to get a fresh graph.
             total_aux_loss = 0.0
             
-            # A. Estimator Loss
             if model.estimator is not None:
-                # 1. Get Input
                 est_input = model._get_estimator_input(obs_batch)
-                
-                # 2. Get Target
                 if hasattr(obs_batch, "keys") or isinstance(obs_batch, dict):
-                    try:
-                        full_obs_for_target = obs_batch["policy"]
-                    except KeyError:
-                        full_obs_for_target = model._prepare_input(obs_batch, model.input_keys)
-                else:
-                    full_obs_for_target = obs_batch
-
+                    try: full_obs_for_target = obs_batch["policy"]
+                    except KeyError: full_obs_for_target = model._extract_raw_obs(obs_batch, model.input_keys)
+                else: full_obs_for_target = obs_batch
                 target_state = full_obs_for_target[..., model.estimator_target_indices]
-                
-                # 3. Normalize
                 if model.estimator_obs_normalization and model.estimator_obs_normalizer is not None:
                     est_input = model.estimator_obs_normalizer(est_input)
-                
-                # 4. Forward & Loss
                 estimated_state = model.estimator(est_input)
                 est_loss = (estimated_state - target_state).pow(2).mean()
-                
                 total_aux_loss += est_loss
-                
-                # Update the stored metric for logging
                 model.active_estimator_loss = est_loss.detach()
                 model.active_estimator_error = (estimated_state - target_state).abs().mean().detach()
 
-            # B. Aux Loss (Load Balancing)
-            # This is harder to recompute without running the full Actor.
-            # If we skip it here, we lose load balancing training. 
-            # To keep it simple and fix the crash, we can just train the Estimator for now.
-            # If you desperately need Load Balancing, we would need to forward the whole actor.
-            
             if isinstance(total_aux_loss, torch.Tensor):
                 total_aux_loss.backward()
                 if self.max_grad_norm is not None:
                     nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
-        # 3. Logging (Standard)
         if model is not None:
             if hasattr(model, "latest_weights") and model.latest_weights:
                 w = model.latest_weights
@@ -508,31 +557,16 @@ class SplitMoEPPO(PPO):
                     for i, val in enumerate(w["leg"]): loss_dict[f"Gate/Leg_Expert_{i}"] = val.item()
                 if "wheel" in w:
                     for i, val in enumerate(w["wheel"]): loss_dict[f"Gate/Wheel_Expert_{i}"] = val.item()
-            
-            if hasattr(model, "active_aux_loss"):
-                val = model.active_aux_loss
-                loss_dict["Loss/Load_Balancing"] = val.item() if isinstance(val, torch.Tensor) else val
-            
-            if hasattr(model, "active_estimator_loss"):
-                val = model.active_estimator_loss
-                loss_dict["Loss/Estimator_MSE"] = val.item() if isinstance(val, torch.Tensor) else val
-                    
-            if hasattr(model, "active_estimator_error"):
-                val = model.active_estimator_error
-                loss_dict["Loss/Estimator_Error_MAE"] = val.item() if isinstance(val, torch.Tensor) else val
-            
+            if hasattr(model, "active_aux_loss"): loss_dict["Loss/Load_Balancing"] = model.active_aux_loss.item() if isinstance(model.active_aux_loss, torch.Tensor) else model.active_aux_loss
+            if hasattr(model, "active_estimator_loss"): loss_dict["Loss/Estimator_MSE"] = model.active_estimator_loss.item() if isinstance(model.active_estimator_loss, torch.Tensor) else model.active_estimator_loss
+            if hasattr(model, "active_estimator_error"): loss_dict["Loss/Estimator_Error_MAE"] = model.active_estimator_error.item() if isinstance(model.active_estimator_error, torch.Tensor) else model.active_estimator_error
             if hasattr(model, "std"):
                 std_np = model.std.detach().cpu().numpy()
                 n_legs = getattr(model, "num_leg_actions", 12)
                 if len(std_np) >= n_legs:
                     loss_dict["Noise/Leg_Std"] = std_np[:n_legs].mean()
                     loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
-        
         return loss_dict
-
-# ==============================================================================
-# 4. Configs
-# ==============================================================================
 
 @configclass
 class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
@@ -547,12 +581,13 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
 
-    # === Estimator Settings ===
+    use_cnn: bool = True
+    lidar_channels: int = 16
+    lidar_res_points: int = 182 
+
     estimator_output_dim: int = 3  
     estimator_hidden_dims: list = field(default_factory=lambda: [128, 64])
     estimator_target_indices: list = field(default_factory=lambda: [0, 1, 2])
-    # [Fix] Updated Indices to match the Policy structure (3-9, 12-56) = 50 dims
-    # Corresponds to: AngVel(3), Gravity(3), JointPos(12), Actions(16), JVelLeg(12), JVelWhl(4)
     estimator_input_indices: list = field(default_factory=lambda: list(range(3, 9)) + list(range(12, 56)))
     estimator_obs_normalization: bool = True 
     
@@ -576,7 +611,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 64
+    num_steps_per_env = 24
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_parallel" 
@@ -598,11 +633,13 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        # [Config] Estimator
+        use_cnn=True,
+        lidar_channels=16,
+        lidar_res_points=182,
+
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
         estimator_target_indices=[0, 1, 2],
-        # [Fix] Fallback indices updated
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
         
