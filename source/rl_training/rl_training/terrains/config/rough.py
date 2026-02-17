@@ -25,7 +25,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     sub_terrains={
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=3.0/18,  # 2/18 的概率生成此地形
-            step_height_range=(0.05, 0.23),
+            step_height_range=(0.05, 0.20),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
@@ -33,7 +33,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
             proportion=3.0/18,
-            step_height_range=(0.05, 0.23),
+            step_height_range=(0.05, 0.20),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
