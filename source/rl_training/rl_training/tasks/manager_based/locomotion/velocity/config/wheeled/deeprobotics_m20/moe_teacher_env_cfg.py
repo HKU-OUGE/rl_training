@@ -49,19 +49,30 @@ def euler_xyz_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, flo
 
 def process_lidar_data(depths: torch.Tensor, is_student: bool) -> torch.Tensor:
     """
-    统一的Lidar数据处理管道：
-    1. 盲区模拟 (仅Student): <0.2m 置为 0
-    2. 归一化: tanh(depth / 10.0) -> 将 [0, 60] 映射到 [0, 1] 附近
+    终极优化的 Lidar 数据处理管道（修复维度拼接报错）
     """
-    # 1. 盲区处理
-    if is_student:
-        # 模拟真机盲区：小于 0.2m 的数据通常无效或为噪声
-        depths = torch.where(depths < 0.2, torch.zeros_like(depths), depths)
+    # depths 原始形状已经是 (num_envs, 57600)
     
-    # 2. 归一化 (Tanh)
-    # Scale = 10.0 意味着 10m 处的数值为 tanh(1) ~= 0.76，能很好地区分近处障碍物
+    # 1. 基础归一化 (Tanh)
+    # 正常物理距离 [0, +inf) -> 被映射到 [0.0, 1.0)
     scale = 10.0
-    return torch.tanh(depths / scale)
+    normalized_depths = torch.tanh(depths / scale)
+    
+    # 2. 盲区处理 (仅Student)
+    if is_student:
+        # 使用 -1.0 作为独特的盲区标识符 (Out-of-Band Flag)
+        normalized_depths = torch.where(
+            depths < 0.2, 
+            torch.full_like(normalized_depths, -1.0), 
+            normalized_depths
+        )
+    
+    # ---------------------------------------------------------
+    # 核心修复：直接返回一维的 normalized_depths！
+    # 取消 .view() 操作。Isaac Lab 会将其与本体感觉拼接成一个 115447 维的长向量，
+    # 然后由 moe_terrain.py 中的网络在内部切分并 Reshape 为 2D 图像输入 CNN。
+    # ---------------------------------------------------------
+    return normalized_depths
 
 def lidar_depth_scan_teacher(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """Teacher 版本：无盲区，全知视角"""
@@ -113,51 +124,49 @@ class DeeproboticsM20SceneCfg(MySceneCfg):
     Scene configuration with M20 Robot and Dual LiDARS.
     Updated for CNN Input: High density, sector-based scanning.
     """
-    
-    # 1. Front Lidar: Covers Forward Sector (-90 to +90 degrees)
-    # Total coverage: 180 degrees.
-    # Resolution: 2.0 degrees -> 90 points horizontal.
-    # Channels: 16 -> 16 points vertical.
-    # Shape: (16, 90) = 1440 points.
+# 1. Front Lidar (前向 RSAIRY)
     lidar_front = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base_link",
         offset=RayCasterCfg.OffsetCfg(
             pos=(0.32028, 0.0, -0.013),
-            rot=euler_xyz_to_quat(0.0, -1.57079, -3.14159)
+            # ------------------------------------------------------
+            # 修正：Pitch +90度，将雷达的半球扫描极点指向正前方 (+X)
+            # ------------------------------------------------------
+            rot=euler_xyz_to_quat(0.0, 1.57079, 0.0)
         ),
-        update_period=0.1, # 10Hz
-        ray_alignment="yaw",
+        update_period=0.1, 
+        ray_alignment="base",
         pattern_cfg=patterns.LidarPatternCfg(
-            channels=16,          # 增加密度：16线，形成深度图高度
-            vertical_fov_range=(-15.0, 15.0), 
-            horizontal_fov_range=(-90.0, 90.0), # 扇区扫描：前向180度
-            horizontal_res=2.0,   # 增加密度：2度分辨率 -> 90个点
+            channels=64,          
+            vertical_fov_range=(0.0, 90.0),       # 形成半球
+            horizontal_fov_range=(-180.0, 180.0), # 360度全扫
+            horizontal_res=0.4,   
         ),
-        debug_vis=False,
+        debug_vis=True, # 建议保持 True 确认最后的效果
         mesh_prim_paths=["/World/ground"],
     )
 
-    # 2. Rear Lidar: Covers Backward Sector (-90 to +90 degrees relative to rear)
-    # Combined with Front, this provides 360 degree coverage for omni-directional policy.
+    # 2. Rear Lidar (后向 RSAIRY)
     lidar_rear = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base_link",
         offset=RayCasterCfg.OffsetCfg(
             pos=(-0.32028, 0.0, -0.013),
-            rot=euler_xyz_to_quat(0.0, -1.57079, 0.0)
+            # ------------------------------------------------------
+            # 修正：Pitch -90度，将雷达的半球扫描极点指向正后方 (-X)
+            # ------------------------------------------------------
+            rot=euler_xyz_to_quat(0.0, -1.57079, 0.0) 
         ),
-        update_period=0.1, # 10Hz
-        ray_alignment="yaw",
+        update_period=0.1, 
+        ray_alignment="base",
         pattern_cfg=patterns.LidarPatternCfg(
-            channels=16,          # 16线
-            vertical_fov_range=(-15.0, 15.0),
-            horizontal_fov_range=(-90.0, 90.0), # 后向180度
-            horizontal_res=2.0,   # 2度分辨率
+            channels=64,          
+            vertical_fov_range=(0.0, 90.0), 
+            horizontal_fov_range=(-180.0, 180.0), 
+            horizontal_res=0.4,   
         ),
-        debug_vis=False,
+        debug_vis=True,
         mesh_prim_paths=["/World/ground"],
     )
-
-
 # ==============================================================================
 # Custom Observation Config
 # ==============================================================================
