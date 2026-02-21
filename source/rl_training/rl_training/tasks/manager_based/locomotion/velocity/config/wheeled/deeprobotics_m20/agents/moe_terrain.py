@@ -649,8 +649,8 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         
         use_cnn= True,
         num_lidars= 2,          # 新增
-        lidar_channels= 64,     # 匹配 Isaac Lab 配置
-        lidar_res_points= 900,  # 匹配 360/0.4
+        lidar_channels= 32,     # 匹配 Isaac Lab 配置
+        lidar_res_points= 300,  # 匹配 360/0.4
 
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],

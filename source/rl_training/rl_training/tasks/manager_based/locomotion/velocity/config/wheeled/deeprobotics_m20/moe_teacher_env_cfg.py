@@ -137,10 +137,10 @@ class DeeproboticsM20SceneCfg(MySceneCfg):
         update_period=0.1, 
         ray_alignment="base",
         pattern_cfg=patterns.LidarPatternCfg(
-            channels=64,          
-            vertical_fov_range=(0.0, 90.0),       # 形成半球
-            horizontal_fov_range=(-180.0, 180.0), # 360度全扫
-            horizontal_res=0.4,   
+            channels=32,          # 降维：从 64 改为 32
+            vertical_fov_range=(0.0, 90.0), 
+            horizontal_fov_range=(-180.0, 180.0), 
+            horizontal_res=1.2,   # 降维：从 0.4 改为 1.2 (产生 300 个点)
         ),
         debug_vis=True, # 建议保持 True 确认最后的效果
         mesh_prim_paths=["/World/ground"],
@@ -159,10 +159,10 @@ class DeeproboticsM20SceneCfg(MySceneCfg):
         update_period=0.1, 
         ray_alignment="base",
         pattern_cfg=patterns.LidarPatternCfg(
-            channels=64,          
+            channels=32,          # 降维：从 64 改为 32
             vertical_fov_range=(0.0, 90.0), 
             horizontal_fov_range=(-180.0, 180.0), 
-            horizontal_res=0.4,   
+            horizontal_res=1.2,   # 降维：从 0.4 改为 1.2 (产生 300 个点)
         ),
         debug_vis=True,
         mesh_prim_paths=["/World/ground"],
