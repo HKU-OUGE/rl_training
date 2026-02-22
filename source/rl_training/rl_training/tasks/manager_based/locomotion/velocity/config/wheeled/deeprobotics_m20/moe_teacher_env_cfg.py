@@ -124,49 +124,49 @@ class DeeproboticsM20SceneCfg(MySceneCfg):
     Scene configuration with M20 Robot and Dual LiDARS.
     Updated for CNN Input: High density, sector-based scanning.
     """
-# 1. Front Lidar (前向 RSAIRY)
-    lidar_front = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",
-        offset=RayCasterCfg.OffsetCfg(
-            pos=(0.32028, 0.0, -0.013),
-            # ------------------------------------------------------
-            # 修正：Pitch +90度，将雷达的半球扫描极点指向正前方 (+X)
-            # ------------------------------------------------------
-            rot=euler_xyz_to_quat(0.0, 1.57079, 0.0)
-        ),
-        update_period=0.1, 
-        ray_alignment="base",
-        pattern_cfg=patterns.LidarPatternCfg(
-            channels=32,          # 降维：从 64 改为 32
-            vertical_fov_range=(0.0, 90.0), 
-            horizontal_fov_range=(-180.0, 180.0), 
-            horizontal_res=1.2,   # 降维：从 0.4 改为 1.2 (产生 300 个点)
-        ),
-        debug_vis=True, # 建议保持 True 确认最后的效果
-        mesh_prim_paths=["/World/ground"],
-    )
+# # 1. Front Lidar (前向 RSAIRY)
+#     lidar_front = RayCasterCfg(
+#         prim_path="{ENV_REGEX_NS}/Robot/base_link",
+#         offset=RayCasterCfg.OffsetCfg(
+#             pos=(0.32028, 0.0, -0.013),
+#             # ------------------------------------------------------
+#             # 修正：Pitch +90度，将雷达的半球扫描极点指向正前方 (+X)
+#             # ------------------------------------------------------
+#             rot=euler_xyz_to_quat(0.0, 1.57079, 0.0)
+#         ),
+#         update_period=0.1, 
+#         ray_alignment="base",
+#         pattern_cfg=patterns.LidarPatternCfg(
+#             channels=32,          # 降维：从 64 改为 32
+#             vertical_fov_range=(0.0, 90.0), 
+#             horizontal_fov_range=(-180.0, 180.0), 
+#             horizontal_res=1.2,   # 降维：从 0.4 改为 1.2 (产生 300 个点)
+#         ),
+#         debug_vis=True, # 建议保持 True 确认最后的效果
+#         mesh_prim_paths=["/World/ground"],
+#     )
 
-    # 2. Rear Lidar (后向 RSAIRY)
-    lidar_rear = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",
-        offset=RayCasterCfg.OffsetCfg(
-            pos=(-0.32028, 0.0, -0.013),
-            # ------------------------------------------------------
-            # 修正：Pitch -90度，将雷达的半球扫描极点指向正后方 (-X)
-            # ------------------------------------------------------
-            rot=euler_xyz_to_quat(0.0, -1.57079, 0.0) 
-        ),
-        update_period=0.1, 
-        ray_alignment="base",
-        pattern_cfg=patterns.LidarPatternCfg(
-            channels=32,          # 降维：从 64 改为 32
-            vertical_fov_range=(0.0, 90.0), 
-            horizontal_fov_range=(-180.0, 180.0), 
-            horizontal_res=1.2,   # 降维：从 0.4 改为 1.2 (产生 300 个点)
-        ),
-        debug_vis=True,
-        mesh_prim_paths=["/World/ground"],
-    )
+#     # 2. Rear Lidar (后向 RSAIRY)
+#     lidar_rear = RayCasterCfg(
+#         prim_path="{ENV_REGEX_NS}/Robot/base_link",
+#         offset=RayCasterCfg.OffsetCfg(
+#             pos=(-0.32028, 0.0, -0.013),
+#             # ------------------------------------------------------
+#             # 修正：Pitch -90度，将雷达的半球扫描极点指向正后方 (-X)
+#             # ------------------------------------------------------
+#             rot=euler_xyz_to_quat(0.0, -1.57079, 0.0) 
+#         ),
+#         update_period=0.1, 
+#         ray_alignment="base",
+#         pattern_cfg=patterns.LidarPatternCfg(
+#             channels=32,          # 降维：从 64 改为 32
+#             vertical_fov_range=(0.0, 90.0), 
+#             horizontal_fov_range=(-180.0, 180.0), 
+#             horizontal_res=1.2,   # 降维：从 0.4 改为 1.2 (产生 300 个点)
+#         ),
+#         debug_vis=True,
+#         mesh_prim_paths=["/World/ground"],
+#     )
 # ==============================================================================
 # Custom Observation Config
 # ==============================================================================
@@ -232,21 +232,21 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
 
-        # --- Teacher Lidars (无盲区, tanh归一化) ---
-        lidar_front_scan = ObsTerm(
-            func=lidar_depth_scan_teacher, 
-            params={"sensor_cfg": SceneEntityCfg("lidar_front")},
-            noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=None, # Removed: Handled in func
-            scale=1.0, # Removed: Handled in func
-        )
-        lidar_rear_scan = ObsTerm(
-            func=lidar_depth_scan_teacher,
-            params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
-            noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=None,
-            scale=1.0,
-        )
+        # # --- Teacher Lidars (无盲区, tanh归一化) ---
+        # lidar_front_scan = ObsTerm(
+        #     func=lidar_depth_scan_teacher, 
+        #     params={"sensor_cfg": SceneEntityCfg("lidar_front")},
+        #     noise=Unoise(n_min=-0.05, n_max=0.05),
+        #     clip=None, # Removed: Handled in func
+        #     scale=1.0, # Removed: Handled in func
+        # )
+        # lidar_rear_scan = ObsTerm(
+        #     func=lidar_depth_scan_teacher,
+        #     params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
+        #     noise=Unoise(n_min=-0.05, n_max=0.05),
+        #     clip=None,
+        #     scale=1.0,
+        # )
 
     @configclass
     class BlindStudentPolicyCfg(ObsGroup):
@@ -295,21 +295,21 @@ class DeeproboticsM20ObservationsCfg:
         
         height_scan = None
         
-        # --- Student Lidars (含盲区, tanh归一化) ---
-        lidar_front_scan = ObsTerm(
-            func=lidar_depth_scan_student, 
-            params={"sensor_cfg": SceneEntityCfg("lidar_front")},
-            noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=None, 
-            scale=1.0,
-        )
-        lidar_rear_scan = ObsTerm(
-            func=lidar_depth_scan_student,
-            params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
-            noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=None,
-            scale=1.0,
-        )
+        # # --- Student Lidars (含盲区, tanh归一化) ---
+        # lidar_front_scan = ObsTerm(
+        #     func=lidar_depth_scan_student, 
+        #     params={"sensor_cfg": SceneEntityCfg("lidar_front")},
+        #     noise=Unoise(n_min=-0.05, n_max=0.05),
+        #     clip=None, 
+        #     scale=1.0,
+        # )
+        # lidar_rear_scan = ObsTerm(
+        #     func=lidar_depth_scan_student,
+        #     params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
+        #     noise=Unoise(n_min=-0.05, n_max=0.05),
+        #     clip=None,
+        #     scale=1.0,
+        # )
 
     @configclass
     class StudentPolicyCfg(BlindStudentPolicyCfg):
@@ -358,21 +358,21 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         
-        # Critic also sees clean Lidar data (Teacher version)
-        lidar_front_scan = ObsTerm(
-            func=lidar_depth_scan_teacher,
-            params={"sensor_cfg": SceneEntityCfg("lidar_front")},
-            noise=Unoise(n_min=0.0, n_max=0.0),
-            clip=None,
-            scale=1.0,
-        )
-        lidar_rear_scan = ObsTerm(
-            func=lidar_depth_scan_teacher,
-            params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
-            noise=Unoise(n_min=0.0, n_max=0.0),
-            clip=None,
-            scale=1.0,
-        )
+        # # Critic also sees clean Lidar data (Teacher version)
+        # lidar_front_scan = ObsTerm(
+        #     func=lidar_depth_scan_teacher,
+        #     params={"sensor_cfg": SceneEntityCfg("lidar_front")},
+        #     noise=Unoise(n_min=0.0, n_max=0.0),
+        #     clip=None,
+        #     scale=1.0,
+        # )
+        # lidar_rear_scan = ObsTerm(
+        #     func=lidar_depth_scan_teacher,
+        #     params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
+        #     noise=Unoise(n_min=0.0, n_max=0.0),
+        #     clip=None,
+        #     scale=1.0,
+        # )
 
     @configclass
     class EstimatorCfg(ObsGroup):
@@ -461,10 +461,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         
-        if self.scene.lidar_front is not None:
-             self.scene.lidar_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-        if self.scene.lidar_rear is not None:
-             self.scene.lidar_rear.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # if self.scene.lidar_front is not None:
+        #      self.scene.lidar_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # if self.scene.lidar_rear is not None:
+        #      self.scene.lidar_rear.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
 
         # ------------------------------Observations------------------------------
         self.observations.policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
@@ -635,8 +635,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         self.rewards.track_lin_vel_xy_exp.weight = 2.5 
         self.rewards.track_ang_vel_z_exp.weight = 1.5 
-        self.rewards.track_lin_vel_xy_pre_exp.weight = 2.0
-        self.rewards.track_ang_vel_z_pre_exp.weight = 3.0
+        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.0
+        self.rewards.track_ang_vel_z_pre_exp.weight = 0.0
+
         
         self.rewards.feet_air_time.weight = 0.0
         self.rewards.feet_air_time.params["threshold"] = 0.5
@@ -668,5 +669,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.command_levels = None
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.heading=(3.1415, 3.1415)

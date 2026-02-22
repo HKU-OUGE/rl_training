@@ -647,7 +647,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        use_cnn= True,
+        use_cnn= False,
         num_lidars= 2,          # 新增
         lidar_channels= 32,     # 匹配 Isaac Lab 配置
         lidar_res_points= 300,  # 匹配 360/0.4
