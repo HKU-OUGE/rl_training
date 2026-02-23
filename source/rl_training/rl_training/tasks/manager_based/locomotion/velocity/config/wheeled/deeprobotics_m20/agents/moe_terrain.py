@@ -91,32 +91,29 @@ class MLP(nn.Module):
 # 2. CNN Encoder for Lidar (升级为双通道大视场处理)
 # ==============================================================================
 
-class LidarCNN(nn.Module):
+class DepthCNN(nn.Module):
     def __init__(self, input_channels=2, output_dim=128):
         super().__init__()
-        # Input shape expected: (Batch, 2, 64, 900)
+        # Input shape expected: (Batch, 2, 58, 87)
         self.net = nn.Sequential(
-            # Layer 1: 激进降采样 -> (16, 32, 450)
+            # Layer 1: -> (16, 29, 44)
             nn.Conv2d(input_channels, 16, kernel_size=5, stride=2, padding=2),
             nn.ELU(),
-            # Layer 2: -> (32, 16, 225)
+            # Layer 2: -> (32, 15, 22)
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
             nn.ELU(),
-            # Layer 3: -> (64, 8, 113)
+            # Layer 3: -> (64, 8, 11)
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.ELU(),
-            # Layer 4: -> (128, 4, 57)
+            # Layer 4: -> (128, 4, 6)
             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.ELU(),
         )
-        # 将空间维度池化到固定大小 (2, 4)，保留了一定的前后和左右空间拓扑
         self.global_pool = nn.AdaptiveAvgPool2d((2, 4)) 
-        # 128 channels * 2 * 4 = 1024
         self.projection = nn.Linear(1024, output_dim)
         self.act = nn.ELU()
 
     def forward(self, x):
-        # 移除旧的 unsqueeze(1)，因为外部会直接传入 (B, 2, H, W)
         features = self.net(x)
         features = self.global_pool(features)
         features = features.flatten(1)
@@ -146,8 +143,9 @@ class SplitMoEActorCritic(ActorCritic):
                  aux_loss_coef=0.01,
                  # === CNN Params ===
                  use_cnn=False,
-                 lidar_channels=16,
-                 lidar_res_points=182, 
+                 num_cameras=2,       # 从 lidar 更改为 camera
+                 camera_height=58,    # 深度图高
+                 camera_width=87,     # 深度图宽
                  **kwargs):
         
         base_kwargs = {k: v for k, v in kwargs.items() if k not in [
@@ -173,20 +171,20 @@ class SplitMoEActorCritic(ActorCritic):
             num_obs = obs.shape[-1]
             
         self.use_cnn = use_cnn
-        self.num_lidars = kwargs.get("num_lidars", 2)       # 新增：雷达数量
-        self.lidar_channels = lidar_channels                # 现在应该是 64
-        self.lidar_res_points = lidar_res_points            # 现在应该是 900
-        # 计算总维度: 2 * 64 * 900 = 115200
-        self.lidar_raw_dim = self.num_lidars * self.lidar_channels * self.lidar_res_points 
+        self.num_cameras = num_cameras
+        self.camera_height = camera_height
+        self.camera_width = camera_width
         
-        self.proprio_dim = num_obs - self.lidar_raw_dim if self.use_cnn else num_obs
+        # 计算深度图展平后的总维度: 2 * 58 * 87 = 10092
+        self.image_raw_dim = self.num_cameras * self.camera_height * self.camera_width 
         
-        print(f"[SplitMoE] Total Obs: {num_obs}, Lidar Raw: {self.lidar_raw_dim}, Proprio: {self.proprio_dim}")
+        # 推断本体感觉维度
+        self.proprio_dim = num_obs - self.image_raw_dim if self.use_cnn else num_obs
+        print(f"[SplitMoE] Total Obs: {num_obs}, Image Raw: {self.image_raw_dim}, Proprio: {self.proprio_dim}")
 
         if self.use_cnn:
             self.cnn_output_dim = 128
-            # 传入正确的通道数
-            self.lidar_encoder = LidarCNN(input_channels=self.num_lidars, output_dim=self.cnn_output_dim)
+            self.depth_encoder = DepthCNN(input_channels=self.num_cameras, output_dim=self.cnn_output_dim)
             rnn_input_dim = self.proprio_dim + self.cnn_output_dim
         else:
             rnn_input_dim = num_obs
@@ -325,34 +323,35 @@ class SplitMoEActorCritic(ActorCritic):
             self.critic_obs_normalizer.update(proprio)
 
     def _process_obs(self, x, normalizer=None):
+        """核心切片逻辑：分离本体感觉和深度图"""
         proprio = x[..., :self.proprio_dim]
-        lidar_raw = x[..., self.proprio_dim:]
+        depth_raw = x[..., self.proprio_dim:]
         
         if normalizer is not None:
             proprio = normalizer(proprio)
             
         if self.use_cnn:
-            # 确保重塑为 (..., 2, 64, 900)
-            original_shape = lidar_raw.shape[:-1] 
-            lidar_image = lidar_raw.view(
+            original_shape = depth_raw.shape[:-1] 
+            # 还原为图像维度 (Batch, Cameras, Height, Width)
+            depth_image = depth_raw.view(
                 *original_shape, 
-                self.num_lidars, 
-                self.lidar_channels, 
-                self.lidar_res_points
+                self.num_cameras, 
+                self.camera_height, 
+                self.camera_width
             )
             
-            # 适配 RNN 可能产生的 (Batch, Time, C, H, W) 5D 张量
-            if lidar_image.ndim == 5: 
-                B, T, C, H, W = lidar_image.shape
-                lidar_image = lidar_image.view(B*T, C, H, W)
-                lidar_feat = self.lidar_encoder(lidar_image)
-                lidar_feat = lidar_feat.view(B, T, -1)
+            # 适配 RNN 产生的 5D 张量
+            if depth_image.ndim == 5: 
+                B, T, C, H, W = depth_image.shape
+                depth_image = depth_image.view(B*T, C, H, W)
+                depth_feat = self.depth_encoder(depth_image)
+                depth_feat = depth_feat.view(B, T, -1)
             else:
-                lidar_feat = self.lidar_encoder(lidar_image)
+                depth_feat = self.depth_encoder(depth_image)
             
-            x_out = torch.cat([proprio, lidar_feat], dim=-1)
+            x_out = torch.cat([proprio, depth_feat], dim=-1)
         else:
-            x_out = torch.cat([proprio, lidar_raw], dim=-1)
+            x_out = torch.cat([proprio, depth_raw], dim=-1)
             
         return x_out
     
@@ -595,9 +594,9 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     aux_loss_coef: float = 0.01
 
     use_cnn: bool = True
-    num_lidars: int = 2          # 新增
-    lidar_channels: int = 64     # 匹配 Isaac Lab 配置
-    lidar_res_points: int = 900  # 匹配 360/0.4
+    num_cameras: int = 2
+    camera_height: int = 58
+    camera_width: int = 87
 
     estimator_output_dim: int = 3  
     estimator_hidden_dims: list = field(default_factory=lambda: [128, 64])
@@ -647,10 +646,10 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        use_cnn= False,
-        num_lidars= 2,          # 新增
-        lidar_channels= 32,     # 匹配 Isaac Lab 配置
-        lidar_res_points= 300,  # 匹配 360/0.4
+        use_cnn=True,
+        num_cameras=2,
+        camera_height=58,
+        camera_width=87,
 
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],

@@ -11,7 +11,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.sensors import RayCasterCfg, patterns
+from isaaclab.sensors import RayCasterCfg, patterns, RayCasterCameraCfg
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
@@ -90,7 +90,13 @@ def lidar_depth_scan_student(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     depths = torch.norm(rel_vec, dim=-1)
     
     return process_lidar_data(depths, is_student=True)
-
+def flattened_image(env, sensor_cfg: SceneEntityCfg, data_type: str, normalize: bool = False) -> torch.Tensor:
+    """获取相机图像并将其展平为一维向量，以适配 Isaac Lab 的拼接机制"""
+    # 获取原始图像，形状通常为 (num_envs, H, W, C)
+    img = mdp.image(env, sensor_cfg=sensor_cfg, data_type=data_type, normalize=normalize)
+    # 从第1个维度开始展平 (保留第0个维度 num_envs)
+    # (num_envs, 58, 87, 1) -> (num_envs, 5046)
+    return img.flatten(start_dim=1)
 @configclass
 class DeeproboticsM20ActionsCfg(ActionsCfg):
     """Action specifications for the MDP."""
@@ -167,6 +173,50 @@ class DeeproboticsM20SceneCfg(MySceneCfg):
 #         debug_vis=True,
 #         mesh_prim_paths=["/World/ground"],
 #     )
+
+    camera_front = RayCasterCameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/base_link",
+        offset=RayCasterCameraCfg.OffsetCfg(
+            pos=(0.32028, 0.0, -0.013),
+            # 相机正视前方 (+X方向)
+            rot=euler_xyz_to_quat(0.0, 0.0, 0.0)
+        ),
+        update_period=0.1, 
+        data_types=["distance_to_image_plane"],
+        pattern_cfg=patterns.PinholeCameraPatternCfg(
+            width=87,                    # 宽度
+            height=58,                   # 高度
+            focal_length=24.0,           # 默认焦距 24.0 cm
+            horizontal_aperture=48.0,    # 设定 48.0 cm，产生约 90° 的水平广角 FOV
+            # vertical_aperture 会根据 87:58 的比例自动计算，保持像素正方形
+        ),
+        max_distance=5.0,                # 限制最大深度(米)。超出此距离视为背景，防止返回无限大
+        depth_clipping_behavior="max",
+        mesh_prim_paths=["/World/ground"],
+        debug_vis=False,                 # 设为 True 可以可视化相机的绿色视锥体
+    )
+
+    # 2. Rear Camera (模拟后向雷达的深度投影)
+    camera_rear = RayCasterCameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/base_link",
+        offset=RayCasterCameraCfg.OffsetCfg(
+            pos=(-0.32028, 0.0, -0.013),
+            # 绕Z轴(Yaw)旋转180度，使相机正视后方 (-X方向)
+            rot=euler_xyz_to_quat(0.0, 0.0, 3.14159) 
+        ),
+        update_period=0.1, 
+        data_types=["distance_to_image_plane"],
+        pattern_cfg=patterns.PinholeCameraPatternCfg(
+            width=87,
+            height=58,
+            focal_length=24.0,
+            horizontal_aperture=48.0, 
+        ),
+        max_distance=5.0,
+        depth_clipping_behavior="max",
+        mesh_prim_paths=["/World/ground"],
+        debug_vis=False,
+    )
 # ==============================================================================
 # Custom Observation Config
 # ==============================================================================
@@ -233,20 +283,16 @@ class DeeproboticsM20ObservationsCfg:
         )
 
         # # --- Teacher Lidars (无盲区, tanh归一化) ---
-        # lidar_front_scan = ObsTerm(
-        #     func=lidar_depth_scan_teacher, 
-        #     params={"sensor_cfg": SceneEntityCfg("lidar_front")},
-        #     noise=Unoise(n_min=-0.05, n_max=0.05),
-        #     clip=None, # Removed: Handled in func
-        #     scale=1.0, # Removed: Handled in func
-        # )
-        # lidar_rear_scan = ObsTerm(
-        #     func=lidar_depth_scan_teacher,
-        #     params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
-        #     noise=Unoise(n_min=-0.05, n_max=0.05),
-        #     clip=None,
-        #     scale=1.0,
-        # )
+        camera_front_depth = ObsTerm(
+            func=flattened_image, 
+            params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
+            scale=1.0,
+        )
+        camera_rear_depth = ObsTerm(
+            func=flattened_image,
+            params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
+            scale=1.0,
+        )
 
     @configclass
     class BlindStudentPolicyCfg(ObsGroup):
@@ -296,20 +342,16 @@ class DeeproboticsM20ObservationsCfg:
         height_scan = None
         
         # # --- Student Lidars (含盲区, tanh归一化) ---
-        # lidar_front_scan = ObsTerm(
-        #     func=lidar_depth_scan_student, 
-        #     params={"sensor_cfg": SceneEntityCfg("lidar_front")},
-        #     noise=Unoise(n_min=-0.05, n_max=0.05),
-        #     clip=None, 
-        #     scale=1.0,
-        # )
-        # lidar_rear_scan = ObsTerm(
-        #     func=lidar_depth_scan_student,
-        #     params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
-        #     noise=Unoise(n_min=-0.05, n_max=0.05),
-        #     clip=None,
-        #     scale=1.0,
-        # )
+        camera_front_depth = ObsTerm(
+            func=flattened_image, 
+            params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
+            scale=1.0,
+        )
+        camera_rear_depth = ObsTerm(
+            func=flattened_image,
+            params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
+            scale=1.0,
+        )
 
     @configclass
     class StudentPolicyCfg(BlindStudentPolicyCfg):
@@ -359,20 +401,16 @@ class DeeproboticsM20ObservationsCfg:
         )
         
         # # Critic also sees clean Lidar data (Teacher version)
-        # lidar_front_scan = ObsTerm(
-        #     func=lidar_depth_scan_teacher,
-        #     params={"sensor_cfg": SceneEntityCfg("lidar_front")},
-        #     noise=Unoise(n_min=0.0, n_max=0.0),
-        #     clip=None,
-        #     scale=1.0,
-        # )
-        # lidar_rear_scan = ObsTerm(
-        #     func=lidar_depth_scan_teacher,
-        #     params={"sensor_cfg": SceneEntityCfg("lidar_rear")},
-        #     noise=Unoise(n_min=0.0, n_max=0.0),
-        #     clip=None,
-        #     scale=1.0,
-        # )
+        camera_front_depth = ObsTerm(
+            func=flattened_image, 
+            params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
+            scale=1.0,
+        )
+        camera_rear_depth = ObsTerm(
+            func=flattened_image,
+            params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
+            scale=1.0,
+        )
 
     @configclass
     class EstimatorCfg(ObsGroup):
@@ -461,10 +499,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         
-        # if self.scene.lidar_front is not None:
-        #      self.scene.lidar_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-        # if self.scene.lidar_rear is not None:
-        #      self.scene.lidar_rear.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        if self.scene.camera_front is not None:
+             self.scene.camera_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        if self.scene.camera_rear is not None:
+             self.scene.camera_rear.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
 
         # ------------------------------Observations------------------------------
         self.observations.policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
