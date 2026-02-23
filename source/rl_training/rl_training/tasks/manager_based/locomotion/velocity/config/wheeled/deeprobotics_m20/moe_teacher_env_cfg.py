@@ -565,7 +565,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.10)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
-            self.scene.terrain.terrain_generator.sub_terrains["rail"].rail_height_range = (0.05, 0.5)
+            self.scene.terrain.terrain_generator.sub_terrains["rail"].rail_height_range = (0.05, 0.3)
             self.scene.terrain.terrain_generator.sub_terrains["rail"].rail_thickness_range = (0.05, 0.1)
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
@@ -671,4 +671,4 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.heading=(3.1415, 3.1415)
+        self.commands.base_velocity.ranges.heading=(0.0, 0.0)
