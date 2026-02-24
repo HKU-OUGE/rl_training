@@ -97,6 +97,19 @@ def flattened_image(env, sensor_cfg: SceneEntityCfg, data_type: str, normalize: 
     # 从第1个维度开始展平 (保留第0个维度 num_envs)
     # (num_envs, 58, 87, 1) -> (num_envs, 5046)
     return img.flatten(start_dim=1)
+
+def teacher_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normalize: bool = False) -> torch.Tensor:
+    """Teacher 版本：无盲区相机深度"""
+    # 强制 normalize=False，因为我们要用自己的 process_lidar_data 来做 Tanh 归一化
+    img = mdp.image(env, sensor_cfg=sensor_cfg, data_type=data_type, normalize=False)
+    depths = img.flatten(start_dim=1)
+    return process_lidar_data(depths, is_student=False)
+
+def student_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normalize: bool = False) -> torch.Tensor:
+    """Student 版本：模拟物理盲区"""
+    img = mdp.image(env, sensor_cfg=sensor_cfg, data_type=data_type, normalize=False)
+    depths = img.flatten(start_dim=1)
+    return process_lidar_data(depths, is_student=True)
 @configclass
 class DeeproboticsM20ActionsCfg(ActionsCfg):
     """Action specifications for the MDP."""
@@ -284,12 +297,12 @@ class DeeproboticsM20ObservationsCfg:
 
         # # --- Teacher Lidars (无盲区, tanh归一化) ---
         camera_front_depth = ObsTerm(
-            func=flattened_image, 
+            func=teacher_camera_depth, 
             params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
             scale=1.0,
         )
         camera_rear_depth = ObsTerm(
-            func=flattened_image,
+            func=teacher_camera_depth,
             params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
             scale=1.0,
         )
@@ -343,12 +356,12 @@ class DeeproboticsM20ObservationsCfg:
         
         # # --- Student Lidars (含盲区, tanh归一化) ---
         camera_front_depth = ObsTerm(
-            func=flattened_image, 
+            func=student_camera_depth, 
             params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
             scale=1.0,
         )
         camera_rear_depth = ObsTerm(
-            func=flattened_image,
+            func=student_camera_depth,
             params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
             scale=1.0,
         )
@@ -402,18 +415,20 @@ class DeeproboticsM20ObservationsCfg:
         
         # # Critic also sees clean Lidar data (Teacher version)
         camera_front_depth = ObsTerm(
-            func=flattened_image, 
+            func=teacher_camera_depth, 
             params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
             scale=1.0,
         )
         camera_rear_depth = ObsTerm(
-            func=flattened_image,
+            func=teacher_camera_depth,
             params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
             scale=1.0,
         )
 
     @configclass
     class EstimatorCfg(ObsGroup):
+        history_length = 15  # 核心：保存过去15帧
+        flatten_history_dim = True # 展平为1维向量，例如 15帧 * 48维 = 720维输入
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
             noise=Unoise(n_min=-0.2, n_max=0.2),
@@ -673,8 +688,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         self.rewards.track_lin_vel_xy_exp.weight = 2.5 
         self.rewards.track_ang_vel_z_exp.weight = 1.5 
-        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.0
-        self.rewards.track_ang_vel_z_pre_exp.weight = 0.0
+        self.rewards.track_lin_vel_xy_pre_exp.weight = 2.0
+        self.rewards.track_ang_vel_z_pre_exp.weight = 3.0
 
         
         self.rewards.feet_air_time.weight = 0.0
@@ -707,6 +722,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.command_levels = None
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.heading=(0.0, 0.0)
+        # self.commands.base_velocity.ranges.heading=(0.0, 0.0)

@@ -268,7 +268,7 @@ class SplitMoEActorCritic(ActorCritic):
         device = ref_tensor.device
         
         self.active_hidden_states = self._init_rnn_state(batch_size, device)
-        
+        self.critic_keys = obs_groups.get("critic", None)
         self.latest_weights = {}
         self.active_aux_loss = 0.0
         self.active_estimator_loss = 0.0
@@ -304,23 +304,19 @@ class SplitMoEActorCritic(ActorCritic):
     # === [Fix] 新增: 覆盖 update_normalization 以解决维度不匹配问题 ===
     def update_normalization(self, obs):
         """
-        覆盖父类方法。
-        RSL_RL 会传入完整的 obs (3159维)，但我们的 Normalizer 初始化为 247维。
-        必须在这里切片。
+        覆盖父类方法。分离 Actor 和 Critic 的归一化更新，确保 Critic 使用无噪声数据。
         """
-        # 1. 提取完整 Obs (如果 obs 是 dict)
-        x_raw = self._extract_raw_obs(obs, self.input_keys)
-        
-        # 2. 仅截取 Proprio 部分 (前 247 维)
-        proprio = x_raw[..., :self.proprio_dim]
-        
-        # 3. 更新 Normalizer
+        # 1. Update Actor Normalizer (Noised data)
         if self.actor_obs_normalization:
-            self.actor_obs_normalizer.update(proprio)
+            x_raw_actor = self._extract_raw_obs(obs, self.input_keys)
+            proprio_actor = x_raw_actor[..., :self.proprio_dim]
+            self.actor_obs_normalizer.update(proprio_actor)
             
+        # 2. Update Critic Normalizer (Clean data)
         if self.critic_obs_normalization:
-            # Critic 输入结构通常与 Actor 相同 (Sim)
-            self.critic_obs_normalizer.update(proprio)
+            x_raw_critic = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
+            proprio_critic = x_raw_critic[..., :self.proprio_dim]
+            self.critic_obs_normalizer.update(proprio_critic)
 
     def _process_obs(self, x, normalizer=None):
         """核心切片逻辑：分离本体感觉和深度图"""
@@ -411,25 +407,13 @@ class SplitMoEActorCritic(ActorCritic):
         total_action = torch.cat([leg_act_sum, wheel_act_sum], dim=-1)
 
         if self.training:
+            # 仅仅保留 Load Balancing Loss
             self.active_aux_loss = self._calculate_load_balancing_loss(w_leg, w_wheel) * self.aux_loss_coef
             
-            if self.estimator is not None and obs_dict is not None:
-                est_input = self._get_estimator_input(obs_dict)
-                if est_input.shape[-1] != self.estimator.net[0].in_features: pass 
-                else:
-                    if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
-                        try: full_obs_for_target = obs_dict["policy"] 
-                        except KeyError: full_obs_for_target = self._extract_raw_obs(obs_dict, self.input_keys)
-                    else: full_obs_for_target = obs_dict
-
-                    target_state = full_obs_for_target[..., self.estimator_target_indices]
-                    if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
-                        est_input = self.estimator_obs_normalizer(est_input)
-                    
-                    estimated_state = self.estimator(est_input)
-                    diff = estimated_state - target_state
-                    self.active_estimator_loss = diff.pow(2).mean()
-                    self.active_estimator_error = diff.abs().mean()
+            # -------------------------------------------------------------------
+            # [删除此处原本的 if self.estimator is not None and obs_dict is not None:]
+            # 以及里面的 estimated_state 和 target_state 逻辑
+            # -------------------------------------------------------------------
         
         with torch.no_grad():
             def flat_mean(w): return w.reshape(-1, w.shape[-1]).mean(dim=0).detach()
@@ -483,7 +467,8 @@ class SplitMoEActorCritic(ActorCritic):
         return self._compute_actor_output(latent)
 
     def evaluate(self, obs, masks=None, hidden_state=None):
-        x_raw = self._extract_raw_obs(obs, self.input_keys)
+        # x_raw = self._extract_raw_obs(obs, self.input_keys)
+        x_raw = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
         normalizer = self.critic_obs_normalizer if self.critic_obs_normalization else None
         x_in = self._process_obs(x_raw, normalizer)
 
@@ -624,7 +609,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 24
+    num_steps_per_env = 64
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_parallel" 
