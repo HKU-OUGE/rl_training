@@ -187,49 +187,49 @@ class DeeproboticsM20SceneCfg(MySceneCfg):
 #         mesh_prim_paths=["/World/ground"],
 #     )
 
-    camera_front = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",
-        offset=RayCasterCameraCfg.OffsetCfg(
-            pos=(0.32028, 0.0, -0.013),
-            # 相机正视前方 (+X方向)
-            rot=euler_xyz_to_quat(0.0, 0.0, 0.0)
-        ),
-        update_period=0.1, 
-        data_types=["distance_to_image_plane"],
-        pattern_cfg=patterns.PinholeCameraPatternCfg(
-            width=87,                    # 宽度
-            height=58,                   # 高度
-            focal_length=24.0,           # 默认焦距 24.0 cm
-            horizontal_aperture=48.0,    # 设定 48.0 cm，产生约 90° 的水平广角 FOV
-            # vertical_aperture 会根据 87:58 的比例自动计算，保持像素正方形
-        ),
-        max_distance=5.0,                # 限制最大深度(米)。超出此距离视为背景，防止返回无限大
-        depth_clipping_behavior="max",
-        mesh_prim_paths=["/World/ground"],
-        debug_vis=False,                 # 设为 True 可以可视化相机的绿色视锥体
-    )
+    # camera_front = RayCasterCameraCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/base_link",
+    #     offset=RayCasterCameraCfg.OffsetCfg(
+    #         pos=(0.32028, 0.0, -0.013),
+    #         # 相机正视前方 (+X方向)
+    #         rot=euler_xyz_to_quat(0.0, 0.0, 0.0)
+    #     ),
+    #     update_period=0.1, 
+    #     data_types=["distance_to_image_plane"],
+    #     pattern_cfg=patterns.PinholeCameraPatternCfg(
+    #         width=87,                    # 宽度
+    #         height=58,                   # 高度
+    #         focal_length=24.0,           # 默认焦距 24.0 cm
+    #         horizontal_aperture=48.0,    # 设定 48.0 cm，产生约 90° 的水平广角 FOV
+    #         # vertical_aperture 会根据 87:58 的比例自动计算，保持像素正方形
+    #     ),
+    #     max_distance=5.0,                # 限制最大深度(米)。超出此距离视为背景，防止返回无限大
+    #     depth_clipping_behavior="max",
+    #     mesh_prim_paths=["/World/ground"],
+    #     debug_vis=False,                 # 设为 True 可以可视化相机的绿色视锥体
+    # )
 
-    # 2. Rear Camera (模拟后向雷达的深度投影)
-    camera_rear = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",
-        offset=RayCasterCameraCfg.OffsetCfg(
-            pos=(-0.32028, 0.0, -0.013),
-            # 绕Z轴(Yaw)旋转180度，使相机正视后方 (-X方向)
-            rot=euler_xyz_to_quat(0.0, 0.0, 3.14159) 
-        ),
-        update_period=0.1, 
-        data_types=["distance_to_image_plane"],
-        pattern_cfg=patterns.PinholeCameraPatternCfg(
-            width=87,
-            height=58,
-            focal_length=24.0,
-            horizontal_aperture=48.0, 
-        ),
-        max_distance=5.0,
-        depth_clipping_behavior="max",
-        mesh_prim_paths=["/World/ground"],
-        debug_vis=False,
-    )
+    # # 2. Rear Camera (模拟后向雷达的深度投影)
+    # camera_rear = RayCasterCameraCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/base_link",
+    #     offset=RayCasterCameraCfg.OffsetCfg(
+    #         pos=(-0.32028, 0.0, -0.013),
+    #         # 绕Z轴(Yaw)旋转180度，使相机正视后方 (-X方向)
+    #         rot=euler_xyz_to_quat(0.0, 0.0, 3.14159) 
+    #     ),
+    #     update_period=0.1, 
+    #     data_types=["distance_to_image_plane"],
+    #     pattern_cfg=patterns.PinholeCameraPatternCfg(
+    #         width=87,
+    #         height=58,
+    #         focal_length=24.0,
+    #         horizontal_aperture=48.0, 
+    #     ),
+    #     max_distance=5.0,
+    #     depth_clipping_behavior="max",
+    #     mesh_prim_paths=["/World/ground"],
+    #     debug_vis=False,
+    # )
 # ==============================================================================
 # Custom Observation Config
 # ==============================================================================
@@ -295,17 +295,17 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
 
-        # # --- Teacher Lidars (无盲区, tanh归一化) ---
-        camera_front_depth = ObsTerm(
-            func=teacher_camera_depth, 
-            params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
-            scale=1.0,
-        )
-        camera_rear_depth = ObsTerm(
-            func=teacher_camera_depth,
-            params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
-            scale=1.0,
-        )
+        # # # --- Teacher Lidars (无盲区, tanh归一化) ---
+        # camera_front_depth = ObsTerm(
+        #     func=teacher_camera_depth, 
+        #     params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
+        #     scale=1.0,
+        # )
+        # camera_rear_depth = ObsTerm(
+        #     func=teacher_camera_depth,
+        #     params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
+        #     scale=1.0,
+        # )
 
     @configclass
     class BlindStudentPolicyCfg(ObsGroup):
@@ -354,17 +354,17 @@ class DeeproboticsM20ObservationsCfg:
         
         height_scan = None
         
-        # # --- Student Lidars (含盲区, tanh归一化) ---
-        camera_front_depth = ObsTerm(
-            func=student_camera_depth, 
-            params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
-            scale=1.0,
-        )
-        camera_rear_depth = ObsTerm(
-            func=student_camera_depth,
-            params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
-            scale=1.0,
-        )
+        # # # --- Student Lidars (含盲区, tanh归一化) ---
+        # camera_front_depth = ObsTerm(
+        #     func=student_camera_depth, 
+        #     params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
+        #     scale=1.0,
+        # )
+        # camera_rear_depth = ObsTerm(
+        #     func=student_camera_depth,
+        #     params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
+        #     scale=1.0,
+        # )
 
     @configclass
     class StudentPolicyCfg(BlindStudentPolicyCfg):
@@ -413,17 +413,17 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         
-        # # Critic also sees clean Lidar data (Teacher version)
-        camera_front_depth = ObsTerm(
-            func=teacher_camera_depth, 
-            params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
-            scale=1.0,
-        )
-        camera_rear_depth = ObsTerm(
-            func=teacher_camera_depth,
-            params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
-            scale=1.0,
-        )
+        # # # Critic also sees clean Lidar data (Teacher version)
+        # camera_front_depth = ObsTerm(
+        #     func=teacher_camera_depth, 
+        #     params={"sensor_cfg": SceneEntityCfg("camera_front"), "data_type": "distance_to_image_plane", "normalize": True},
+        #     scale=1.0,
+        # )
+        # camera_rear_depth = ObsTerm(
+        #     func=teacher_camera_depth,
+        #     params={"sensor_cfg": SceneEntityCfg("camera_rear"), "data_type": "distance_to_image_plane", "normalize": True},
+        #     scale=1.0,
+        # )
 
     @configclass
     class EstimatorCfg(ObsGroup):
@@ -514,10 +514,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         
-        if self.scene.camera_front is not None:
-             self.scene.camera_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-        if self.scene.camera_rear is not None:
-             self.scene.camera_rear.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # if self.scene.camera_front is not None:
+        #      self.scene.camera_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # if self.scene.camera_rear is not None:
+        #      self.scene.camera_rear.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
 
         # ------------------------------Observations------------------------------
         self.observations.policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
@@ -618,7 +618,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.10)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
-            self.scene.terrain.terrain_generator.sub_terrains["rail"].rail_height_range = (0.05, 0.3)
+            self.scene.terrain.terrain_generator.sub_terrains["rail"].rail_height_range = (0.05, 0.5)
             self.scene.terrain.terrain_generator.sub_terrains["rail"].rail_thickness_range = (0.05, 0.1)
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]

@@ -609,7 +609,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 64
+    num_steps_per_env = 96
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_parallel" 
@@ -631,7 +631,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        use_cnn=True,
+        use_cnn=False,
         num_cameras=2,
         camera_height=58,
         camera_width=87,

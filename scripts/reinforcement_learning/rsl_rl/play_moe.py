@@ -389,33 +389,25 @@ def main():
 
     # [Critical Fix] Inject Joystick into ALL relevant observation groups
     # Student Policy typically reads from 'student_policy' or 'blind_student_policy', NOT 'policy' (which is for Teacher)
+    # [Critical Fix] Inject Joystick into ALL relevant observation groups safely
     if controller is not None:
-        cmd_term = ObsTerm(
-            func=lambda env: controller.advance().unsqueeze(0).to(env.device, dtype=torch.float32),
-        )
-        
-        # 1. Patch 'policy' (Teacher default)
-        if hasattr(env_cfg.observations, "policy"):
-            env_cfg.observations.policy.velocity_commands = cmd_term
-            print("[Info] Patched velocity_commands for 'policy' group.")
-        
-        # 2. Patch 'student_policy' (Common Student name)
-        if hasattr(env_cfg.observations, "student_policy"):
-            env_cfg.observations.student_policy.velocity_commands = cmd_term
-            print("[Info] Patched velocity_commands for 'student_policy' group.")
+        def custom_velocity_commands(env):
+            cmds = controller.advance().to(env.device, dtype=torch.float32)
+            # 使用 repeat 适配 num_envs，比单纯 unsqueeze(0) 更安全防爆
+            return cmds.unsqueeze(0).repeat(env.num_envs, 1)
 
-        # 3. Patch 'blind_student_policy' (Your specific Student name from logs)
-        if hasattr(env_cfg.observations, "blind_student_policy"):
-            env_cfg.observations.blind_student_policy.velocity_commands = cmd_term
-            print("[Info] Patched velocity_commands for 'blind_student_policy' group.")
-            
-        # 4. Fallback search (Patch anything that looks like a policy group with commands)
         for attr_name in dir(env_cfg.observations):
-            if attr_name.startswith("__") or attr_name in ["policy", "student_policy", "blind_student_policy"]: continue
+            if attr_name.startswith("__"): continue
             group = getattr(env_cfg.observations, attr_name)
+            
             if hasattr(group, "velocity_commands"):
-                setattr(group, "velocity_commands", cmd_term)
-                print(f"[Info] Patched velocity_commands for '{attr_name}' group.")
+                term = getattr(group, "velocity_commands")
+                if term is not None:
+                    # 1. 核心修复：原地修改 func，保留原本的 history_length 和 scale
+                    term.func = custom_velocity_commands
+                    # 2. 清空 params，防止框架强行塞入原来的 "command_name" 参数导致报错
+                    term.params = {} 
+                    print(f"[Info] In-place patched velocity_commands for '{attr_name}' group.")
 
     # 2. 创建环境
     env_gym = gym.make(args.task, cfg=env_cfg)
