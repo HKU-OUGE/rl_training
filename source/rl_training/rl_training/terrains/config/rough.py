@@ -53,8 +53,8 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
             proportion=3.0/18,                           # 完全生成此地形
             ring_width_range=(0.1, 0.5),              # 环的宽度范围（中心向外延伸 0.5~1.0 米）
-            ring_height_range=(0.4, 0.65),             # 环的离地高度范围
-            ring_thickness=0.35,                       # 环厚度（z 方向）
+            ring_height_range=(0.4, 0.75),             # 环的离地高度范围
+            ring_thickness=0.25,                       # 环厚度（z 方向）
             platform_width=2.0,                       # 地形中心的方形平台大小
         ),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(

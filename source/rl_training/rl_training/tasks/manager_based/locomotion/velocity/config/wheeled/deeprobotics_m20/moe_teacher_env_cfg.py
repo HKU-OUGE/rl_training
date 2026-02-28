@@ -290,7 +290,7 @@ class DeeproboticsM20ObservationsCfg:
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            noise=Unoise(n_min=-0.1, n_max=0.1),
+            noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-1.0, 1.0),
             scale=1.0,
         )
@@ -663,17 +663,17 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.hipy_joint_pos_penalty.weight = -0.75
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.25
+        self.rewards.knee_joint_pos_penalty.weight = -0.5
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.05
+        self.rewards.joint_mirror.weight = -0.1
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_mirror.weight = -0.05
+        self.rewards.action_mirror.weight = -0.1
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -722,6 +722,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.command_levels = None
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         # self.commands.base_velocity.ranges.heading=(0.0, 0.0)
