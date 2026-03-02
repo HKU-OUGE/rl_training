@@ -11,12 +11,14 @@ from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoActorCriticCfg,
     RslRlPpoAlgorithmCfg,
+    RslRlDistillationRunnerCfg,       # Added for Distillation
+    RslRlDistillationAlgorithmCfg     # Added for Distillation
 )
 from dataclasses import field
 import numpy as np
 
 # ==============================================================================
-# 1. 基础组件
+# 1. Base Components
 # ==============================================================================
 
 def orthogonal_init(layer, gain=1.0):
@@ -88,7 +90,7 @@ class MLP(nn.Module):
 
 
 # ==============================================================================
-# 2. CNN Encoder for Lidar (升级为双通道大视场处理)
+# 2. CNN Encoder for Lidar/Camera
 # ==============================================================================
 
 class DepthCNN(nn.Module):
@@ -143,9 +145,11 @@ class SplitMoEActorCritic(ActorCritic):
                  aux_loss_coef=0.01,
                  # === CNN Params ===
                  use_cnn=False,
-                 num_cameras=2,       # 从 lidar 更改为 camera
-                 camera_height=58,    # 深度图高
-                 camera_width=87,     # 深度图宽
+                 num_cameras=2,       
+                 camera_height=58,    
+                 camera_width=87,
+                 # === Distillation / Overrides ===
+                 forced_input_key=None,
                  **kwargs):
         
         base_kwargs = {k: v for k, v in kwargs.items() if k not in [
@@ -162,11 +166,38 @@ class SplitMoEActorCritic(ActorCritic):
                          init_noise_std=init_noise_std, 
                          **base_kwargs)
 
+        # -------------------------------------------------------------
+        # Determine Input Keys and Dimension (Merged Logic from Student)
+        # -------------------------------------------------------------
         self.input_keys = None 
-        if isinstance(obs, dict) or hasattr(obs, "keys"):
+        if forced_input_key:
+            self.input_keys = [forced_input_key]
+            try:
+                num_obs = obs[forced_input_key].shape[-1]
+            except (KeyError, TypeError):
+                if hasattr(obs, "keys"):
+                     found = False
+                     obs_keys = list(obs.keys())
+                     if forced_input_key in obs_keys:
+                         num_obs = obs[forced_input_key].shape[-1]
+                         found = True
+                     if not found and obs_groups and forced_input_key in obs_groups:
+                         group_keys = obs_groups[forced_input_key]
+                         if group_keys:
+                             valid_keys = [k for k in group_keys if k in obs_keys]
+                             if valid_keys:
+                                 num_obs = sum(obs[k].shape[-1] for k in valid_keys)
+                                 found = True
+                     if not found and len(obs_keys) > 0:
+                         print(f"[SplitMoE] Warning: Forced key '{forced_input_key}' not found in obs {obs_keys}. Fallback to '{obs_keys[0]}'.")
+                         num_obs = list(obs.values())[0].shape[-1]
+                else:
+                     num_obs = obs.shape[-1]
+        elif isinstance(obs, dict) or hasattr(obs, "keys"):
             keys = obs_groups.get("policy", None)
             self.input_keys = keys
-            num_obs = sum(obs[k].shape[-1] for k in keys)
+            if keys: num_obs = sum(obs[k].shape[-1] for k in keys)
+            else: num_obs = list(obs.values())[0].shape[-1]
         else:
             num_obs = obs.shape[-1]
             
@@ -175,12 +206,12 @@ class SplitMoEActorCritic(ActorCritic):
         self.camera_height = camera_height
         self.camera_width = camera_width
         
-        # 计算深度图展平后的总维度: 2 * 58 * 87 = 10092
+        # Calculate image flat dimension
         self.image_raw_dim = self.num_cameras * self.camera_height * self.camera_width 
         
-        # 推断本体感觉维度
+        # Infer proprioception dimension
         self.proprio_dim = num_obs - self.image_raw_dim if self.use_cnn else num_obs
-        print(f"[SplitMoE] Total Obs: {num_obs}, Image Raw: {self.image_raw_dim}, Proprio: {self.proprio_dim}")
+        print(f"[SplitMoE] Total Obs: {num_obs}, Image Raw: {self.image_raw_dim}, Proprio: {self.proprio_dim} | CNN: {self.use_cnn}")
 
         if self.use_cnn:
             self.cnn_output_dim = 128
@@ -189,15 +220,14 @@ class SplitMoEActorCritic(ActorCritic):
         else:
             rnn_input_dim = num_obs
 
+        # Normalization Setup (Only normalize Proprioception)
         self.actor_obs_normalization = kwargs.get("actor_obs_normalization", True)
         self.critic_obs_normalization = kwargs.get("critic_obs_normalization", True)
 
         if self.actor_obs_normalization:
-            print(f"[SplitMoE] Re-initializing Actor Normalizer for Proprio dim only: {self.proprio_dim}")
             self.actor_obs_normalizer = EmpiricalNormalization(shape=[self.proprio_dim], until_step=1.0e9)
         
         if self.critic_obs_normalization:
-            print(f"[SplitMoE] Re-initializing Critic Normalizer for Proprio dim only: {self.proprio_dim}")
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[self.proprio_dim], until_step=1.0e9)
 
         self.latent_dim = latent_dim
@@ -207,8 +237,7 @@ class SplitMoEActorCritic(ActorCritic):
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
 
-        print(f"[SplitMoE] RNN Input Dim: {rnn_input_dim}")
-
+        # Initialize RNN
         if self.rnn_type == "lstm":
             self.rnn = nn.LSTM(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
         else:
@@ -218,6 +247,7 @@ class SplitMoEActorCritic(ActorCritic):
             if 'weight' in name: nn.init.orthogonal_(param)
             elif 'bias' in name: nn.init.constant_(param, 0)
 
+        # MoE Gates and Experts
         self.gate_input_norm = nn.LayerNorm(self.latent_dim)
         self.leg_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_leg_experts))
         self.wheel_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_wheel_experts))
@@ -237,6 +267,7 @@ class SplitMoEActorCritic(ActorCritic):
 
         self.critic_mlp = MLP(self.latent_dim, 1, hidden_dims=critic_hidden_dims, activation=activation, output_gain=1.0)
 
+        # Estimator Setup
         self.estimator_output_dim = kwargs.get("estimator_output_dim", 0)
         self.estimator_hidden_dims = kwargs.get("estimator_hidden_dims", [128, 64])
         self.estimator_obs_normalization = kwargs.get("estimator_obs_normalization", True)
@@ -262,6 +293,7 @@ class SplitMoEActorCritic(ActorCritic):
         else:
             self.estimator = None
 
+        # RNN State Init
         if isinstance(obs, dict): ref_tensor = obs[list(obs.keys())[0]]
         else: ref_tensor = obs
         batch_size = ref_tensor.shape[0]
@@ -274,6 +306,7 @@ class SplitMoEActorCritic(ActorCritic):
         self.active_estimator_loss = 0.0
         self.active_estimator_error = 0.0
         
+        # Noise Init
         new_std = torch.ones(num_actions)
         self.num_wheel_experts = num_wheel_experts
         self.num_leg_experts = num_leg_experts
@@ -297,29 +330,24 @@ class SplitMoEActorCritic(ActorCritic):
 
     def _extract_raw_obs(self, obs, key_list):
         if key_list is not None and (isinstance(obs, dict) or hasattr(obs, "keys")):
-            tensors = [obs[k] for k in key_list]
+            tensors = [obs[k] for k in key_list if k in obs]
+            if not tensors: return list(obs.values())[0] # Fallback
             return torch.cat(tensors, dim=-1)
         return obs
 
-    # === [Fix] 新增: 覆盖 update_normalization 以解决维度不匹配问题 ===
     def update_normalization(self, obs):
-        """
-        覆盖父类方法。分离 Actor 和 Critic 的归一化更新，确保 Critic 使用无噪声数据。
-        """
-        # 1. Update Actor Normalizer (Noised data)
         if self.actor_obs_normalization:
             x_raw_actor = self._extract_raw_obs(obs, self.input_keys)
             proprio_actor = x_raw_actor[..., :self.proprio_dim]
             self.actor_obs_normalizer.update(proprio_actor)
             
-        # 2. Update Critic Normalizer (Clean data)
         if self.critic_obs_normalization:
             x_raw_critic = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
             proprio_critic = x_raw_critic[..., :self.proprio_dim]
             self.critic_obs_normalizer.update(proprio_critic)
 
     def _process_obs(self, x, normalizer=None):
-        """核心切片逻辑：分离本体感觉和深度图"""
+        """Slice proprioception and depth image, pass depth to CNN if needed."""
         proprio = x[..., :self.proprio_dim]
         depth_raw = x[..., self.proprio_dim:]
         
@@ -328,7 +356,6 @@ class SplitMoEActorCritic(ActorCritic):
             
         if self.use_cnn:
             original_shape = depth_raw.shape[:-1] 
-            # 还原为图像维度 (Batch, Cameras, Height, Width)
             depth_image = depth_raw.view(
                 *original_shape, 
                 self.num_cameras, 
@@ -336,7 +363,6 @@ class SplitMoEActorCritic(ActorCritic):
                 self.camera_width
             )
             
-            # 适配 RNN 产生的 5D 张量
             if depth_image.ndim == 5: 
                 B, T, C, H, W = depth_image.shape
                 depth_image = depth_image.view(B*T, C, H, W)
@@ -407,13 +433,7 @@ class SplitMoEActorCritic(ActorCritic):
         total_action = torch.cat([leg_act_sum, wheel_act_sum], dim=-1)
 
         if self.training:
-            # 仅仅保留 Load Balancing Loss
             self.active_aux_loss = self._calculate_load_balancing_loss(w_leg, w_wheel) * self.aux_loss_coef
-            
-            # -------------------------------------------------------------------
-            # [删除此处原本的 if self.estimator is not None and obs_dict is not None:]
-            # 以及里面的 estimated_state 和 target_state 逻辑
-            # -------------------------------------------------------------------
         
         with torch.no_grad():
             def flat_mean(w): return w.reshape(-1, w.shape[-1]).mean(dim=0).detach()
@@ -467,7 +487,6 @@ class SplitMoEActorCritic(ActorCritic):
         return self._compute_actor_output(latent)
 
     def evaluate(self, obs, masks=None, hidden_state=None):
-        # x_raw = self._extract_raw_obs(obs, self.input_keys)
         x_raw = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
         normalizer = self.critic_obs_normalizer if self.critic_obs_normalization else None
         x_in = self._process_obs(x_raw, normalizer)
@@ -478,7 +497,7 @@ class SplitMoEActorCritic(ActorCritic):
         return self.critic_mlp(latent)
     
     def get_estimated_state(self, obs, masks=None, hidden_states=None):
-        if self.estimator is None: raise RuntimeError("Estimator is not initialized!")
+        if self.estimator is None: return None
         est_input = self._get_estimator_input(obs)
         if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
              est_input = self.estimator_obs_normalizer(est_input)
@@ -502,18 +521,135 @@ class SplitMoEActorCritic(ActorCritic):
     def get_hidden_states(self):
         return self.active_hidden_states, self.active_hidden_states
     
-    def reset(self, dones=None):
+    def reset(self, dones=None, hidden_states=None):
+        if hidden_states is not None:
+            if hasattr(self, "_prepare_hidden_state") and hasattr(self, "std"):
+                 self.active_hidden_states = self._prepare_hidden_state(hidden_states, self.std.device)
+            else:
+                 self.active_hidden_states = hidden_states
+
         if dones is None: return
+
+        if hasattr(dones, "dtype") and dones.dtype == torch.uint8:
+            dones = dones.bool()
+
         def reset_hidden(h, mask):
             if isinstance(h, tuple): return tuple(reset_hidden(x, mask) for x in h)
             else: 
+                h = h.clone()
                 h[:, mask, :] = 0.0
                 return h
         if self.active_hidden_states is not None:
             self.active_hidden_states = reset_hidden(self.active_hidden_states, dones)
 
 # ==============================================================================
-# 4. PPO Algorithm Wrapper & Configs
+# 4. 蒸馏适配器 (Student-Teacher Adapter for Distillation)
+# ==============================================================================
+
+class SplitMoEStudentTeacher(nn.Module):
+    """
+    Adapter class to make SplitMoEActorCritic compatible with rsl_rl.runners.DistillationRunner.
+    Ensures that both Teacher and Student can optionally use CNNs seamlessly.
+    """
+    is_recurrent = True
+    loaded_teacher = False
+
+    def __init__(self, obs, obs_groups, num_actions, activation="elu", **kwargs):
+        super().__init__()
+        self.obs_groups = obs_groups
+        
+        if isinstance(activation, dict):
+            activation = activation.get("value", "elu") if "value" in activation else "elu"
+            
+        # 1. Initialize Student (MoE) - Uses "policy" obs group (Student Obs)
+        print("\n[Distillation] Initializing Student Policy (SplitMoE CNN-Ready)...")
+        student_kwargs = kwargs.copy()
+        student_kwargs["estimator_output_dim"] = 0 # No estimator for student in BC
+        
+        student_obs_groups = {"policy": obs_groups["policy"]}
+        student_obs_groups["critic"] = obs_groups["policy"]
+        student_input_key = obs_groups["policy"][0]
+
+        self.student = SplitMoEActorCritic(
+            obs, 
+            student_obs_groups, 
+            num_actions, 
+            forced_input_key=student_input_key, 
+            activation=activation, 
+            **student_kwargs
+        )
+
+        # 2. Initialize Teacher (MoE) - Uses "teacher" obs group (Privileged Obs)
+        print("\n[Distillation] Initializing Teacher Policy (SplitMoE CNN-Ready)...")
+        teacher_kwargs = kwargs.copy()
+        
+        teacher_source = obs_groups["teacher"]
+        teacher_obs_groups = {"policy": teacher_source, "critic": teacher_source}
+        teacher_input_key = teacher_source[0]
+        
+        self.teacher = SplitMoEActorCritic(
+            obs, 
+            teacher_obs_groups, 
+            num_actions, 
+            forced_input_key=teacher_input_key, 
+            activation=activation, 
+            **teacher_kwargs
+        )
+        
+        # Ensure Teacher is in Eval mode
+        self.teacher.eval()
+        for param in self.teacher.parameters():
+            param.requires_grad = False
+
+    @property
+    def action_std(self):
+        return self.student.std
+
+    def reset(self, dones=None, hidden_states=None):
+        self.student.reset(dones, hidden_states=hidden_states)
+        self.teacher.reset(dones)
+
+    def act(self, obs, masks=None, hidden_state=None):
+        return self.student.act(obs, masks, hidden_state)
+
+    def act_inference(self, obs):
+        return self.student.act_inference(obs)
+
+    def evaluate(self, obs):
+        with torch.no_grad():
+            return self.teacher.act_inference(obs)
+    
+    def get_hidden_states(self):
+        return self.student.get_hidden_states()
+    
+    def detach_hidden_states(self, dones=None):
+        if self.student.active_hidden_states is not None:
+             def detach_recursive(h):
+                 if isinstance(h, tuple): return tuple(detach_recursive(x) for x in h)
+                 return h.detach()
+             self.student.active_hidden_states = detach_recursive(self.student.active_hidden_states)
+
+    def update_normalization(self, obs):
+        self.student.update_normalization(obs)
+    
+    def load_state_dict(self, state_dict, strict=True):
+        print(f"[Distillation] Loading state dict with {len(state_dict)} keys...")
+        try:
+            self.teacher.load_state_dict(state_dict, strict=False)
+            print("[Distillation] Successfully loaded Teacher weights.")
+            self.loaded_teacher = True
+        except Exception as e:
+            print(f"[Distillation] Warning: Direct load to teacher failed: {e}")
+
+        if any(k.startswith("student.") for k in state_dict.keys()):
+            super().load_state_dict(state_dict, strict=strict)
+            print("[Distillation] Resumed Student-Teacher training.")
+            self.loaded_teacher = True
+        
+        return True
+
+# ==============================================================================
+# 5. PPO Algorithm Wrapper (Teacher Training)
 # ==============================================================================
 
 class SplitMoEPPO(PPO):
@@ -532,6 +668,7 @@ class SplitMoEPPO(PPO):
                     try: full_obs_for_target = obs_batch["policy"]
                     except KeyError: full_obs_for_target = model._extract_raw_obs(obs_batch, model.input_keys)
                 else: full_obs_for_target = obs_batch
+                
                 target_state = full_obs_for_target[..., model.estimator_target_indices]
                 if model.estimator_obs_normalization and model.estimator_obs_normalizer is not None:
                     est_input = model.estimator_obs_normalizer(est_input)
@@ -541,7 +678,7 @@ class SplitMoEPPO(PPO):
                 model.active_estimator_loss = est_loss.detach()
                 model.active_estimator_error = (estimated_state - target_state).abs().mean().detach()
 
-            if isinstance(total_aux_loss, torch.Tensor):
+            if isinstance(total_aux_loss, torch.Tensor) and total_aux_loss.requires_grad:
                 total_aux_loss.backward()
                 if self.max_grad_norm is not None:
                     nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
@@ -565,6 +702,10 @@ class SplitMoEPPO(PPO):
                     loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
         return loss_dict
 
+# ==============================================================================
+# 6. Configurations
+# ==============================================================================
+
 @configclass
 class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     class_name: str = "SplitMoEActorCritic"
@@ -578,11 +719,13 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
 
-    use_cnn: bool = True
+    # CNN / Vision Params
+    use_cnn: bool = False
     num_cameras: int = 2
     camera_height: int = 58
     camera_width: int = 87
 
+    # Estimator Params
     estimator_output_dim: int = 3  
     estimator_hidden_dims: list = field(default_factory=lambda: [128, 64])
     estimator_target_indices: list = field(default_factory=lambda: [0, 1, 2])
@@ -596,23 +739,18 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     critic_hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
     
     def get_std(self):
-            std_np = self.std.detach().cpu().numpy()
-            if self.num_leg_actions > 0:
-                leg_std = std_np[:self.num_leg_actions].mean()
-            else:
-                leg_std = 0.0
-            if self.num_leg_actions < len(std_np):
-                wheel_std = std_np[self.num_leg_actions:].mean()
-            else:
-                wheel_std = 0.0
-            return leg_std, wheel_std
+        std_np = self.std.detach().cpu().numpy()
+        leg_std = std_np[:self.num_leg_actions].mean() if self.num_leg_actions > 0 else 0.0
+        wheel_std = std_np[self.num_leg_actions:].mean() if self.num_leg_actions < len(std_np) else 0.0
+        return leg_std, wheel_std
 
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
+    """PPO Configuration for training the Teacher."""
     num_steps_per_env = 64
     max_iterations = 25000
     save_interval = 200
-    experiment_name = "split_moe_parallel" 
+    experiment_name = "split_moe_teacher_parallel" 
     empirical_normalization = False
     
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"]}
@@ -631,7 +769,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        use_cnn=False,
+        use_cnn=False, # Ensure CNN is explicitly toggled
         num_cameras=2,
         camera_height=58,
         camera_width=87,
@@ -660,4 +798,101 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+    )
+
+
+# ------------------------------------------------------------------------------
+# Distillation / Behavior Cloning Configurations (Student)
+# ------------------------------------------------------------------------------
+
+@configclass
+class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
+    """
+    Configuration for Student-Teacher Distillation (Behavior Cloning).
+    Uses 'SplitMoEStudentTeacher' to wrap two SplitMoE instances (both CNN capable).
+    """
+    num_steps_per_env = 24
+    max_iterations = 10000
+    save_interval = 200
+    experiment_name = "split_moe_distill_cnn"
+    empirical_normalization = False
+
+    obs_groups = {"policy": ["blind_student_policy"], "teacher": ["policy"]} 
+
+    policy = SplitMoEActorCriticCfg(
+        class_name="SplitMoEStudentTeacher", 
+        init_noise_std=1.0, 
+        init_noise_legs=0.8,
+        init_noise_wheels=0.5, 
+        actor_hidden_dims=[256, 128, 128], 
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=6,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+        actor_obs_normalization=True, 
+        critic_obs_normalization=True,
+        
+        # --- Make sure Student also uses CNN ---
+        use_cnn=True,
+        num_cameras=2,
+        camera_height=58,
+        camera_width=87,
+
+        # Student params (Estimator disabled for student in BC)
+        estimator_output_dim=0,
+    )
+
+    algorithm = RslRlDistillationAlgorithmCfg(
+        class_name="Distillation",
+        num_learning_epochs=5,
+        learning_rate=1.0e-4,
+    )
+
+@configclass
+class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
+    """
+    Configuration for Student-Teacher Distillation using 'student_policy' group.
+    """
+    num_steps_per_env = 24
+    max_iterations = 10000
+    save_interval = 200
+    experiment_name = "split_moe_distill_sense_cnn"
+    empirical_normalization = False
+
+    obs_groups = {"policy": ["student_policy"], "teacher": ["policy"]} 
+
+    policy = SplitMoEActorCriticCfg(
+        class_name="SplitMoEStudentTeacher", 
+        init_noise_std=1.0, 
+        init_noise_legs=0.8,
+        init_noise_wheels=0.5, 
+        actor_hidden_dims=[256, 128, 128], 
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=6,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+        actor_obs_normalization=True, 
+        critic_obs_normalization=True,
+        
+        # --- Make sure Student also uses CNN ---
+        use_cnn=True,
+        num_cameras=2,
+        camera_height=58,
+        camera_width=87,
+
+        estimator_output_dim=0,
+    )
+
+    algorithm = RslRlDistillationAlgorithmCfg(
+        class_name="Distillation",
+        num_learning_epochs=5,
+        learning_rate=1.0e-4,
     )

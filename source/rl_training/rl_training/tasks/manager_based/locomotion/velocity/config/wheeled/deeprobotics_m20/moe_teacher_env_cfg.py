@@ -133,7 +133,61 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     joint_torques_wheel_l2 = RewTerm(
         func=mdp.joint_torques_l2, weight=0.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names="")}
     )
+    # ==========================================
+    # 1. 左右对称 (最强)：保证直行不跑偏，像汽车悬挂
+    # ==========================================
+    joint_mirror_lr = RewTerm(
+        func=mdp.joint_mirror,
+        weight=-0.1,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "mirror_joints": [
+                ["fl_(hipy|knee).*", "fr_(hipy|knee).*"], # 左前 vs 右前
+                ["hl_(hipy|knee).*", "hr_(hipy|knee).*"], # 左后 vs 右后
+            ]
+        }
+    )
+    action_mirror_lr = RewTerm(
+        func=mdp.action_mirror,
+        weight=0.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "mirror_joints": [
+                ["fl_(hipy|knee).*", "fr_(hipy|knee).*"],
+                ["hl_(hipy|knee).*", "hr_(hipy|knee).*"],
+            ]
+        }
+    )
 
+    # ==========================================
+    # 2. 对角线对称 (中等)：引导 Trot 步态趋势
+    # ==========================================
+    joint_mirror_diag = RewTerm(
+        func=mdp.joint_mirror,
+        weight=-0.1,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "mirror_joints": [
+                ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
+                ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
+            ]
+        }
+    )
+
+    # ==========================================
+    # 3. 前后对称 (极弱或根据需求保留)：防止平地过度撅屁股或低头
+    # ==========================================
+    joint_mirror_fb = RewTerm(
+        func=mdp.joint_mirror,
+        weight=-0.05,  # 保持极小，允许机器人上坡和加速时改变俯仰角
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "mirror_joints": [
+                ["fl_(hipy|knee).*", "hl_(hipy|knee).*"], # 左前 vs 左后
+                ["fr_(hipy|knee).*", "hr_(hipy|knee).*"], # 右前 vs 右后
+            ]
+        }
+    )
 # ==============================================================================
 # Custom Scene Configuration (High Density for CNN)
 # ==============================================================================
@@ -597,7 +651,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG,
-            max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
@@ -663,17 +716,17 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.hipy_joint_pos_penalty.weight = -0.75
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.5
+        self.rewards.knee_joint_pos_penalty.weight = -0.25
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.1
+        # self.rewards.joint_mirror.weight = -0.1
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_mirror.weight = -0.1
+        # self.rewards.action_mirror.weight = -0.1
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
