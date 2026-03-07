@@ -210,17 +210,30 @@ class SplitMoEActorCritic(ActorCritic):
         self.image_raw_dim = self.num_cameras * self.camera_height * self.camera_width 
         
         # Infer proprioception dimension
+        # Infer proprioception dimension
         self.proprio_dim = num_obs - self.image_raw_dim if self.use_cnn else num_obs
-        print(f"[SplitMoE] Total Obs: {num_obs}, Image Raw: {self.image_raw_dim}, Proprio: {self.proprio_dim} | CNN: {self.use_cnn}")
+        print(f"[SplitMoE] Total Actor Obs: {num_obs}, Image Raw: {self.image_raw_dim}, Proprio: {self.proprio_dim} | CNN: {self.use_cnn}")
+
+        # --- 新增 Critic 维度推断 ---
+        self.critic_keys = obs_groups.get("critic", None)
+        if self.critic_keys and (isinstance(obs, dict) or hasattr(obs, "keys")):
+            critic_num_obs = sum(obs[k].shape[-1] for k in self.critic_keys)
+        else:
+            critic_num_obs = num_obs # Fallback
+            
+        self.critic_proprio_dim = critic_num_obs - self.image_raw_dim if self.use_cnn else critic_num_obs
+        print(f"[SplitMoE] Total Critic Obs: {critic_num_obs}, Critic Proprio: {self.critic_proprio_dim}")
 
         if self.use_cnn:
             self.cnn_output_dim = 128
             self.depth_encoder = DepthCNN(input_channels=self.num_cameras, output_dim=self.cnn_output_dim)
             rnn_input_dim = self.proprio_dim + self.cnn_output_dim
+            critic_rnn_input_dim = self.critic_proprio_dim + self.cnn_output_dim
         else:
             rnn_input_dim = num_obs
+            critic_rnn_input_dim = critic_num_obs
 
-        # Normalization Setup (Only normalize Proprioception)
+        # Normalization Setup
         self.actor_obs_normalization = kwargs.get("actor_obs_normalization", True)
         self.critic_obs_normalization = kwargs.get("critic_obs_normalization", True)
 
@@ -228,7 +241,8 @@ class SplitMoEActorCritic(ActorCritic):
             self.actor_obs_normalizer = EmpiricalNormalization(shape=[self.proprio_dim], until_step=1.0e9)
         
         if self.critic_obs_normalization:
-            self.critic_obs_normalizer = EmpiricalNormalization(shape=[self.proprio_dim], until_step=1.0e9)
+            # 修改为 Critic 的 proprio 维度
+            self.critic_obs_normalizer = EmpiricalNormalization(shape=[self.critic_proprio_dim], until_step=1.0e9)
 
         self.latent_dim = latent_dim
         self.rnn_type = rnn_type.lower()
@@ -237,15 +251,20 @@ class SplitMoEActorCritic(ActorCritic):
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
 
-        # Initialize RNN
+        # Initialize Actor & Critic RNNs
         if self.rnn_type == "lstm":
             self.rnn = nn.LSTM(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
+            self.critic_rnn = nn.LSTM(input_size=critic_rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
         else:
             self.rnn = nn.GRU(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
+            self.critic_rnn = nn.GRU(input_size=critic_rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
 
-        for name, param in self.rnn.named_parameters():
-            if 'weight' in name: nn.init.orthogonal_(param)
-            elif 'bias' in name: nn.init.constant_(param, 0)
+        # 初始化权重
+        for rnn_net in [self.rnn, self.critic_rnn]:
+            for name, param in rnn_net.named_parameters():
+                if 'weight' in name: nn.init.orthogonal_(param)
+                elif 'bias' in name: nn.init.constant_(param, 0)
+        # ==================
 
         # MoE Gates and Experts
         self.gate_input_norm = nn.LayerNorm(self.latent_dim)
@@ -300,6 +319,7 @@ class SplitMoEActorCritic(ActorCritic):
         device = ref_tensor.device
         
         self.active_hidden_states = self._init_rnn_state(batch_size, device)
+        self.active_critic_hidden_states = self._init_rnn_state(batch_size, device)
         self.critic_keys = obs_groups.get("critic", None)
         self.latest_weights = {}
         self.active_aux_loss = 0.0
@@ -343,13 +363,18 @@ class SplitMoEActorCritic(ActorCritic):
             
         if self.critic_obs_normalization:
             x_raw_critic = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
-            proprio_critic = x_raw_critic[..., :self.proprio_dim]
+            # 修改：这里必须使用 critic_proprio_dim 切片
+            proprio_critic = x_raw_critic[..., :self.critic_proprio_dim] 
             self.critic_obs_normalizer.update(proprio_critic)
 
-    def _process_obs(self, x, normalizer=None):
+    def _process_obs(self, x, normalizer=None, proprio_dim=None):
         """Slice proprioception and depth image, pass depth to CNN if needed."""
-        proprio = x[..., :self.proprio_dim]
-        depth_raw = x[..., self.proprio_dim:]
+        # 允许动态传入 proprio_dim，默认使用 actor 的 proprio_dim
+        if proprio_dim is None: 
+            proprio_dim = self.proprio_dim
+            
+        proprio = x[..., :proprio_dim]
+        depth_raw = x[..., proprio_dim:]
         
         if normalizer is not None:
             proprio = normalizer(proprio)
@@ -489,11 +514,16 @@ class SplitMoEActorCritic(ActorCritic):
     def evaluate(self, obs, masks=None, hidden_state=None):
         x_raw = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
         normalizer = self.critic_obs_normalizer if self.critic_obs_normalization else None
-        x_in = self._process_obs(x_raw, normalizer)
+        # 传入 Critic 独有的 proprio_dim
+        x_in = self._process_obs(x_raw, normalizer, proprio_dim=self.critic_proprio_dim)
 
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
-        if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
-        latent, _ = self._run_rnn(self.rnn, x_in, current_state, masks)
+        if current_state is None: current_state = self._prepare_hidden_state(self.active_critic_hidden_states, x_in.device)
+        
+        # 使用 self.critic_rnn
+        latent, next_state = self._run_rnn(self.critic_rnn, x_in, current_state, masks)
+        
+        if hidden_state is None: self.active_critic_hidden_states = next_state
         return self.critic_mlp(latent)
     
     def get_estimated_state(self, obs, masks=None, hidden_states=None):
@@ -519,14 +549,23 @@ class SplitMoEActorCritic(ActorCritic):
         return self.distribution.log_prob(actions).sum(dim=-1)
     
     def get_hidden_states(self):
-        return self.active_hidden_states, self.active_hidden_states
+        # rsl_rl 期望返回 (actor_hidden_states, critic_hidden_states)
+        return self.active_hidden_states, self.active_critic_hidden_states
     
     def reset(self, dones=None, hidden_states=None):
         if hidden_states is not None:
-            if hasattr(self, "_prepare_hidden_state") and hasattr(self, "std"):
-                 self.active_hidden_states = self._prepare_hidden_state(hidden_states, self.std.device)
+            # 兼容 rsl_rl 传入的双隐藏状态 (actor_hs, critic_hs)
+            if isinstance(hidden_states, tuple) and len(hidden_states) == 2:
+                actor_hs, critic_hs = hidden_states
             else:
-                 self.active_hidden_states = hidden_states
+                actor_hs = critic_hs = hidden_states
+                
+            if hasattr(self, "_prepare_hidden_state") and hasattr(self, "std"):
+                 self.active_hidden_states = self._prepare_hidden_state(actor_hs, self.std.device)
+                 self.active_critic_hidden_states = self._prepare_hidden_state(critic_hs, self.std.device)
+            else:
+                 self.active_hidden_states = actor_hs
+                 self.active_critic_hidden_states = critic_hs
 
         if dones is None: return
 
@@ -539,8 +578,11 @@ class SplitMoEActorCritic(ActorCritic):
                 h = h.clone()
                 h[:, mask, :] = 0.0
                 return h
+                
         if self.active_hidden_states is not None:
             self.active_hidden_states = reset_hidden(self.active_hidden_states, dones)
+        if self.active_critic_hidden_states is not None:
+            self.active_critic_hidden_states = reset_hidden(self.active_critic_hidden_states, dones)
 
 # ==============================================================================
 # 4. 蒸馏适配器 (Student-Teacher Adapter for Distillation)
@@ -623,11 +665,14 @@ class SplitMoEStudentTeacher(nn.Module):
         return self.student.get_hidden_states()
     
     def detach_hidden_states(self, dones=None):
+        def detach_recursive(h):
+            if isinstance(h, tuple): return tuple(detach_recursive(x) for x in h)
+            return h.detach()
+            
         if self.student.active_hidden_states is not None:
-             def detach_recursive(h):
-                 if isinstance(h, tuple): return tuple(detach_recursive(x) for x in h)
-                 return h.detach()
              self.student.active_hidden_states = detach_recursive(self.student.active_hidden_states)
+        if hasattr(self.student, "active_critic_hidden_states") and self.student.active_critic_hidden_states is not None:
+             self.student.active_critic_hidden_states = detach_recursive(self.student.active_critic_hidden_states)
 
     def update_normalization(self, obs):
         self.student.update_normalization(obs)
@@ -747,18 +792,18 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
-    num_steps_per_env = 24
+    num_steps_per_env = 48
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
     empirical_normalization = False
     
-    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"]}
+    obs_groups = {"policy": ["policy"], "critic": ["critic"]}
     
     policy = SplitMoEActorCriticCfg(
-        init_noise_std=1.0, 
-        init_noise_legs=0.8,
-        init_noise_wheels=0.5, 
+        init_noise_std=1.2, 
+        init_noise_legs=1.0,
+        init_noise_wheels=0.8, 
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
@@ -774,7 +819,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         camera_height=58,
         camera_width=87,
 
-        estimator_output_dim=3,
+        estimator_output_dim=0,
         estimator_hidden_dims=[128, 64],
         estimator_target_indices=[0, 1, 2],
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
@@ -791,7 +836,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.01,
         num_learning_epochs=5,
-        num_mini_batches=8,
+        num_mini_batches=16,
         learning_rate=1.0e-3, 
         schedule="adaptive",
         gamma=0.99,
@@ -799,7 +844,61 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+@configclass
+class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
+    """PPO Configuration for training the Teacher."""
+    num_steps_per_env = 48
+    max_iterations = 25000
+    save_interval = 200
+    experiment_name = "split_moe_teacher_parallel_cmp" 
+    empirical_normalization = False
+    
+    obs_groups = {"policy": ["policy"], "critic": ["critic"]}
+    
+    policy = SplitMoEActorCriticCfg(
+        init_noise_std=1.0, 
+        init_noise_legs=1.0,
+        init_noise_wheels=0.8, 
+        actor_hidden_dims=[256, 128, 128], 
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=6,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+        
+        use_cnn=False, # Ensure CNN is explicitly toggled
+        num_cameras=2,
+        camera_height=58,
+        camera_width=87,
 
+        estimator_output_dim=0,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+        
+        actor_obs_normalization=True, 
+        critic_obs_normalization=True,
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        class_name="SplitMoEPPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=16,
+        learning_rate=1.0e-3, 
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
 
 # ------------------------------------------------------------------------------
 # Distillation / Behavior Cloning Configurations (Student)

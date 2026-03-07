@@ -3,7 +3,6 @@
 
 # Copyright (c) 2024-2025 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
-
 import math
 import torch # Added torch for depth calculation
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -13,7 +12,6 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.sensors import RayCasterCfg, patterns, RayCasterCameraCfg
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
-
 import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
 from rl_training.tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     ActionsCfg,
@@ -90,6 +88,7 @@ def lidar_depth_scan_student(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     depths = torch.norm(rel_vec, dim=-1)
     
     return process_lidar_data(depths, is_student=True)
+
 def flattened_image(env, sensor_cfg: SceneEntityCfg, data_type: str, normalize: bool = False) -> torch.Tensor:
     """获取相机图像并将其展平为一维向量，以适配 Isaac Lab 的拼接机制"""
     # 获取原始图像，形状通常为 (num_envs, H, W, C)
@@ -110,6 +109,7 @@ def student_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normal
     img = mdp.image(env, sensor_cfg=sensor_cfg, data_type=data_type, normalize=False)
     depths = img.flatten(start_dim=1)
     return process_lidar_data(depths, is_student=True)
+
 @configclass
 class DeeproboticsM20ActionsCfg(ActionsCfg):
     """Action specifications for the MDP."""
@@ -138,7 +138,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     # ==========================================
     joint_mirror_lr = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.1,
+        weight=-0.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -164,7 +164,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     # ==========================================
     joint_mirror_diag = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.1,
+        weight=-0.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -179,7 +179,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     # ==========================================
     joint_mirror_fb = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.05,  # 保持极小，允许机器人上坡和加速时改变俯仰角
+        weight=-0.0,  # 保持极小，允许机器人上坡和加速时改变俯仰角
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -188,6 +188,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
             ]
         }
     )
+
 # ==============================================================================
 # Custom Scene Configuration (High Density for CNN)
 # ==============================================================================
@@ -284,8 +285,9 @@ class DeeproboticsM20SceneCfg(MySceneCfg):
     #     mesh_prim_paths=["/World/ground"],
     #     debug_vis=False,
     # )
+
 # ==============================================================================
-# Custom Observation Config
+# 新增：自定义观测配置类 (以确保顺序和分组正确)
 # ==============================================================================
 @configclass
 class DeeproboticsM20ObservationsCfg:
@@ -293,9 +295,7 @@ class DeeproboticsM20ObservationsCfg:
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Teacher Policy"""
-        
-        # ... Proprioception ...
+        # observation terms (order preserved)
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             noise=Unoise(n_min=-0.1, n_max=0.1),
@@ -339,16 +339,13 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        
-        # --- Privileged Information ---
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            noise=Unoise(n_min=0.0, n_max=0.0),
+            noise=Unoise(n_min=-0.0, n_max=0.0),
             clip=(-1.0, 1.0),
             scale=1.0,
         )
-
         # # # --- Teacher Lidars (无盲区, tanh归一化) ---
         # camera_front_depth = ObsTerm(
         #     func=teacher_camera_depth, 
@@ -424,9 +421,9 @@ class DeeproboticsM20ObservationsCfg:
     class StudentPolicyCfg(BlindStudentPolicyCfg):
         pass
 
-    @configclass
+    @configclass    
     class CriticCfg(PolicyCfg):
-        """Critic gets everything clean."""
+        """Critic gets the same info as Teacher Policy."""
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             noise=Unoise(n_min=0.0, n_max=0.0),
@@ -466,7 +463,7 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        
+        # pass
         # # # Critic also sees clean Lidar data (Teacher version)
         # camera_front_depth = ObsTerm(
         #     func=teacher_camera_depth, 
@@ -520,7 +517,6 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-
     policy: PolicyCfg = PolicyCfg()
     blind_student_policy: BlindStudentPolicyCfg = BlindStudentPolicyCfg()
     student_policy: StudentPolicyCfg = StudentPolicyCfg() 
@@ -532,8 +528,9 @@ class DeeproboticsM20ObservationsCfg:
 class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
     actions: DeeproboticsM20ActionsCfg = DeeproboticsM20ActionsCfg()
     rewards: DeeproboticsM20RewardsCfg = DeeproboticsM20RewardsCfg()
+    # 使用自定义的观测配置
     observations: DeeproboticsM20ObservationsCfg = DeeproboticsM20ObservationsCfg()
-    scene: DeeproboticsM20SceneCfg = DeeproboticsM20SceneCfg(num_envs=2048, env_spacing=2.5)
+    # scene: DeeproboticsM20SceneCfg = DeeproboticsM20SceneCfg(num_envs=2048, env_spacing=2.5)
 
     base_link_name = "base_link"
     foot_link_name = ".*_wheel"
@@ -561,13 +558,13 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
     # fmt: on
 
     def __post_init__(self):
+        # post init of parent
         super().__post_init__()
-        self.sim.physx.enable_external_forces_every_iteration = True
+        # self.sim.physx.enable_external_forces_every_iteration = True
         # ------------------------------Sence------------------------------
         self.scene.robot = DEEPROBOTICS_M20_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-        
         # if self.scene.camera_front is not None:
         #      self.scene.camera_front.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         # if self.scene.camera_rear is not None:
@@ -578,44 +575,22 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
         )
-        
-        self.observations.blind_student_policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
-        self.observations.blind_student_policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
-            "robot", joint_names=self.wheel_joint_names
-        )
-        
-        self.observations.student_policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
-        self.observations.student_policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
-            "robot", joint_names=self.wheel_joint_names
-        )
-
         self.observations.critic.joint_pos.func = mdp.joint_pos_rel_without_wheel
         self.observations.critic.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=self.wheel_joint_names
         )
-        
-        # Scales
         self.observations.policy.base_lin_vel.scale = 2.0
         self.observations.policy.base_ang_vel.scale = 0.25
         self.observations.policy.joint_pos.scale = 1.0
         self.observations.policy.joint_vel.scale = 0.05
-        
-        self.observations.blind_student_policy.base_ang_vel.scale = 0.25
-        self.observations.blind_student_policy.joint_pos.scale = 1.0
-        self.observations.blind_student_policy.joint_vel.scale = 0.05
-        
-        # Set Joint Names pattern
+        self.observations.policy.base_lin_vel = None
+        # self.observations.policy.height_scan = None
         self.observations.policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
         self.observations.policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
-        
-        self.observations.blind_student_policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
-        self.observations.blind_student_policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
-        
-        self.observations.student_policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
-        self.observations.student_policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
 
         # ------------------------------Actions------------------------------
-        self.actions.joint_pos.scale = {".*_hipx_joint": 0.25, "^(?!.*_hipx_joint).*": 0.25}
+        # reduce action scale
+        self.actions.joint_pos.scale = {".*_hipx_joint": 0.125, "^(?!.*_hipx_joint).*": 0.25}
         self.actions.joint_vel.scale = 5.0
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_vel.clip = {".*": (-100.0, 100.0)}
@@ -625,8 +600,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # ------------------------------Events------------------------------
         self.events.randomize_reset_base.params = {
             "pose_range": {
-                "x": (-0.5, 0.5),
-                "y": (-0.5, 0.5),
+                "x": (-1.0, 1.0),
+                "y": (-1.0, 1.0),
                 "z": (0.0, 0.0),
                 "roll": (-0.3, 0.3),
                 "pitch": (-0.3, 0.3),
@@ -647,26 +622,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-        self.scene.terrain = TerrainImporterCfg(
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
-            collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=1.0,
-            ),
-            visual_material=sim_utils.MdlFileCfg(
-                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-                project_uvw=True,
-                texture_scale=(0.25, 0.25),
-            ),
-            debug_vis=False,
-        )
-        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG
+
+        self.scene.terrain.terrain_generator = ROUGH_TERRAINS_CFG
         if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.10)
@@ -679,19 +636,30 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             pass
         elif(self.scene.terrain.terrain_generator == MOE_ROUGH_TEST_TERRAINS_CFG):
             pass
+        elif(self.scene.terrain.terrain_generator == ROUGH_TERRAINS_CFG):
+            self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
+            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
+            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
 
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
+            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
         # ------------------------------Rewards------------------------------
+        # General
         self.rewards.is_terminated.weight = 0
+
+        # Root penalties
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.02
-        self.rewards.flat_orientation_l2.weight = -0.5
-        self.rewards.base_height_l2.weight = -0.1
+        self.rewards.flat_orientation_l2.weight = 0
+        self.rewards.base_height_l2.weight = -0.5
         self.rewards.base_height_l2.params["target_height"] = 0.40
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
         self.rewards.body_lin_acc_l2.params["asset_cfg"].body_names = [self.base_link_name]
 
-        self.rewards.joint_torques_l2.weight = -1.0e-5
+        # Joint penalties
+        self.rewards.joint_torques_l2.weight = -2.5e-5
         self.rewards.joint_torques_l2.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.joint_torques_wheel_l2.weight = 0
         self.rewards.joint_torques_wheel_l2.params["asset_cfg"].joint_names = self.wheel_joint_names
@@ -703,8 +671,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_acc_l2.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.joint_acc_wheel_l2.weight = -1e-7
         self.rewards.joint_acc_wheel_l2.params["asset_cfg"].joint_names = self.wheel_joint_names
-        
-        self.rewards.joint_pos_limits.weight = -1.0
+        # self.rewards.create_joint_deviation_l1_rewterm("joint_deviation_hip_l1", -0.2, [".*_hip_joint"])
+        self.rewards.joint_pos_limits.weight = -5.0
         self.rewards.joint_pos_limits.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.joint_vel_limits.weight = 0
         self.rewards.joint_vel_limits.params["asset_cfg"].joint_names = self.wheel_joint_names
@@ -712,39 +680,39 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -1.0
+        self.rewards.hipx_joint_pos_penalty.weight = -0.4
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.75
+        self.rewards.hipy_joint_pos_penalty.weight = -0.1
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.25
+        self.rewards.knee_joint_pos_penalty.weight = -0.1
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        # self.rewards.joint_mirror.weight = -0.1
+        self.rewards.joint_mirror.weight = -0.03
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        # self.rewards.action_mirror.weight = -0.1
+        self.rewards.action_mirror.weight = 0.0
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        
+        # Action penalties
         self.rewards.action_rate_l2.weight = -0.01
 
+        # Contact sensor
         self.rewards.undesired_contacts.weight = -1.0
         self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [f"^(?!.*{self.foot_link_name}).*"]
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 2.5 
-        self.rewards.track_ang_vel_z_exp.weight = 1.5 
-        self.rewards.track_lin_vel_xy_pre_exp.weight = 2.0
-        self.rewards.track_ang_vel_z_pre_exp.weight = 3.0
+        # Velocity-tracking rewards
+        self.rewards.track_lin_vel_xy_exp.weight = 2.0 # 1.8
+        self.rewards.track_ang_vel_z_exp.weight = 1.0 # 1.2
 
-        
+        # Others
         self.rewards.feet_air_time.weight = 0.0
         self.rewards.feet_air_time.params["threshold"] = 0.5
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -767,14 +735,20 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
         self.rewards.upward.weight = 0.08
 
+        # If the weight of rewards is 0, set rewards to None
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()
 
+        # ------------------------------Terminations------------------------------
+        # self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name]
         self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
+
+        # ------------------------------Curriculums------------------------------
+        # self.curriculum.command_levels.params["range_multiplier"] = (0.2, 1.0)
         self.curriculum.command_levels = None
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        # ------------------------------Commands------------------------------
+        self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
-        # self.commands.base_velocity.ranges.heading=(0.0, 0.0)
