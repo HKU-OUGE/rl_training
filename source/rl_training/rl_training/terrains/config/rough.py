@@ -24,16 +24,16 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     sub_terrains={
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=3.0/18,  # 2/18 的概率生成此地形
-            step_height_range=(0.05, 0.20),
+            proportion=1.0/18,  # 2/18 的概率生成此地形
+            step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
             holes=False,
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=3.0/18,
-            step_height_range=(0.05, 0.20),
+            proportion=4.0/18,
+            step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
@@ -48,7 +48,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             platform_width=2.0,
         ),
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
-            proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.5),platform_width=2.0
+            proportion=3.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.5),platform_width=2.0
         ),
         "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
             proportion=3.0/18,                         
@@ -243,8 +243,8 @@ MOE_STUDENT_TERRAINS_CFG = TerrainGeneratorCfg(
 STAIR_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
-    num_rows=5,
-    num_cols=1,
+    num_rows=10,
+    num_cols=2,
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
@@ -252,8 +252,16 @@ STAIR_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     sub_terrains={
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=1.0,
-            step_height_range=(0.2, 0.20),
+            proportion=0.5,
+            step_height_range=(0.05, 0.23),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.5,  # 2/18 的概率生成此地形
+            step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,

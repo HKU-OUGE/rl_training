@@ -747,7 +747,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
-    num_steps_per_env = 64
+    num_steps_per_env = 24
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
