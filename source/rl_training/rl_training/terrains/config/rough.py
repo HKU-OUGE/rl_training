@@ -48,7 +48,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             platform_width=2.0,
         ),
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
-            proportion=3.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.5),platform_width=2.0
+            proportion=3.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.35),platform_width=2.0
         ),
         "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
             proportion=3.0/18,                         
