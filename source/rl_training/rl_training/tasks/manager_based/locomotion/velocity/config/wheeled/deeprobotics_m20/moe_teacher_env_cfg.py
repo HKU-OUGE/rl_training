@@ -138,7 +138,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     # ==========================================
     joint_mirror_lr = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.01,
+        weight=-0.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -597,7 +597,23 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.observations.policy.height_scan = None
         self.observations.policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
         self.observations.policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
-
+        self.observations.blind_student_policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
+        self.observations.blind_student_policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
+            "robot", joint_names=self.wheel_joint_names
+        )
+        
+        self.observations.student_policy.joint_pos.func = mdp.joint_pos_rel_without_wheel
+        self.observations.student_policy.joint_pos.params["wheel_asset_cfg"] = SceneEntityCfg(
+            "robot", joint_names=self.wheel_joint_names
+        )
+        self.observations.blind_student_policy.base_ang_vel.scale = 0.25
+        self.observations.blind_student_policy.joint_pos.scale = 1.0
+        self.observations.blind_student_policy.joint_vel.scale = 0.05
+        self.observations.blind_student_policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
+        self.observations.blind_student_policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
+        
+        self.observations.student_policy.joint_pos.params["asset_cfg"].joint_names = self.joint_names
+        self.observations.student_policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
         # ------------------------------Actions------------------------------
         # reduce action scale
         self.actions.joint_pos.scale = {".*_hipx_joint": 0.125, "^(?!.*_hipx_joint).*": 0.25}
@@ -633,7 +649,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
 
-        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = RING_TEST_TERRAINS_CFG
         if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.10)
@@ -649,6 +665,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
 
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
+            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        else:
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
@@ -688,9 +708,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.4
+        self.rewards.hipx_joint_pos_penalty.weight = -0.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.1
+        self.rewards.hipy_joint_pos_penalty.weight = -0.2
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
         self.rewards.knee_joint_pos_penalty.weight = -0.1
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
@@ -711,6 +731,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.action_rate_l2.weight = -0.01
 
         # Contact sensor
+        # self.rewards.undesired_contacts.weight = -1.0
         self.rewards.undesired_contacts.weight = -1.0
         self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [f"^(?!.*{self.foot_link_name}).*"]
         self.rewards.contact_forces.weight = -1.5e-4
@@ -722,6 +743,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0.2
         self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
         # Others
+        # self.rewards.feet_air_time.weight = 1.0
         self.rewards.feet_air_time.weight = 1.0
         self.rewards.feet_air_time.params["threshold"] = 0.5
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -761,3 +783,14 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+
+        # # self.rewards.base_height_l2.params["sensor_cfg"] = None
+        # # change terrain to flat
+        # self.scene.terrain.terrain_type = "plane"
+        # self.scene.terrain.terrain_generator = None
+        # # no height scan
+        # # self.scene.height_scanner = None
+        # # self.observations.critic.height_scan = None
+        # # no terrain curriculum
+        # self.curriculum.terrain_levels = None
+        # self.curriculum.command_levels = None

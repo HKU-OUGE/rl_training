@@ -383,16 +383,26 @@ class RewardsCfg:
     is_terminated = RewTerm(func=mdp.is_terminated, weight=0.0)
 
     # Root penalties
-    # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
-    lin_vel_z_l2 = RewTerm(
-        func=mdp.lin_vel_z_l2_curriculum,
-        weight=0.0,
-        params={"asset_cfg": SceneEntityCfg("robot")}
-    )
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
+    # lin_vel_z_l2 = RewTerm(
+    #     func=mdp.lin_vel_z_l2_curriculum,
+    #     weight=0.0,
+    #     params={"asset_cfg": SceneEntityCfg("robot")}
+    # )
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=0.0)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
+    # base_height_l2 = RewTerm(
+    #     func=mdp.base_height_l2_curriculum,
+    #     weight=0.0, # 从 -0.5 降低到 -0.2
+    #     params={
+    #         "target_height": 0.40,
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         # 建议暂时移除 sensor_cfg，因为 height_scanner 会扫到圆环顶部导致目标高度突变
+    #         "sensor_cfg": SceneEntityCfg("height_scanner_base"), 
+    #     }
+    # )
     base_height_l2 = RewTerm(
-        func=mdp.base_height_l2_curriculum,
+        func=mdp.base_height_l2,
         weight=0.0, # 从 -0.5 降低到 -0.2
         params={
             "target_height": 0.40,

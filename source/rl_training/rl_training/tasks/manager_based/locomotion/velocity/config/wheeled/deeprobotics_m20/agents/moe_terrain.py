@@ -122,6 +122,101 @@ class DepthCNN(nn.Module):
         return self.act(self.projection(features))
 
 # ==============================================================================
+# 新增: CMoE 论文对应的 DepthAE 与 ProprioVAE
+# ==============================================================================
+
+class DepthAE(nn.Module):
+    """用于高程图/深度图的自编码器"""
+    def __init__(self, input_channels=2, output_dim=128, camera_height=58, camera_width=87):
+        super().__init__()
+        self.camera_height = camera_height
+        self.camera_width = camera_width
+        
+        # Encoder (与你原来的 DepthCNN 类似)
+        self.encoder = nn.Sequential(
+            nn.Conv2d(input_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1), nn.ELU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), nn.ELU(),
+        )
+        self.global_pool = nn.AdaptiveAvgPool2d((2, 4)) 
+        self.fc_encode = nn.Linear(1024, output_dim)
+        self.act = nn.ELU()
+
+        # Decoder
+        self.fc_decode = nn.Linear(output_dim, 1024)
+        # 使用 Upsample + Conv 替代严格的 ConvTranspose，避免由于尺寸计算不匹配导致的报错
+        self.decoder = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ELU(),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.ELU(),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(32, 16, kernel_size=3, padding=1), nn.ELU(),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(16, input_channels, kernel_size=3, padding=1)
+        )
+
+    def forward(self, x):
+        # 编码
+        features = self.encoder(x)
+        features_pooled = self.global_pool(features).flatten(1)
+        latent = self.act(self.fc_encode(features_pooled))
+        
+        # 解码 (只在训练时为了计算 loss 需要重建)
+        if self.training:
+            dec_in = self.act(self.fc_decode(latent))
+            dec_in = dec_in.view(-1, 128, 2, 4)
+            recon = self.decoder(dec_in)
+            # 强制插值到原始尺寸以防 padding 不精确
+            recon = F.interpolate(recon, size=(self.camera_height, self.camera_width), mode='bilinear', align_corners=False)
+        else:
+            recon = None
+            
+        return latent, recon
+
+
+class ProprioVAE(nn.Module):
+    """用于历史本体感受状态蒸馏的变分自编码器"""
+    def __init__(self, input_dim, vel_dim=3, latent_dim=64, hidden_dims=[128, 64]):
+        super().__init__()
+        # Encoder: 输入历史观测，输出隐层特征
+        self.encoder_mlp = MLP(input_dim, hidden_dims[-1], hidden_dims[:-1])
+        
+        # 提取 mu 和 logvar (针对 KL 散度)
+        self.fc_mu = nn.Linear(hidden_dims[-1], latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dims[-1], latent_dim)
+
+        # 速度预测器 (论文中 Encoder 直接映射到 body velocity v_t)
+        self.vel_estimator = nn.Linear(hidden_dims[-1], vel_dim)
+
+        # Decoder: 输入隐变量 z，重建原始历史观测 (或下一步观测)
+        # 注: 为了兼容现有框架的 Rollout 存储，我们重构当前的观测输入
+        self.decoder_mlp = MLP(latent_dim, input_dim, hidden_dims[::-1])
+
+    def encode(self, x):
+        h = self.encoder_mlp(x)
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        vel_pred = self.vel_estimator(h)
+        return mu, logvar, vel_pred
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z):
+        return self.decoder_mlp(z)
+
+    def forward(self, x):
+        mu, logvar, vel_pred = self.encode(x)
+        # 仅在训练时采样，推理时直接使用均值
+        z = self.reparameterize(mu, logvar) if self.training else mu 
+        recon_x = self.decode(z) if self.training else None
+        return vel_pred, recon_x, mu, logvar, z
+
+# ==============================================================================
 # 3. Split MoE Policy Network
 # ==============================================================================
 
@@ -226,7 +321,13 @@ class SplitMoEActorCritic(ActorCritic):
 
         if self.use_cnn:
             self.cnn_output_dim = 128
-            self.depth_encoder = DepthCNN(input_channels=self.num_cameras, output_dim=self.cnn_output_dim)
+            # DepthAE
+            self.depth_encoder = DepthAE(
+                input_channels=self.num_cameras, 
+                output_dim=self.cnn_output_dim,
+                camera_height=self.camera_height,
+                camera_width=self.camera_width
+            )
             rnn_input_dim = self.proprio_dim + self.cnn_output_dim
             critic_rnn_input_dim = self.critic_proprio_dim + self.cnn_output_dim
         else:
@@ -305,7 +406,13 @@ class SplitMoEActorCritic(ActorCritic):
                 est_input_dim = len(self.estimator_input_indices)
 
             if est_input_dim > 0:
-                self.estimator = MLP(est_input_dim, self.estimator_output_dim, hidden_dims=self.estimator_hidden_dims, activation=activation)
+                # 替换为新的 ProprioVAE
+                self.estimator = ProprioVAE(
+                    input_dim=est_input_dim, 
+                    vel_dim=self.estimator_output_dim, 
+                    latent_dim=64, # 你可以根据需要调整 latent维度
+                    hidden_dims=self.estimator_hidden_dims
+                )
                 self.estimator_obs_normalizer = None
                 if self.estimator_obs_normalization:
                     self.estimator_obs_normalizer = EmpiricalNormalization(shape=[est_input_dim], until_step=1.0e9)
@@ -368,8 +475,6 @@ class SplitMoEActorCritic(ActorCritic):
             self.critic_obs_normalizer.update(proprio_critic)
 
     def _process_obs(self, x, normalizer=None, proprio_dim=None):
-        """Slice proprioception and depth image, pass depth to CNN if needed."""
-        # 允许动态传入 proprio_dim，默认使用 actor 的 proprio_dim
         if proprio_dim is None: 
             proprio_dim = self.proprio_dim
             
@@ -391,10 +496,18 @@ class SplitMoEActorCritic(ActorCritic):
             if depth_image.ndim == 5: 
                 B, T, C, H, W = depth_image.shape
                 depth_image = depth_image.view(B*T, C, H, W)
-                depth_feat = self.depth_encoder(depth_image)
+                depth_feat, depth_recon = self.depth_encoder(depth_image)
                 depth_feat = depth_feat.view(B, T, -1)
+                
+                # 记录 AE Reconstruction Loss 所需数据
+                if self.training and depth_recon is not None:
+                    self.active_depth_target = depth_image.detach()
+                    self.active_depth_recon = depth_recon
             else:
-                depth_feat = self.depth_encoder(depth_image)
+                depth_feat, depth_recon = self.depth_encoder(depth_image)
+                if self.training and depth_recon is not None:
+                    self.active_depth_target = depth_image.detach()
+                    self.active_depth_recon = depth_recon
             
             x_out = torch.cat([proprio, depth_feat], dim=-1)
         else:
@@ -679,13 +792,23 @@ class SplitMoEStudentTeacher(nn.Module):
     
     def load_state_dict(self, state_dict, strict=True):
         print(f"[Distillation] Loading state dict with {len(state_dict)} keys...")
+        
+        # ---------------------------------------------------------
+        # [Fix] 过滤掉所有 critic 相关的权重。
+        # 因为蒸馏时我们只用 Teacher 的 Actor，且不同阶段 Critic 维度可能不同，
+        # 过滤掉它可以避免 PyTorch 抛出 size mismatch 错误。
+        # ---------------------------------------------------------
+        teacher_state_dict = {k: v for k, v in state_dict.items() if "critic" not in k}
+        
         try:
-            self.teacher.load_state_dict(state_dict, strict=False)
-            print("[Distillation] Successfully loaded Teacher weights.")
+            # 使用 strict=False，允许丢失 critic 的权重（它会保持随机初始化但不影响蒸馏）
+            self.teacher.load_state_dict(teacher_state_dict, strict=False)
+            print("[Distillation] Successfully loaded Teacher weights (critic ignored).")
             self.loaded_teacher = True
         except Exception as e:
             print(f"[Distillation] Warning: Direct load to teacher failed: {e}")
 
+        # 如果是恢复蒸馏训练，顺便加载 Student 的权重
         if any(k.startswith("student.") for k in state_dict.keys()):
             super().load_state_dict(state_dict, strict=strict)
             print("[Distillation] Resumed Student-Teacher training.")
@@ -792,7 +915,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
-    num_steps_per_env = 48
+    num_steps_per_env = 36
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
@@ -847,7 +970,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 @configclass
 class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
-    num_steps_per_env = 48
+    num_steps_per_env = 36
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel_cmp" 
@@ -910,7 +1033,7 @@ class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
     Configuration for Student-Teacher Distillation (Behavior Cloning).
     Uses 'SplitMoEStudentTeacher' to wrap two SplitMoE instances (both CNN capable).
     """
-    num_steps_per_env = 24
+    num_steps_per_env = 36
     max_iterations = 10000
     save_interval = 200
     experiment_name = "split_moe_distill_cnn"
@@ -936,7 +1059,7 @@ class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
         critic_obs_normalization=True,
         
         # --- Make sure Student also uses CNN ---
-        use_cnn=True,
+        use_cnn=False,
         num_cameras=2,
         camera_height=58,
         camera_width=87,

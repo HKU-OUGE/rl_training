@@ -32,7 +32,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=4.0/18,
+            proportion=3.0/18,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
@@ -69,6 +69,9 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
             proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
         ),
+        "plane": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
+            proportion=1.0/18,
+        ),
     },
 )
 
@@ -84,11 +87,14 @@ RING_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     sub_terrains={
         "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
-            proportion=1.0,                           # 完全生成此地形
-            ring_width_range=(0.1, 0.5),              # 环的宽度范围（中心向外延伸 0.5~1.0 米）
-            ring_height_range=(0.4, 0.8),             # 环的离地高度范围
-            ring_thickness=0.2,                       # 环厚度（z 方向）
-            platform_width=2.0,                       # 地形中心的方形平台大小
+            proportion=3.0/4.0,                           # 完全生成此地形                        
+            ring_width_range=(0.1, 0.5),             
+            ring_height_range=(0.4, 0.75),           
+            ring_thickness=0.25,                 
+            platform_width=2.0, 
+        ),
+        "plane": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
+            proportion=1.0/4.0,
         ),
     },
 )
