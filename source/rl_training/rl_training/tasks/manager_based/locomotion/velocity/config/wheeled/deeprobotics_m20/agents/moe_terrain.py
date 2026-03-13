@@ -90,49 +90,30 @@ class MLP(nn.Module):
 
 
 # ==============================================================================
-# 2. CNN Encoder for Lidar/Camera
+# 2. CMoE: ElevationAE, DepthAE & ProprioVAE 
 # ==============================================================================
 
-class DepthCNN(nn.Module):
-    def __init__(self, input_channels=2, output_dim=128):
+class ElevationAE(nn.Module):
+    """用于 1D 高程图/地形扫描的自编码器 (对应论文 Elevation Map AE)"""
+    def __init__(self, input_dim=187, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
-        # Input shape expected: (Batch, 2, 58, 87)
-        self.net = nn.Sequential(
-            # Layer 1: -> (16, 29, 44)
-            nn.Conv2d(input_channels, 16, kernel_size=5, stride=2, padding=2),
-            nn.ELU(),
-            # Layer 2: -> (32, 15, 22)
-            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.ELU(),
-            # Layer 3: -> (64, 8, 11)
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ELU(),
-            # Layer 4: -> (128, 4, 6)
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.ELU(),
-        )
-        self.global_pool = nn.AdaptiveAvgPool2d((2, 4)) 
-        self.projection = nn.Linear(1024, output_dim)
-        self.act = nn.ELU()
+        # Encoder: 提取地形隐变量 z_t^E
+        self.encoder = MLP(input_dim, output_dim, hidden_dims, activation="elu")
+        # Decoder: 用于重建高程图
+        self.decoder = MLP(output_dim, input_dim, hidden_dims[::-1], activation="elu")
 
     def forward(self, x):
-        features = self.net(x)
-        features = self.global_pool(features)
-        features = features.flatten(1)
-        return self.act(self.projection(features))
-
-# ==============================================================================
-# 新增: CMoE 论文对应的 DepthAE 与 ProprioVAE
-# ==============================================================================
+        latent = self.encoder(x) # z_t^E
+        recon = self.decoder(latent) if self.training else None
+        return latent, recon
 
 class DepthAE(nn.Module):
-    """用于高程图/深度图的自编码器"""
+    """用于 2D 高程图/深度图的自编码器 (如果使用相机 CNN)"""
     def __init__(self, input_channels=2, output_dim=128, camera_height=58, camera_width=87):
         super().__init__()
         self.camera_height = camera_height
         self.camera_width = camera_width
         
-        # Encoder (与你原来的 DepthCNN 类似)
         self.encoder = nn.Sequential(
             nn.Conv2d(input_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
@@ -143,9 +124,7 @@ class DepthAE(nn.Module):
         self.fc_encode = nn.Linear(1024, output_dim)
         self.act = nn.ELU()
 
-        # Decoder
         self.fc_decode = nn.Linear(output_dim, 1024)
-        # 使用 Upsample + Conv 替代严格的 ConvTranspose，避免由于尺寸计算不匹配导致的报错
         self.decoder = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(128, 64, kernel_size=3, padding=1), nn.ELU(),
@@ -158,47 +137,41 @@ class DepthAE(nn.Module):
         )
 
     def forward(self, x):
-        # 编码
         features = self.encoder(x)
         features_pooled = self.global_pool(features).flatten(1)
-        latent = self.act(self.fc_encode(features_pooled))
+        latent = self.act(self.fc_encode(features_pooled)) 
         
-        # 解码 (只在训练时为了计算 loss 需要重建)
+        recon = None
         if self.training:
             dec_in = self.act(self.fc_decode(latent))
             dec_in = dec_in.view(-1, 128, 2, 4)
             recon = self.decoder(dec_in)
-            # 强制插值到原始尺寸以防 padding 不精确
             recon = F.interpolate(recon, size=(self.camera_height, self.camera_width), mode='bilinear', align_corners=False)
-        else:
-            recon = None
             
         return latent, recon
 
-
 class ProprioVAE(nn.Module):
-    """用于历史本体感受状态蒸馏的变分自编码器"""
+    """用于历史本体感受状态蒸馏的变分自编码器 (beta-VAE)"""
     def __init__(self, input_dim, vel_dim=3, latent_dim=64, hidden_dims=[128, 64]):
         super().__init__()
-        # Encoder: 输入历史观测，输出隐层特征
+        # Encoder: 输入历史观测 o_t^H
         self.encoder_mlp = MLP(input_dim, hidden_dims[-1], hidden_dims[:-1])
         
-        # 提取 mu 和 logvar (针对 KL 散度)
+        # VAE 的均值和方差
         self.fc_mu = nn.Linear(hidden_dims[-1], latent_dim)
         self.fc_logvar = nn.Linear(hidden_dims[-1], latent_dim)
 
-        # 速度预测器 (论文中 Encoder 直接映射到 body velocity v_t)
+        # 速度估计器 (输出 v_tilde_t)
         self.vel_estimator = nn.Linear(hidden_dims[-1], vel_dim)
 
-        # Decoder: 输入隐变量 z，重建原始历史观测 (或下一步观测)
-        # 注: 为了兼容现有框架的 Rollout 存储，我们重构当前的观测输入
+        # Decoder: 输入隐变量 z_t^H，重建观测
         self.decoder_mlp = MLP(latent_dim, input_dim, hidden_dims[::-1])
 
     def encode(self, x):
         h = self.encoder_mlp(x)
         mu = self.fc_mu(h)
         logvar = self.fc_logvar(h)
-        vel_pred = self.vel_estimator(h)
+        vel_pred = self.vel_estimator(h) # 速度预测
         return mu, logvar, vel_pred
 
     def reparameterize(self, mu, logvar):
@@ -211,8 +184,7 @@ class ProprioVAE(nn.Module):
 
     def forward(self, x):
         mu, logvar, vel_pred = self.encode(x)
-        # 仅在训练时采样，推理时直接使用均值
-        z = self.reparameterize(mu, logvar) if self.training else mu 
+        z = self.reparameterize(mu, logvar) if self.training else mu # z_t^H
         recon_x = self.decode(z) if self.training else None
         return vel_pred, recon_x, mu, logvar, z
 
@@ -238,20 +210,28 @@ class SplitMoEActorCritic(ActorCritic):
                  latent_dim=256,
                  rnn_type="gru",
                  aux_loss_coef=0.01,
-                 # === CNN Params ===
+                 # === AE Params ===
+                 blind_vision=True,     
+                 use_elevation_ae=True, 
+                 elevation_dim=187,     
                  use_cnn=False,
                  num_cameras=2,       
                  camera_height=58,    
                  camera_width=87,
                  # === Distillation / Overrides ===
                  forced_input_key=None,
+                 is_student_mode=False, 
+                 feed_estimator_to_policy=False, # 新增：Teacher设为False防止策略崩塌
+                 feed_ae_to_policy=False,        # 新增：Teacher使用Raw数据，不依赖AE
                  **kwargs):
         
         base_kwargs = {k: v for k, v in kwargs.items() if k not in [
             "estimator_output_dim", "estimator_hidden_dims", 
             "estimator_input_indices", "estimator_target_indices", 
             "estimator_obs_normalization", "init_noise_legs", "init_noise_wheels",
-            "actor_obs_normalization", "critic_obs_normalization"
+            "actor_obs_normalization", "critic_obs_normalization",
+            "use_elevation_ae", "elevation_dim", "blind_vision", "is_student_mode",
+            "feed_estimator_to_policy", "feed_ae_to_policy"
         ]}
 
         super().__init__(obs, obs_groups, num_actions, 
@@ -261,8 +241,12 @@ class SplitMoEActorCritic(ActorCritic):
                          init_noise_std=init_noise_std, 
                          **base_kwargs)
 
+        self.is_student_mode = is_student_mode
+        self.feed_estimator = feed_estimator_to_policy
+        self.feed_ae = feed_ae_to_policy
+
         # -------------------------------------------------------------
-        # Determine Input Keys and Dimension (Merged Logic from Student)
+        # 1. 解析基础输入维度
         # -------------------------------------------------------------
         self.input_keys = None 
         if forced_input_key:
@@ -284,7 +268,6 @@ class SplitMoEActorCritic(ActorCritic):
                                  num_obs = sum(obs[k].shape[-1] for k in valid_keys)
                                  found = True
                      if not found and len(obs_keys) > 0:
-                         print(f"[SplitMoE] Warning: Forced key '{forced_input_key}' not found in obs {obs_keys}. Fallback to '{obs_keys[0]}'.")
                          num_obs = list(obs.values())[0].shape[-1]
                 else:
                      num_obs = obs.shape[-1]
@@ -296,43 +279,134 @@ class SplitMoEActorCritic(ActorCritic):
         else:
             num_obs = obs.shape[-1]
             
+        self.blind_vision = blind_vision
         self.use_cnn = use_cnn
-        self.num_cameras = num_cameras
-        self.camera_height = camera_height
-        self.camera_width = camera_width
+        self.use_elevation_ae = use_elevation_ae
+        self.elevation_dim = elevation_dim
         
-        # Calculate image flat dimension
-        self.image_raw_dim = self.num_cameras * self.camera_height * self.camera_width 
-        
-        # Infer proprioception dimension
-        # Infer proprioception dimension
-        self.proprio_dim = num_obs - self.image_raw_dim if self.use_cnn else num_obs
-        print(f"[SplitMoE] Total Actor Obs: {num_obs}, Image Raw: {self.image_raw_dim}, Proprio: {self.proprio_dim} | CNN: {self.use_cnn}")
+        # 核心：计算真正的本体感觉维度 (增强了鲁棒性判断)
+        self.has_elevation_input = False
+        if self.use_elevation_ae:
+            if num_obs > self.elevation_dim:
+                self.proprio_dim = num_obs - self.elevation_dim
+                self.has_elevation_input = True
+            else:
+                self.proprio_dim = num_obs
+                self.has_elevation_input = False
+        elif self.use_cnn:
+            self.image_raw_dim = num_cameras * camera_height * camera_width 
+            if num_obs > self.image_raw_dim:
+                self.proprio_dim = num_obs - self.image_raw_dim
+                self.has_elevation_input = True
+            else:
+                self.proprio_dim = num_obs
+                self.has_elevation_input = False
+        else:
+            self.proprio_dim = num_obs
 
-        # --- 新增 Critic 维度推断 ---
+        # Critic 维度推断
         self.critic_keys = obs_groups.get("critic", None)
         if self.critic_keys and (isinstance(obs, dict) or hasattr(obs, "keys")):
             critic_num_obs = sum(obs[k].shape[-1] for k in self.critic_keys)
         else:
-            critic_num_obs = num_obs # Fallback
+            critic_num_obs = num_obs 
             
-        self.critic_proprio_dim = critic_num_obs - self.image_raw_dim if self.use_cnn else critic_num_obs
-        print(f"[SplitMoE] Total Critic Obs: {critic_num_obs}, Critic Proprio: {self.critic_proprio_dim}")
-
-        if self.use_cnn:
-            self.cnn_output_dim = 128
-            # DepthAE
-            self.depth_encoder = DepthAE(
-                input_channels=self.num_cameras, 
-                output_dim=self.cnn_output_dim,
-                camera_height=self.camera_height,
-                camera_width=self.camera_width
-            )
-            rnn_input_dim = self.proprio_dim + self.cnn_output_dim
-            critic_rnn_input_dim = self.critic_proprio_dim + self.cnn_output_dim
+        if self.use_elevation_ae and critic_num_obs > self.elevation_dim:
+            self.critic_proprio_dim = critic_num_obs - self.elevation_dim
+        elif self.use_cnn and critic_num_obs > self.image_raw_dim:
+            self.critic_proprio_dim = critic_num_obs - self.image_raw_dim
         else:
-            rnn_input_dim = num_obs
-            critic_rnn_input_dim = critic_num_obs
+            self.critic_proprio_dim = critic_num_obs
+
+        # -------------------------------------------------------------
+        # 2. 初始化 Estimator (ProprioVAE) 并获取其额外输出维度
+        # -------------------------------------------------------------
+        self.estimator_output_dim = kwargs.get("estimator_output_dim", 0)
+        self.estimator_hidden_dims = kwargs.get("estimator_hidden_dims", [128, 64])
+        self.estimator_obs_normalization = kwargs.get("estimator_obs_normalization", True)
+        self.estimator_target_indices = kwargs.get("estimator_target_indices", [0, 1, 2])
+        self.estimator_input_indices = kwargs.get("estimator_input_indices", list(range(3, 32)))
+        
+        est_input_dim = 0
+        if self.estimator_output_dim > 0:
+            self.has_estimator_group = False
+            try:
+                est_group = obs["estimator"]
+                est_input_dim = est_group.shape[-1]
+                self.has_estimator_group = True
+            except (KeyError, TypeError, AttributeError):
+                self.has_estimator_group = False
+                est_input_dim = len(self.estimator_input_indices)
+
+            if est_input_dim > 0:
+                self.estimator = ProprioVAE(
+                    input_dim=est_input_dim, 
+                    vel_dim=self.estimator_output_dim, 
+                    latent_dim=64, 
+                    hidden_dims=self.estimator_hidden_dims
+                )
+                self.estimator_obs_normalizer = None
+                if self.estimator_obs_normalization:
+                    self.estimator_obs_normalizer = EmpiricalNormalization(shape=[est_input_dim], until_step=1.0e9)
+                
+                self.vae_feature_dim = self.estimator_output_dim + 64
+                if self.is_student_mode:
+                    for param in self.estimator.parameters():
+                        param.requires_grad = False
+                    self.estimator.eval()
+            else:
+                self.estimator = None
+                self.vae_feature_dim = 0
+        else:
+            self.estimator = None
+            self.vae_feature_dim = 0
+
+        # -------------------------------------------------------------
+        # 3. 初始化地形感知 AE 并动态计算 RNN input_size
+        # -------------------------------------------------------------
+        self.ae_output_dim = 0
+        if self.use_elevation_ae:
+            self.ae_output_dim = 64
+            self.elevation_encoder = ElevationAE(input_dim=self.elevation_dim, output_dim=self.ae_output_dim)
+            if self.is_student_mode:
+                for param in self.elevation_encoder.parameters():
+                    param.requires_grad = False
+                self.elevation_encoder.eval()
+                
+        elif self.use_cnn:
+            self.ae_output_dim = 128
+            self.depth_encoder = DepthAE(
+                input_channels=num_cameras, output_dim=self.ae_output_dim,
+                camera_height=camera_height, camera_width=camera_width
+            )
+            if self.is_student_mode:
+                for param in self.depth_encoder.parameters():
+                    param.requires_grad = False
+                self.depth_encoder.eval()
+
+        # =============================================================
+        # 核心修改：根据 Router 开关解耦输入维度
+        # =============================================================
+        rnn_input_dim = self.proprio_dim
+        critic_rnn_input_dim = self.critic_proprio_dim
+
+        if getattr(self, 'has_elevation_input', True):
+            rnn_input_dim += self.ae_output_dim if self.feed_ae else (num_obs - self.proprio_dim)
+            critic_rnn_input_dim += self.ae_output_dim if self.feed_ae else (critic_num_obs - self.critic_proprio_dim)
+        else:
+            if self.feed_ae:
+                # 盲视学生若开启了 feed_ae，会拼接 0 向量，所以需要加上该维度
+                rnn_input_dim += self.ae_output_dim
+                critic_rnn_input_dim += self.ae_output_dim
+
+        if self.feed_estimator:
+            rnn_input_dim += self.vae_feature_dim
+            critic_rnn_input_dim += self.vae_feature_dim
+
+        print(f"[SplitMoE] RNN Actor Input: {rnn_input_dim} (Proprio: {self.proprio_dim}, "
+              f"VAE appended: {self.vae_feature_dim if self.feed_estimator else 0}, "
+              f"Env appended: {self.ae_output_dim if self.feed_ae else (num_obs - self.proprio_dim)}, "
+              f"Blind: {self.blind_vision}, Student: {self.is_student_mode})")
 
         # Normalization Setup
         self.actor_obs_normalization = kwargs.get("actor_obs_normalization", True)
@@ -340,19 +414,18 @@ class SplitMoEActorCritic(ActorCritic):
 
         if self.actor_obs_normalization:
             self.actor_obs_normalizer = EmpiricalNormalization(shape=[self.proprio_dim], until_step=1.0e9)
-        
         if self.critic_obs_normalization:
-            # 修改为 Critic 的 proprio 维度
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[self.critic_proprio_dim], until_step=1.0e9)
 
         self.latent_dim = latent_dim
         self.rnn_type = rnn_type.lower()
         self.aux_loss_coef = aux_loss_coef
-        
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
 
-        # Initialize Actor & Critic RNNs
+        # -------------------------------------------------------------
+        # 4. Initialize Actor & Critic RNNs
+        # -------------------------------------------------------------
         if self.rnn_type == "lstm":
             self.rnn = nn.LSTM(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
             self.critic_rnn = nn.LSTM(input_size=critic_rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
@@ -360,14 +433,14 @@ class SplitMoEActorCritic(ActorCritic):
             self.rnn = nn.GRU(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
             self.critic_rnn = nn.GRU(input_size=critic_rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
 
-        # 初始化权重
         for rnn_net in [self.rnn, self.critic_rnn]:
             for name, param in rnn_net.named_parameters():
                 if 'weight' in name: nn.init.orthogonal_(param)
                 elif 'bias' in name: nn.init.constant_(param, 0)
-        # ==================
 
-        # MoE Gates and Experts
+        # -------------------------------------------------------------
+        # 5. MoE Gates and Experts
+        # -------------------------------------------------------------
         self.gate_input_norm = nn.LayerNorm(self.latent_dim)
         self.leg_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_leg_experts))
         self.wheel_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_wheel_experts))
@@ -387,38 +460,6 @@ class SplitMoEActorCritic(ActorCritic):
 
         self.critic_mlp = MLP(self.latent_dim, 1, hidden_dims=critic_hidden_dims, activation=activation, output_gain=1.0)
 
-        # Estimator Setup
-        self.estimator_output_dim = kwargs.get("estimator_output_dim", 0)
-        self.estimator_hidden_dims = kwargs.get("estimator_hidden_dims", [128, 64])
-        self.estimator_obs_normalization = kwargs.get("estimator_obs_normalization", True)
-        self.estimator_target_indices = kwargs.get("estimator_target_indices", [0, 1, 2])
-        self.estimator_input_indices = kwargs.get("estimator_input_indices", list(range(3, 32)))
-        
-        if self.estimator_output_dim > 0:
-            est_input_dim = 0
-            self.has_estimator_group = False
-            try:
-                est_group = obs["estimator"]
-                est_input_dim = est_group.shape[-1]
-                self.has_estimator_group = True
-            except (KeyError, TypeError, AttributeError):
-                self.has_estimator_group = False
-                est_input_dim = len(self.estimator_input_indices)
-
-            if est_input_dim > 0:
-                # 替换为新的 ProprioVAE
-                self.estimator = ProprioVAE(
-                    input_dim=est_input_dim, 
-                    vel_dim=self.estimator_output_dim, 
-                    latent_dim=64, # 你可以根据需要调整 latent维度
-                    hidden_dims=self.estimator_hidden_dims
-                )
-                self.estimator_obs_normalizer = None
-                if self.estimator_obs_normalization:
-                    self.estimator_obs_normalizer = EmpiricalNormalization(shape=[est_input_dim], until_step=1.0e9)
-        else:
-            self.estimator = None
-
         # RNN State Init
         if isinstance(obs, dict): ref_tensor = obs[list(obs.keys())[0]]
         else: ref_tensor = obs
@@ -427,11 +468,9 @@ class SplitMoEActorCritic(ActorCritic):
         
         self.active_hidden_states = self._init_rnn_state(batch_size, device)
         self.active_critic_hidden_states = self._init_rnn_state(batch_size, device)
-        self.critic_keys = obs_groups.get("critic", None)
+        
         self.latest_weights = {}
         self.active_aux_loss = 0.0
-        self.active_estimator_loss = 0.0
-        self.active_estimator_error = 0.0
         
         # Noise Init
         new_std = torch.ones(num_actions)
@@ -470,54 +509,114 @@ class SplitMoEActorCritic(ActorCritic):
             
         if self.critic_obs_normalization:
             x_raw_critic = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
-            # 修改：这里必须使用 critic_proprio_dim 切片
             proprio_critic = x_raw_critic[..., :self.critic_proprio_dim] 
             self.critic_obs_normalizer.update(proprio_critic)
 
-    def _process_obs(self, x, normalizer=None, proprio_dim=None):
+    def _process_obs(self, x, obs_dict=None, normalizer=None, proprio_dim=None):
         if proprio_dim is None: 
             proprio_dim = self.proprio_dim
             
         proprio = x[..., :proprio_dim]
-        depth_raw = x[..., proprio_dim:]
         
         if normalizer is not None:
             proprio = normalizer(proprio)
-            
-        if self.use_cnn:
-            original_shape = depth_raw.shape[:-1] 
-            depth_image = depth_raw.view(
-                *original_shape, 
-                self.num_cameras, 
-                self.camera_height, 
-                self.camera_width
-            )
-            
-            if depth_image.ndim == 5: 
-                B, T, C, H, W = depth_image.shape
-                depth_image = depth_image.view(B*T, C, H, W)
-                depth_feat, depth_recon = self.depth_encoder(depth_image)
-                depth_feat = depth_feat.view(B, T, -1)
-                
-                # 记录 AE Reconstruction Loss 所需数据
-                if self.training and depth_recon is not None:
-                    self.active_depth_target = depth_image.detach()
-                    self.active_depth_recon = depth_recon
+        
+        # -------------------------------------------------------------
+        # 1. 外部地形感知 AE 特征提取 (根据解耦开关判断是否喂给 RNN)
+        # -------------------------------------------------------------
+        env_feat_for_rnn = None
+        if self.use_elevation_ae:
+            if not getattr(self, 'has_elevation_input', True) and (obs_dict is None or "noisy_elevation" not in obs_dict.keys()):
+                if self.feed_ae:
+                    env_feat_for_rnn = torch.zeros((*x.shape[:-1], self.ae_output_dim), device=x.device)
             else:
-                depth_feat, depth_recon = self.depth_encoder(depth_image)
-                if self.training and depth_recon is not None:
-                    self.active_depth_target = depth_image.detach()
-                    self.active_depth_recon = depth_recon
-            
-            x_out = torch.cat([proprio, depth_feat], dim=-1)
+                if obs_dict is not None and "noisy_elevation" in obs_dict:
+                    env_raw = obs_dict["noisy_elevation"]
+                else:
+                    env_raw = x[..., proprio_dim:] 
+                    
+                env_feat_ae, env_recon = self.elevation_encoder(env_raw)
+                
+                env_feat_for_rnn = env_feat_ae if self.feed_ae else env_raw
+                if self.blind_vision:
+                    env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
+
+        elif self.use_cnn:
+            if not getattr(self, 'has_elevation_input', True) and (obs_dict is None or "noisy_elevation" not in obs_dict.keys()):
+                if self.feed_ae:
+                    env_feat_for_rnn = torch.zeros((*x.shape[:-1], self.ae_output_dim), device=x.device)
+            else:
+                if obs_dict is not None and "noisy_elevation" in obs_dict:
+                    env_raw = obs_dict["noisy_elevation"]
+                else:
+                    env_raw = x[..., proprio_dim:]
+                    
+                original_shape = env_raw.shape[:-1] 
+                depth_image = env_raw.view(*original_shape, self.num_cameras, self.camera_height, self.camera_width)
+                if depth_image.ndim == 5: 
+                    B, T, C, H, W = depth_image.shape
+                    depth_image = depth_image.view(B*T, C, H, W)
+                    env_feat_ae, env_recon = self.depth_encoder(depth_image)
+                    env_feat_ae = env_feat_ae.view(B, T, -1)
+                else:
+                    env_feat_ae, env_recon = self.depth_encoder(depth_image)
+                
+                env_feat_for_rnn = env_feat_ae if self.feed_ae else env_raw
+                if self.blind_vision:
+                    env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
         else:
-            x_out = torch.cat([proprio, depth_raw], dim=-1)
+            if x.shape[-1] > proprio_dim:
+                env_feat_for_rnn = x[..., proprio_dim:]
+                if self.blind_vision:
+                    env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
+
+        # -------------------------------------------------------------
+        # 2. 历史上下文 VAE 特征提取 (根据解耦开关判断是否喂给 RNN)
+        # -------------------------------------------------------------
+        vae_latent_for_rnn = None
+        vel_pred_for_rnn = None
+        if self.estimator is not None and obs_dict is not None:
+            est_input = self._get_estimator_input(obs_dict)
+            if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
+                est_input = self.estimator_obs_normalizer(est_input)
             
+            vel_pred, recon_x, mu, logvar, z = self.estimator(est_input)
+            
+            if self.training:
+                self.active_vae_recon = recon_x
+                self.active_vae_mu = mu
+                self.active_vae_logvar = logvar
+                self.active_vae_vel_pred = vel_pred
+                self.active_vae_input = est_input 
+            
+            if self.feed_estimator:
+                vae_latent_for_rnn = z
+                vel_pred_for_rnn = vel_pred
+                
+        elif self.estimator is not None and obs_dict is None:
+            if self.feed_estimator:
+                orig_shape = proprio.shape[:-1]
+                vel_pred_for_rnn = torch.zeros((*orig_shape, self.estimator_output_dim), device=proprio.device)
+                vae_latent_for_rnn = torch.zeros((*orig_shape, 64), device=proprio.device)
+
+        # -------------------------------------------------------------
+        # 3. 拼接最终给到 RNN 的观测向量
+        # -------------------------------------------------------------
+        components = [proprio]
+        if self.feed_estimator and self.estimator is not None:
+            if vel_pred_for_rnn is not None:
+                components.append(vel_pred_for_rnn)
+                components.append(vae_latent_for_rnn)
+            
+        if env_feat_for_rnn is not None:
+            components.append(env_feat_for_rnn)
+
+        x_out = torch.cat(components, dim=-1)
         return x_out
     
     def _prepare_input(self, obs, key_list):
         x = self._extract_raw_obs(obs, key_list)
-        return self._process_obs(x, normalizer=None) 
+        return self._process_obs(x, obs_dict=obs, normalizer=None) 
 
     def _run_rnn(self, rnn_module, x_in, hidden_states, masks):
         if hidden_states is None:
@@ -571,6 +670,7 @@ class SplitMoEActorCritic(ActorCritic):
         total_action = torch.cat([leg_act_sum, wheel_act_sum], dim=-1)
 
         if self.training:
+            # PPO update calls act() passing batch, meaning we can cache aux loss natively
             self.active_aux_loss = self._calculate_load_balancing_loss(w_leg, w_wheel) * self.aux_loss_coef
         
         with torch.no_grad():
@@ -602,7 +702,7 @@ class SplitMoEActorCritic(ActorCritic):
     def act(self, obs, masks=None, hidden_state=None):
         x_raw = self._extract_raw_obs(obs, self.input_keys)
         normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
-        x_in = self._process_obs(x_raw, normalizer)
+        x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer)
         
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
@@ -616,7 +716,7 @@ class SplitMoEActorCritic(ActorCritic):
     def act_inference(self, obs, masks=None, hidden_states=None):
         x_raw = self._extract_raw_obs(obs, self.input_keys)
         normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
-        x_in = self._process_obs(x_raw, normalizer)
+        x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer)
 
         current_state = self._prepare_hidden_state(hidden_states, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
@@ -627,13 +727,11 @@ class SplitMoEActorCritic(ActorCritic):
     def evaluate(self, obs, masks=None, hidden_state=None):
         x_raw = self._extract_raw_obs(obs, getattr(self, "critic_keys", self.input_keys))
         normalizer = self.critic_obs_normalizer if self.critic_obs_normalization else None
-        # 传入 Critic 独有的 proprio_dim
-        x_in = self._process_obs(x_raw, normalizer, proprio_dim=self.critic_proprio_dim)
+        x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer, proprio_dim=self.critic_proprio_dim)
 
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_critic_hidden_states, x_in.device)
         
-        # 使用 self.critic_rnn
         latent, next_state = self._run_rnn(self.critic_rnn, x_in, current_state, masks)
         
         if hidden_state is None: self.active_critic_hidden_states = next_state
@@ -644,12 +742,13 @@ class SplitMoEActorCritic(ActorCritic):
         est_input = self._get_estimator_input(obs)
         if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
              est_input = self.estimator_obs_normalizer(est_input)
-        return self.estimator(est_input)
+        vel_pred, _, _, _, _ = self.estimator(est_input)
+        return vel_pred
 
     def forward(self, obs, masks=None, hidden_states=None, save_dist=True):
         x_raw = self._extract_raw_obs(obs, self.input_keys)
         normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
-        x_in = self._process_obs(x_raw, normalizer)
+        x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer)
 
         current_state = self._prepare_hidden_state(hidden_states, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
@@ -662,12 +761,10 @@ class SplitMoEActorCritic(ActorCritic):
         return self.distribution.log_prob(actions).sum(dim=-1)
     
     def get_hidden_states(self):
-        # rsl_rl 期望返回 (actor_hidden_states, critic_hidden_states)
         return self.active_hidden_states, self.active_critic_hidden_states
     
     def reset(self, dones=None, hidden_states=None):
         if hidden_states is not None:
-            # 兼容 rsl_rl 传入的双隐藏状态 (actor_hs, critic_hs)
             if isinstance(hidden_states, tuple) and len(hidden_states) == 2:
                 actor_hs, critic_hs = hidden_states
             else:
@@ -704,7 +801,6 @@ class SplitMoEActorCritic(ActorCritic):
 class SplitMoEStudentTeacher(nn.Module):
     """
     Adapter class to make SplitMoEActorCritic compatible with rsl_rl.runners.DistillationRunner.
-    Ensures that both Teacher and Student can optionally use CNNs seamlessly.
     """
     is_recurrent = True
     loaded_teacher = False
@@ -716,10 +812,11 @@ class SplitMoEStudentTeacher(nn.Module):
         if isinstance(activation, dict):
             activation = activation.get("value", "elu") if "value" in activation else "elu"
             
-        # 1. Initialize Student (MoE) - Uses "policy" obs group (Student Obs)
-        print("\n[Distillation] Initializing Student Policy (SplitMoE CNN-Ready)...")
+        # =========================================================
+        # 初始化 Student
+        # =========================================================
+        print("\n[Distillation] Initializing Student Policy...")
         student_kwargs = kwargs.copy()
-        student_kwargs["estimator_output_dim"] = 0 # No estimator for student in BC
         
         student_obs_groups = {"policy": obs_groups["policy"]}
         student_obs_groups["critic"] = obs_groups["policy"]
@@ -730,13 +827,19 @@ class SplitMoEStudentTeacher(nn.Module):
             student_obs_groups, 
             num_actions, 
             forced_input_key=student_input_key, 
-            activation=activation, 
+            activation=activation,
+            is_student_mode=True, 
             **student_kwargs
         )
 
-        # 2. Initialize Teacher (MoE) - Uses "teacher" obs group (Privileged Obs)
-        print("\n[Distillation] Initializing Teacher Policy (SplitMoE CNN-Ready)...")
+        # =========================================================
+        # 初始化 Teacher 
+        # =========================================================
+        print("\n[Distillation] Initializing Teacher Policy...")
         teacher_kwargs = kwargs.copy()
+        # Teacher 使用无脑原始数据跑即可，保证最高性能上限
+        teacher_kwargs["feed_estimator_to_policy"] = False
+        teacher_kwargs["feed_ae_to_policy"] = False
         
         teacher_source = obs_groups["teacher"]
         teacher_obs_groups = {"policy": teacher_source, "critic": teacher_source}
@@ -751,7 +854,6 @@ class SplitMoEStudentTeacher(nn.Module):
             **teacher_kwargs
         )
         
-        # Ensure Teacher is in Eval mode
         self.teacher.eval()
         for param in self.teacher.parameters():
             param.requires_grad = False
@@ -793,23 +895,28 @@ class SplitMoEStudentTeacher(nn.Module):
     def load_state_dict(self, state_dict, strict=True):
         print(f"[Distillation] Loading state dict with {len(state_dict)} keys...")
         
-        # ---------------------------------------------------------
-        # [Fix] 过滤掉所有 critic 相关的权重。
-        # 因为蒸馏时我们只用 Teacher 的 Actor，且不同阶段 Critic 维度可能不同，
-        # 过滤掉它可以避免 PyTorch 抛出 size mismatch 错误。
-        # ---------------------------------------------------------
         teacher_state_dict = {k: v for k, v in state_dict.items() if "critic" not in k}
         
         try:
-            # 使用 strict=False，允许丢失 critic 的权重（它会保持随机初始化但不影响蒸馏）
             self.teacher.load_state_dict(teacher_state_dict, strict=False)
             print("[Distillation] Successfully loaded Teacher weights (critic ignored).")
             self.loaded_teacher = True
         except Exception as e:
             print(f"[Distillation] Warning: Direct load to teacher failed: {e}")
 
-        # 如果是恢复蒸馏训练，顺便加载 Student 的权重
-        if any(k.startswith("student.") for k in state_dict.keys()):
+        # =========================================================
+        # 【关键改动】将 Teacher 预训练好的 VAE 和 AE 权重拷贝给 Student
+        # =========================================================
+        if not any(k.startswith("student.") for k in state_dict.keys()):
+            print("[Distillation] Initializing Student's VAE/AE from Teacher...")
+            student_dict = self.student.state_dict()
+            for k, v in teacher_state_dict.items():
+                if k.startswith("estimator") or k.startswith("elevation_encoder") or k.startswith("depth_encoder"):
+                    if k in student_dict and student_dict[k].shape == v.shape:
+                        student_dict[k].copy_(v)
+            self.student.load_state_dict(student_dict, strict=False)
+            print("[Distillation] VAE/AE weights copied to Student successfully.")
+        else:
             super().load_state_dict(state_dict, strict=strict)
             print("[Distillation] Resumed Student-Teacher training.")
             self.loaded_teacher = True
@@ -817,7 +924,7 @@ class SplitMoEStudentTeacher(nn.Module):
         return True
 
 # ==============================================================================
-# 5. PPO Algorithm Wrapper (Teacher Training)
+# 5. PPO Algorithm Wrapper (Teacher Training / Composite Loss Calc)
 # ==============================================================================
 
 class SplitMoEPPO(PPO):
@@ -830,28 +937,90 @@ class SplitMoEPPO(PPO):
             self.optimizer.zero_grad()
             total_aux_loss = 0.0
             
-            if model.estimator is not None:
+            # -------------------------------------------------------------
+            # 1. 核心计算: ProprioVAE Loss
+            # -------------------------------------------------------------
+            if model.estimator is not None and not model.is_student_mode:
                 est_input = model._get_estimator_input(obs_batch)
                 if hasattr(obs_batch, "keys") or isinstance(obs_batch, dict):
-                    try: full_obs_for_target = obs_batch["policy"]
-                    except KeyError: full_obs_for_target = model._extract_raw_obs(obs_batch, model.input_keys)
-                else: full_obs_for_target = obs_batch
+                    try: full_obs_for_target = obs_batch["critic"]
+                    except KeyError: full_obs_for_target = model._extract_raw_obs(obs_batch, getattr(model, "critic_keys", model.input_keys))
+                else: 
+                    full_obs_for_target = obs_batch
                 
                 target_state = full_obs_for_target[..., model.estimator_target_indices]
-                if model.estimator_obs_normalization and model.estimator_obs_normalizer is not None:
+                
+                if getattr(model, "estimator_obs_normalization", False) and model.estimator_obs_normalizer is not None:
                     est_input = model.estimator_obs_normalizer(est_input)
-                estimated_state = model.estimator(est_input)
-                est_loss = (estimated_state - target_state).pow(2).mean()
-                total_aux_loss += est_loss
-                model.active_estimator_loss = est_loss.detach()
-                model.active_estimator_error = (estimated_state - target_state).abs().mean().detach()
+                
+                vel_pred, recon_x, mu, logvar, z = model.estimator(est_input)
 
+                vel_loss = (vel_pred - target_state).pow(2).mean()
+                recon_loss = (recon_x - est_input).pow(2).mean()
+                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1).mean()
+
+                beta = 0.01 
+                vae_loss = vel_loss + recon_loss + beta * kl_loss
+                total_aux_loss += vae_loss
+                
+                if not hasattr(model, 'loss_dict_cache'):
+                    model.loss_dict_cache = {}
+                model.loss_dict_cache["Loss/VAE_Vel_MSE"] = vel_loss.item()
+                model.loss_dict_cache["Loss/VAE_Recon_MSE"] = recon_loss.item()
+                model.loss_dict_cache["Loss/VAE_KL"] = kl_loss.item()
+
+            # -------------------------------------------------------------
+            # 2. 核心计算: ElevationAE 重构 Loss
+            # -------------------------------------------------------------
+            if model.use_elevation_ae and not getattr(model, "blind_vision", False) and not model.is_student_mode:
+                # ====== 优先从独立的 noisy_elevation 组获取训练数据 ======
+                if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
+                    env_raw = obs_batch["noisy_elevation"]
+                else:
+                    x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
+                    env_raw = x_raw[..., model.proprio_dim:]
+                
+                _, env_recon = model.elevation_encoder(env_raw)
+                
+                if env_recon is not None:
+                    elev_ae_loss = (env_recon - env_raw).pow(2).mean()
+                    total_aux_loss += elev_ae_loss
+                    if not hasattr(model, 'loss_dict_cache'):
+                        model.loss_dict_cache = {}
+                    model.loss_dict_cache["Loss/Elevation_AE_Recon"] = elev_ae_loss.item()
+
+            # -------------------------------------------------------------
+            # 3. 核心计算: DepthAE 重构 Loss
+            # -------------------------------------------------------------
+            if model.use_cnn and not getattr(model, "blind_vision", False) and not model.is_student_mode:
+                if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
+                    env_raw = obs_batch["noisy_elevation"]
+                else:
+                    x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
+                    env_raw = x_raw[..., model.proprio_dim:]
+                
+                original_shape = env_raw.shape[:-1]
+                depth_image = env_raw.view(*original_shape, model.num_cameras, model.camera_height, model.camera_width)
+                if depth_image.ndim == 5:
+                    B, T, C, H, W = depth_image.shape
+                    depth_image = depth_image.view(B*T, C, H, W)
+                    
+                _, depth_recon = model.depth_encoder(depth_image)
+                if depth_recon is not None:
+                    depth_ae_loss = (depth_recon - depth_image).pow(2).mean() 
+                    total_aux_loss += depth_ae_loss
+                    if not hasattr(model, 'loss_dict_cache'):
+                        model.loss_dict_cache = {}
+                    model.loss_dict_cache["Loss/Depth_AE_Recon"] = depth_ae_loss.item()
+
+            # --- 反向传播 ---
             if isinstance(total_aux_loss, torch.Tensor) and total_aux_loss.requires_grad:
                 total_aux_loss.backward()
                 if self.max_grad_norm is not None:
                     nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
+        # --- 日志记录 ---
         if model is not None:
             if hasattr(model, "latest_weights") and model.latest_weights:
                 w = model.latest_weights
@@ -859,9 +1028,12 @@ class SplitMoEPPO(PPO):
                     for i, val in enumerate(w["leg"]): loss_dict[f"Gate/Leg_Expert_{i}"] = val.item()
                 if "wheel" in w:
                     for i, val in enumerate(w["wheel"]): loss_dict[f"Gate/Wheel_Expert_{i}"] = val.item()
-            if hasattr(model, "active_aux_loss"): loss_dict["Loss/Load_Balancing"] = model.active_aux_loss.item() if isinstance(model.active_aux_loss, torch.Tensor) else model.active_aux_loss
-            if hasattr(model, "active_estimator_loss"): loss_dict["Loss/Estimator_MSE"] = model.active_estimator_loss.item() if isinstance(model.active_estimator_loss, torch.Tensor) else model.active_estimator_loss
-            if hasattr(model, "active_estimator_error"): loss_dict["Loss/Estimator_Error_MAE"] = model.active_estimator_error.item() if isinstance(model.active_estimator_error, torch.Tensor) else model.active_estimator_error
+            if hasattr(model, "active_aux_loss"): 
+                loss_dict["Loss/Load_Balancing"] = model.active_aux_loss.item() if isinstance(model.active_aux_loss, torch.Tensor) else model.active_aux_loss
+            
+            if hasattr(model, "loss_dict_cache"):
+                loss_dict.update(model.loss_dict_cache)
+
             if hasattr(model, "std"):
                 std_np = model.std.detach().cpu().numpy()
                 n_legs = getattr(model, "num_leg_actions", 12)
@@ -887,13 +1059,17 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
 
-    # CNN / Vision Params
-    use_cnn: bool = False
+    # === AE / Vision Params ===
+    blind_vision: bool = True       
+    use_elevation_ae: bool = True   
+    elevation_dim: int = 187        
+    
+    use_cnn: bool = False           
     num_cameras: int = 2
     camera_height: int = 58
     camera_width: int = 87
 
-    # Estimator Params
+    # === Estimator Params ===
     estimator_output_dim: int = 3  
     estimator_hidden_dims: list = field(default_factory=lambda: [128, 64])
     estimator_target_indices: list = field(default_factory=lambda: [0, 1, 2])
@@ -905,6 +1081,10 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     
     actor_hidden_dims: list = field(default_factory=lambda: [256, 128, 128])
     critic_hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
+
+    # === 解耦开关 ===
+    feed_estimator_to_policy: bool = False 
+    feed_ae_to_policy: bool = False
     
     def get_std(self):
         std_np = self.std.detach().cpu().numpy()
@@ -915,19 +1095,19 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
-    num_steps_per_env = 36
+    num_steps_per_env = 24
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
     empirical_normalization = False
     
-    obs_groups = {"policy": ["policy"], "critic": ["critic"]}
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
     
     policy = SplitMoEActorCriticCfg(
-        init_noise_std=1.2, 
+        init_noise_std=1.0, 
         init_noise_legs=1.0,
-        init_noise_wheels=0.8, 
-        actor_hidden_dims=[256, 128, 128], 
+        init_noise_wheels=1.0, 
+        actor_hidden_dims=[512, 256, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
@@ -937,19 +1117,23 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        use_cnn=False, # Ensure CNN is explicitly toggled
-        num_cameras=2,
-        camera_height=58,
-        camera_width=87,
-
-        estimator_output_dim=0,
+        blind_vision=True, # 盲视平地训练
+        use_elevation_ae=True, 
+        elevation_dim=187,
+        use_cnn=False, 
+        
+        estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
-        estimator_target_indices=[0, 1, 2],
+        estimator_target_indices=[0, 1, 2], 
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
         
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
+
+        # Teacher 保持纯净特权视野，不接收未训练好的 AE/VAE
+        feed_estimator_to_policy=False, 
+        feed_ae_to_policy=True,
     )
 
     algorithm = RslRlPpoAlgorithmCfg(
@@ -959,7 +1143,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.01,
         num_learning_epochs=5,
-        num_mini_batches=16,
+        num_mini_batches=4,
         learning_rate=1.0e-3, 
         schedule="adaptive",
         gamma=0.99,
@@ -967,6 +1151,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
 @configclass
 class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
@@ -976,7 +1161,7 @@ class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "split_moe_teacher_parallel_cmp" 
     empirical_normalization = False
     
-    obs_groups = {"policy": ["policy"], "critic": ["critic"]}
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
     
     policy = SplitMoEActorCriticCfg(
         init_noise_std=1.0, 
@@ -992,12 +1177,12 @@ class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        use_cnn=False, # Ensure CNN is explicitly toggled
-        num_cameras=2,
-        camera_height=58,
-        camera_width=87,
-
-        estimator_output_dim=0,
+        blind_vision=True, 
+        use_elevation_ae=True,
+        elevation_dim=187,
+        use_cnn=False, 
+        
+        estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
         estimator_target_indices=[0, 1, 2],
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
@@ -1005,6 +1190,9 @@ class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
+
+        feed_estimator_to_policy=False, 
+        feed_ae_to_policy=False,
     )
 
     algorithm = RslRlPpoAlgorithmCfg(
@@ -1031,15 +1219,14 @@ class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
     """
     Configuration for Student-Teacher Distillation (Behavior Cloning).
-    Uses 'SplitMoEStudentTeacher' to wrap two SplitMoE instances (both CNN capable).
     """
     num_steps_per_env = 36
     max_iterations = 10000
     save_interval = 200
-    experiment_name = "split_moe_distill_cnn"
+    experiment_name = "split_moe_distill"
     empirical_normalization = False
 
-    obs_groups = {"policy": ["blind_student_policy"], "teacher": ["policy"]} 
+    obs_groups = {"policy": ["blind_student_policy"], "teacher": ["policy"], "noisy_elevation": ["noisy_elevation"]} 
 
     policy = SplitMoEActorCriticCfg(
         class_name="SplitMoEStudentTeacher", 
@@ -1058,14 +1245,20 @@ class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
         
-        # --- Make sure Student also uses CNN ---
+        blind_vision=False,
+        
+        use_elevation_ae=True, 
+        elevation_dim=187,
         use_cnn=False,
-        num_cameras=2,
-        camera_height=58,
-        camera_width=87,
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
 
-        # Student params (Estimator disabled for student in BC)
-        estimator_output_dim=0,
+        # Student 需要开启这两个开关，以接收 Teacher 预训练好的 VAE/AE 特征
+        feed_estimator_to_policy=True, 
+        feed_ae_to_policy=True,
     )
 
     algorithm = RslRlDistillationAlgorithmCfg(
@@ -1082,10 +1275,10 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 10000
     save_interval = 200
-    experiment_name = "split_moe_distill_sense_cnn"
+    experiment_name = "split_moe_distill_sense"
     empirical_normalization = False
 
-    obs_groups = {"policy": ["student_policy"], "teacher": ["policy"]} 
+    obs_groups = {"policy": ["student_policy"], "teacher": ["policy"], "noisy_elevation": ["noisy_elevation"]} 
 
     policy = SplitMoEActorCriticCfg(
         class_name="SplitMoEStudentTeacher", 
@@ -1104,13 +1297,20 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
         
-        # --- Make sure Student also uses CNN ---
-        use_cnn=True,
-        num_cameras=2,
-        camera_height=58,
-        camera_width=87,
+        blind_vision=False,
+        use_elevation_ae=True, 
+        elevation_dim=187,
+        use_cnn=False,
+        
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
 
-        estimator_output_dim=0,
+        # Student 接入已训练特征
+        feed_estimator_to_policy=True, 
+        feed_ae_to_policy=True,
     )
 
     algorithm = RslRlDistillationAlgorithmCfg(
