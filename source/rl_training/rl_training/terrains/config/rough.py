@@ -247,7 +247,7 @@ STAIR_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
     num_rows=10,
-    num_cols=2,
+    num_cols=4,
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
@@ -255,7 +255,7 @@ STAIR_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     sub_terrains={
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.5,
+            proportion=0.25,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
@@ -263,12 +263,18 @@ STAIR_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.5,  # 2/18 的概率生成此地形
+            proportion=0.25,  # 2/18 的概率生成此地形
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
             holes=False,
+        ),
+        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=0.25, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
+        ),
+        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+            proportion=0.25, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
         ),
     }
 )
@@ -289,6 +295,8 @@ PRE_TRAIN_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
     }
 )
+
+
 
 
 ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(

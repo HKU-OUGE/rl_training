@@ -16,7 +16,8 @@ from isaaclab_rl.rsl_rl import (
 )
 from dataclasses import field
 import numpy as np
-
+from rsl_rl.modules import ActorCritic
+from rsl_rl.algorithms import Distillation
 # ==============================================================================
 # 1. Base Components
 # ==============================================================================
@@ -811,7 +812,8 @@ class SplitMoEStudentTeacher(nn.Module):
         
         if isinstance(activation, dict):
             activation = activation.get("value", "elu") if "value" in activation else "elu"
-            
+        # 提取动态开关 (默认 False)
+        teacher_is_mlp = kwargs.pop("teacher_is_mlp", False) 
         # =========================================================
         # 初始化 Student
         # =========================================================
@@ -833,27 +835,44 @@ class SplitMoEStudentTeacher(nn.Module):
         )
 
         # =========================================================
-        # 初始化 Teacher 
+        # 2. 动态初始化 Teacher
         # =========================================================
-        print("\n[Distillation] Initializing Teacher Policy...")
-        teacher_kwargs = kwargs.copy()
-        # Teacher 使用无脑原始数据跑即可，保证最高性能上限
-        teacher_kwargs["feed_estimator_to_policy"] = False
-        teacher_kwargs["feed_ae_to_policy"] = False
-        
         teacher_source = obs_groups["teacher"]
-        teacher_obs_groups = {"policy": teacher_source, "critic": teacher_source}
-        teacher_input_key = teacher_source[0]
         
-        self.teacher = SplitMoEActorCritic(
-            obs, 
-            teacher_obs_groups, 
-            num_actions, 
-            forced_input_key=teacher_input_key, 
-            activation=activation, 
-            **teacher_kwargs
-        )
-        
+        if teacher_is_mlp:
+            print("\n[Distillation] Initializing Teacher Policy (Standard MLP)...")
+            
+            # 为 Teacher 构造满足 ActorCritic 接口要求的 obs_groups 字典
+            # 因为是平地策略，actor 和 critic 都使用相同的 teacher_source (即 policy 组)
+            teacher_obs_groups = {
+                "policy": teacher_source,
+                "critic": teacher_source
+            }
+
+            # 初始化标准 MLP，完全遵循 RSL-RL 最新 API 规范，维度对齐 agent.yaml
+            self.teacher = ActorCritic(
+                obs=obs,
+                obs_groups=teacher_obs_groups,
+                num_actions=num_actions,
+                actor_hidden_dims=[512, 256, 128], 
+                critic_hidden_dims=[512, 256, 128],
+                activation=activation, 
+                init_noise_std=1.0,
+            )
+        else:
+            print("\n[Distillation] Initializing Teacher Policy (SplitMoE)...")
+            teacher_kwargs = kwargs.copy()
+            teacher_kwargs["feed_estimator_to_policy"] = False
+            teacher_kwargs["feed_ae_to_policy"] = False
+            teacher_obs_groups = {"policy": teacher_source, "critic": teacher_source}
+            teacher_input_key = teacher_source[0]
+            
+            self.teacher = SplitMoEActorCritic(
+                obs, teacher_obs_groups, num_actions, 
+                forced_input_key=teacher_input_key, activation=activation, 
+                **teacher_kwargs
+            )
+            
         self.teacher.eval()
         for param in self.teacher.parameters():
             param.requires_grad = False
@@ -1019,7 +1038,6 @@ class SplitMoEPPO(PPO):
                 if self.max_grad_norm is not None:
                     nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
-
         # --- 日志记录 ---
         if model is not None:
             if hasattr(model, "latest_weights") and model.latest_weights:
@@ -1040,7 +1058,212 @@ class SplitMoEPPO(PPO):
                 if len(std_np) >= n_legs:
                     loss_dict["Noise/Leg_Std"] = std_np[:n_legs].mean()
                     loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
+        # 👇 ========================== 新增：序列级 Actor 对称性正则化 ========================== 👇
+        if model is not None and not getattr(model, "is_student_mode", False) and self.num_learning_epochs > 0:
+            device = self.device
+            # 1. 动作映射
+            action_swap_idx = torch.tensor([3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device)
+            action_neg_mask = torch.tensor([-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device)
+            
+            # 2. 获取完整的 TensorDict，保留所有环境特征(如 estimator, noisy_elevation)
+            obs_all = self.storage.observations
+            obs_mirrored_all = obs_all.clone()
+            
+            # 3. 仅对 policy 组进行精确镜像
+            obs_neg_mask = torch.ones(60, dtype=torch.float32, device=device)
+            obs_neg_mask[1] = -1.0  # lin_vel y
+            obs_neg_mask[3] = -1.0  # ang_vel roll
+            obs_neg_mask[5] = -1.0  # ang_vel yaw
+            obs_neg_mask[7] = -1.0  # gravity y
+            obs_neg_mask[10] = -1.0 # cmd vy
+            obs_neg_mask[11] = -1.0 # cmd wz
+            
+            obs_swap_idx = torch.arange(60, dtype=torch.long, device=device)
+            for offset in [12, 28, 44]:
+                obs_swap_idx[offset:offset+16] = action_swap_idx + offset
+                obs_neg_mask[offset:offset+16] = action_neg_mask
+
+            if "policy" in obs_mirrored_all.keys():
+                p = obs_mirrored_all["policy"]
+                obs_mirrored_all["policy"] = p[..., obs_swap_idx] * obs_neg_mask
+            
+            force_reset_dones = torch.ones(self.storage.num_envs, dtype=torch.bool, device=device)
+
+            # 4. PASS 1 (无梯度): 真实观测下的动作基准
+            model.reset(dones=force_reset_dones)
+            target_actions = []
+            with torch.no_grad():
+                for t in range(self.storage.num_transitions_per_env):
+                    # 传入完整的 TensorDict slice，所有的 VAE/AE 特征都能正确读取！
+                    act = model.act_inference(obs_all[t])
+                    target_actions.append(act)
+            target_actions = torch.stack(target_actions)
+            target_mirrored_actions = target_actions[..., action_swap_idx] * action_neg_mask
+
+            # 5. PASS 2 (开启梯度): 镜像观测下，强迫输出镜像动作
+            model.reset(dones=force_reset_dones)
+            pred_actions = []
+            for t in range(self.storage.num_transitions_per_env):
+                act = model.act_inference(obs_mirrored_all[t])
+                pred_actions.append(act)
+            pred_actions = torch.stack(pred_actions)
+            
+            # 6. 计算 Loss 并反向传播
+            sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions.detach())
+            sym_loss_weight = 1.0 
+            
+            self.optimizer.zero_grad()
+            (sym_loss * sym_loss_weight).backward()
+            
+            if self.is_multi_gpu:
+                self.reduce_parameters()
+            if self.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+            
+            model.reset(dones=force_reset_dones)
+            loss_dict["Loss/Actor_Symmetry_Reg"] = sym_loss.item()
+        # 👆 ====================================================================================== 👆
+        
         return loss_dict
+
+# ==============================================================================
+# 自定义算法：带对称性增强的蒸馏 (Sequence-Level Augmentation 双趟遍历)
+# ==============================================================================
+from rsl_rl.algorithms import Distillation
+
+class SymmetricMoEDistillation(Distillation):
+    """
+    带有序列级左右对称性增强的蒸馏算法。
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        device = self.device
+        
+        # 1. 动作维度的镜像映射 (16维)
+        # 交换左右腿和左右轮
+        self.action_swap_idx = torch.tensor(
+            [3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device
+        )
+        # 仅侧摆关节 (hipx) 在左右镜像时符号相反
+        self.action_neg_mask = torch.tensor(
+            [-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device
+        )
+
+    def _mirror_obs(self, obs):
+        """精准镜像 TensorDict 内部的各个观测组，而不破坏 Batch 维度"""
+        obs_mirrored = obs.clone()
+        
+        # 1. 镜像 policy 组 (60维，包含真实线速度)
+        if "policy" in obs_mirrored.keys():
+            p = obs_mirrored["policy"].clone()
+            p[..., 1] *= -1.0  # base_lin_vel: y
+            p[..., 3] *= -1.0  # base_ang_vel: roll (x)
+            p[..., 5] *= -1.0  # base_ang_vel: yaw (z)
+            p[..., 7] *= -1.0  # projected_gravity: y
+            p[..., 10] *= -1.0 # velocity_commands: vy
+            p[..., 11] *= -1.0 # velocity_commands: wz
+            # 处理关节位置、关节速度、历史动作 (起始索引 12, 28, 44)
+            for offset in [12, 28, 44]:
+                p[..., offset:offset+16] = p[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
+            obs_mirrored["policy"] = p
+
+        # 2. 镜像 blind_student_policy / student_policy 组 (57维，无真实线速度)
+        for group_name in ["blind_student_policy", "student_policy"]:
+            if group_name in obs_mirrored.keys():
+                b = obs_mirrored[group_name].clone()
+                b[..., 0] *= -1.0  # base_ang_vel: roll (x)
+                b[..., 2] *= -1.0  # base_ang_vel: yaw (z)
+                b[..., 4] *= -1.0  # projected_gravity: y
+                b[..., 7] *= -1.0  # velocity_commands: vy
+                b[..., 8] *= -1.0  # velocity_commands: wz
+                # 处理关节位置、关节速度、历史动作 (起始索引 9, 25, 41)
+                for offset in [9, 25, 41]:
+                    b[..., offset:offset+16] = b[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
+                obs_mirrored[group_name] = b
+                
+        # noisy_elevation 高程图在平地时对称，暂不反转；若未来在崎岖地形上也想镜像，需翻转 grid
+        return obs_mirrored
+
+    def update(self) -> dict[str, float]:
+        self.num_updates += 1
+        mean_behavior_loss = 0
+        loss = 0
+        cnt = 0
+
+        # 创建一个全 True 的 done 掩码，用于强制清空 RNN 状态
+        force_reset_dones = torch.ones(self.storage.num_envs, dtype=torch.bool, device=self.device)
+
+        for epoch in range(self.num_learning_epochs):
+            
+            # ==============================================================
+            # PASS 1: 镜像轨迹 (Sequence-Level Mirrored Pass)
+            # ==============================================================
+            self.policy.reset(dones=force_reset_dones)
+            self.policy.detach_hidden_states()
+            
+            for obs, _, privileged_actions, dones in self.storage.generator():
+                # 安全地获取镜像后的 TensorDict
+                obs_mirrored = self._mirror_obs(obs)
+                target_actions_mirrored = privileged_actions[..., self.action_swap_idx] * self.action_neg_mask
+                
+                actions = self.policy.act_inference(obs_mirrored)
+                behavior_loss = self.loss_fn(actions, target_actions_mirrored)
+                
+                loss = loss + behavior_loss
+                mean_behavior_loss += behavior_loss.item()
+                cnt += 1
+
+                if cnt % self.gradient_length == 0:
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    if self.is_multi_gpu:
+                        self.reduce_parameters()
+                    if self.max_grad_norm:
+                        nn.utils.clip_grad_norm_(self.policy.student.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
+                    self.policy.detach_hidden_states()
+                    loss = 0
+
+                self.policy.reset(dones.view(-1))
+                self.policy.detach_hidden_states(dones.view(-1))
+
+            # ==============================================================
+            # PASS 2: 标准轨迹 (Sequence-Level Standard Pass)
+            # ==============================================================
+            self.policy.reset(hidden_states=self.last_hidden_states)
+            self.policy.detach_hidden_states()
+            
+            for obs, _, privileged_actions, dones in self.storage.generator():
+                actions = self.policy.act_inference(obs)
+                behavior_loss = self.loss_fn(actions, privileged_actions)
+                
+                loss = loss + behavior_loss
+                mean_behavior_loss += behavior_loss.item()
+                cnt += 1
+
+                if cnt % self.gradient_length == 0:
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    if self.is_multi_gpu:
+                        self.reduce_parameters()
+                    if self.max_grad_norm:
+                        nn.utils.clip_grad_norm_(self.policy.student.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
+                    self.policy.detach_hidden_states()
+                    loss = 0
+
+                self.policy.reset(dones.view(-1))
+                self.policy.detach_hidden_states(dones.view(-1))
+
+        mean_behavior_loss /= cnt
+        self.storage.clear()
+        
+        self.last_hidden_states = self.policy.get_hidden_states()
+        self.policy.detach_hidden_states()
+
+        return {"Loss/Distillation_Symmetric": mean_behavior_loss}
 
 # ==============================================================================
 # 6. Configurations
@@ -1060,7 +1283,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     aux_loss_coef: float = 0.01
 
     # === AE / Vision Params ===
-    blind_vision: bool = True       
+    blind_vision: bool = False       
     use_elevation_ae: bool = True   
     elevation_dim: int = 187        
     
@@ -1084,8 +1307,9 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 
     # === 解耦开关 ===
     feed_estimator_to_policy: bool = False 
-    feed_ae_to_policy: bool = False
-    
+    feed_ae_to_policy: bool = True
+    teacher_is_mlp: bool = False
+
     def get_std(self):
         std_np = self.std.detach().cpu().numpy()
         leg_std = std_np[:self.num_leg_actions].mean() if self.num_leg_actions > 0 else 0.0
@@ -1107,7 +1331,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0, 
         init_noise_legs=1.0,
         init_noise_wheels=1.0, 
-        actor_hidden_dims=[512, 256, 128], 
+        actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
@@ -1117,7 +1341,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         rnn_type="gru",
         aux_loss_coef=0.01,
         
-        blind_vision=True, # 盲视平地训练
+        blind_vision=False, # 盲视平地训练
         use_elevation_ae=True, 
         elevation_dim=187,
         use_cnn=False, 
@@ -1318,3 +1542,35 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
         num_learning_epochs=5,
         learning_rate=1.0e-4,
     )
+
+@configclass
+class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
+    """用于第一阶段：从平地 MLP 蒸馏到 MoE Teacher"""
+    num_steps_per_env = 24
+    max_iterations = 3000  # BC 蒸馏不需要太多 epoch
+    save_interval = 200
+    experiment_name = "mlp_to_moe_distill"
+    empirical_normalization = False
+
+    # Student 用 policy 组(纯本体)，Teacher 用 policy 组(平地时没有复杂特权信息)
+    obs_groups = {
+        "policy": ["policy"], 
+        "teacher": ["blind_student_policy"],
+        "noisy_elevation": ["noisy_elevation"]
+    }
+
+    policy = SplitMoEActorCriticCfg(
+        class_name="SplitMoEStudentTeacher", 
+        teacher_is_mlp=True, # <--- 关键！开启 MLP Teacher
+        
+        init_noise_std=1.0, init_noise_legs=0.8, init_noise_wheels=0.5, 
+        actor_hidden_dims=[256, 128, 128], critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3, num_leg_experts=6, num_leg_actions=12,
+        latent_dim=256, rnn_type="gru", aux_loss_coef=0.01,
+        
+        blind_vision=False, use_elevation_ae=True, feed_ae_to_policy=True, elevation_dim=187,
+        estimator_output_dim=3,
+    )
+
+    algorithm = RslRlDistillationAlgorithmCfg(class_name="SymmetricMoEDistillation", num_learning_epochs=5, learning_rate=1.0e-4)

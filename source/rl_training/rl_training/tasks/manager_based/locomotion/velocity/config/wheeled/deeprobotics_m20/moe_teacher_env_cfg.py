@@ -125,7 +125,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
     action_mirror_lr = RewTerm(
         func=mdp.action_mirror,
-        weight=-0.05,
+        weight=-0.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -475,7 +475,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
 
-        self.scene.terrain.terrain_generator = PRE_TRAIN_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = STAIR_TEST_TERRAINS_CFG
         if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.10)
@@ -539,7 +539,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_mirror.weight = 0.0
+        self.rewards.action_mirror.weight = -0.03
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -553,11 +553,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         self.rewards.track_lin_vel_xy_exp.weight = 2.0 
         self.rewards.track_ang_vel_z_exp.weight = 1.0 
-        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.0
+        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.2
         self.rewards.track_ang_vel_z_pre_exp.weight = 0.0
 
-        self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params["threshold"] = 0.5
+        self.rewards.feet_air_time.weight = 2.0
+        self.rewards.feet_air_time.params["threshold"] = 0.2
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
         self.rewards.feet_contact.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -586,15 +586,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         self.curriculum.command_levels.params["range_multiplier"] = (0.2, 1.0)
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
-        self.scene.terrain.terrain_type = "plane"
-        self.scene.terrain.terrain_generator = None
-        # no height scan
-        # self.scene.height_scanner = None
-        # self.observations.critic.height_scan = None
-        # no terrain curriculum
-        self.curriculum.terrain_levels = None
-        self.curriculum.command_levels = None
+        self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)

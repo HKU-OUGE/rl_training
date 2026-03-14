@@ -75,7 +75,6 @@ if "SplitMoEActorCritic" in globals():
     rsl_modules.SharedBackboneMoEActorCritic = SplitMoEActorCritic 
     runner_module.SplitMoEPPO = SplitMoEPPO
     
-    # [Fix] Inject SplitMoEStudentTeacher for DistillationRunner
     if "SplitMoEStudentTeacher" in globals():
         import rsl_rl.runners.distillation_runner as dist_runner_module
         dist_runner_module.SplitMoEStudentTeacher = SplitMoEStudentTeacher
@@ -102,11 +101,9 @@ class DirectLinuxGamepad:
         event_size = 8
         while self.running:
             try:
-                # 1. 连接阶段
                 if self.js_file is None:
                     if os.path.exists(self.device_path):
                         try:
-                            # buffering=0 确保实时性，避免断开时卡在flush
                             self.js_file = open(self.device_path, "rb", buffering=0)
                             self.connected = True
                         except Exception:
@@ -117,13 +114,11 @@ class DirectLinuxGamepad:
                         time.sleep(1)
                         continue
 
-                # 2. 读取阶段
                 try:
                     event_data = self.js_file.read(event_size)
                 except OSError:
                     event_data = None
 
-                # 如果读取为空或长度不够，说明设备已断开
                 if not event_data or len(event_data) != event_size:
                     raise OSError("Device disconnected or read error")
                 
@@ -136,18 +131,15 @@ class DirectLinuxGamepad:
                     self.buttons[number] = (value == 1)
                     
             except (OSError, IOError, struct.error):
-                # 发生错误时彻底重置状态
                 self.connected = False
                 if self.js_file:
                     try: self.js_file.close()
                     except: pass
                 self.js_file = None
-                # 清空按键状态防止“卡键”
                 self.axes = {} 
                 self.buttons = {}
-                time.sleep(1) # 等待一秒重试
+                time.sleep(1)
             except Exception as e:
-                # 捕获其他未知异常，防止线程退出
                 print(f"[Joystick Error] {e}")
                 time.sleep(1)
 
@@ -156,11 +148,9 @@ class DirectLinuxGamepad:
         raw_x = self.axes.get(1, 0.0)
         raw_y = self.axes.get(0, 0.0)
         
-        # Deadzone
         stick_vx = -raw_x if abs(raw_x) > self.deadzone else 0.0
         stick_vy = -raw_y if abs(raw_y) > self.deadzone else 0.0
         
-        # DPAD override
         dpad_vx = -self.axes.get(7, 0.0) 
         dpad_vy = -self.axes.get(6, 0.0)
         if abs(dpad_vx) > 0.1 or abs(dpad_vy) > 0.1:
@@ -178,7 +168,6 @@ class DirectLinuxGamepad:
         return self.buttons.get(btn_index, False)
 
     def get_axis(self, axis_index):
-        # Default -1.0 for triggers (released state)
         return self.axes.get(axis_index, -1.0) 
 
     def close(self):
@@ -262,12 +251,7 @@ def export_model_files(policy, log_dir, obs_dim, device):
     exported_dir = os.path.join(log_dir, "exported")
     os.makedirs(exported_dir, exist_ok=True)
     print(f"\n[Export] Exporting models to: {exported_dir}")
-    
-    # ---------------------------------------------------------
-    # 1. 准备模型和虚拟输入
-    # ---------------------------------------------------------
     try:
-        # 使用包装类确保只输出 action 和 hidden_state
         base_model = ExportablePolicy(policy).to(device)
         base_model.eval()
         
@@ -275,16 +259,12 @@ def export_model_files(policy, log_dir, obs_dim, device):
         dummy_obs = torch.zeros(batch_size, obs_dim, device=device)
         latent_dim = getattr(policy, "latent_dim", 256)
         
-        # 准备 RNN 隐状态
         if getattr(policy, "rnn_type", "gru") == "lstm":
             dummy_hidden = (torch.zeros(1, 1, latent_dim, device=device), 
                            torch.zeros(1, 1, latent_dim, device=device))
         else:
             dummy_hidden = torch.zeros(1, 1, latent_dim, device=device)
             
-        # ---------------------------------------------------------
-        # 2. 导出 ONNX
-        # ---------------------------------------------------------
         torch.onnx.export(
             base_model, 
             (dummy_obs, dummy_hidden), 
@@ -295,17 +275,12 @@ def export_model_files(policy, log_dir, obs_dim, device):
         )
         print(f"  - Policy ONNX saved")
 
-        # ---------------------------------------------------------
-        # 3. [新增] 导出 TorchScript (.pt)
-        # ---------------------------------------------------------
-        # 尝试使用 JIT Script 编译
         try:
             scripted_model = torch.jit.script(base_model)
             scripted_model.save(os.path.join(exported_dir, "policy.pt"))
             print(f"  - Policy TorchScript (Script) saved")
         except Exception as e_script:
-            print(f"  [Warning] JIT Script failed: {e_script}. Trying JIT Trace...")
-            # 如果 Script 失败，尝试 Trace
+            print(f"  [Warning] JIT Script failed. Trying JIT Trace...")
             try:
                 traced_model = torch.jit.trace(base_model, (dummy_obs, dummy_hidden))
                 traced_model.save(os.path.join(exported_dir, "policy.pt"))
@@ -316,12 +291,8 @@ def export_model_files(policy, log_dir, obs_dim, device):
     except Exception as e:
         print(f"  - Policy Export Error: {e}")
     
-    # ---------------------------------------------------------
-    # 4. 导出 Estimator (如果有)
-    # ---------------------------------------------------------
     if hasattr(policy, "estimator") and policy.estimator is not None:
         try:
-            # ... (这部分保持你原有的逻辑不变) ...
             if hasattr(policy.estimator, "net") and len(policy.estimator.net) > 0:
                 est_input_dim = policy.estimator.net[0].in_features
             elif isinstance(policy.estimator, nn.Linear):
@@ -333,12 +304,10 @@ def export_model_files(policy, log_dir, obs_dim, device):
             dummy_est_obs = torch.zeros(1, est_input_dim, device=device)
             est_wrapper = ExportableEstimator(policy).to(device)
             
-            # 导出 Estimator ONNX
             torch.onnx.export(est_wrapper, dummy_est_obs, os.path.join(exported_dir, "estimator.onnx"),
                 input_names=["proprioception"], output_names=["estimated_state"], opset_version=13)
             print(f"  - Estimator ONNX saved (Input Dim: {est_input_dim})")
             
-            # [新增] 导出 Estimator TorchScript
             traced_est = torch.jit.trace(est_wrapper, dummy_est_obs)
             traced_est.save(os.path.join(exported_dir, "estimator.pt"))
             print(f"  - Estimator TorchScript saved")
@@ -351,13 +320,8 @@ def export_model_files(policy, log_dir, obs_dim, device):
 # ==============================================================================
 
 def main():
-    # 1. 环境配置
-    # [Fix] 动态设备选择，虽然单机推理通常是 cuda:0，但保持灵活
     device = "cuda:0"
     env_cfg = parse_env_cfg(args.task, device=device, num_envs=args.num_envs)
-    
-    # [Fix] 准备观测项（用于替换）
-    # 我们需要在判断是否使用手柄后再创建这个 ObsTerm
     
     controller = None
     if args.keyboard:
@@ -387,13 +351,9 @@ def main():
             deadzone=0.05
         )
 
-    # [Critical Fix] Inject Joystick into ALL relevant observation groups
-    # Student Policy typically reads from 'student_policy' or 'blind_student_policy', NOT 'policy' (which is for Teacher)
-    # [Critical Fix] Inject Joystick into ALL relevant observation groups safely
     if controller is not None:
         def custom_velocity_commands(env):
             cmds = controller.advance().to(env.device, dtype=torch.float32)
-            # 使用 repeat 适配 num_envs，比单纯 unsqueeze(0) 更安全防爆
             return cmds.unsqueeze(0).repeat(env.num_envs, 1)
 
         for attr_name in dir(env_cfg.observations):
@@ -403,9 +363,7 @@ def main():
             if hasattr(group, "velocity_commands"):
                 term = getattr(group, "velocity_commands")
                 if term is not None:
-                    # 1. 核心修复：原地修改 func，保留原本的 history_length 和 scale
                     term.func = custom_velocity_commands
-                    # 2. 清空 params，防止框架强行塞入原来的 "command_name" 参数导致报错
                     term.params = {} 
                     print(f"[Info] In-place patched velocity_commands for '{attr_name}' group.")
 
@@ -416,8 +374,33 @@ def main():
     if not hasattr(base_env, "scene"):
         raise RuntimeError(f"Base Env {type(base_env)} does not have 'scene' attribute.")
     robot_entity = base_env.scene["robot"]
+    # ==============================================================================
+    # [NEW] 打印 Action Tensor 的确切顺序
+    # ==============================================================================
+    print("\n" + "="*80)
+    print("[CRITICAL] ACTION TENSOR MAPPING (RL Network Output -> Physical Joint)")
+    print("This determines how symmetry swap indices should be built!")
+    action_idx = 0
+    try:
+        # 获取底层字典 _terms
+        terms_dict = getattr(base_env.action_manager, "_terms", {})
+        
+        for term_name, term in terms_dict.items():
+            print(f"\n--- Action Term: {term_name} ---")
+            if hasattr(term, "_joint_ids"):
+                # 处理 Tensor 或 list
+                joint_ids = term._joint_ids.tolist() if torch.is_tensor(term._joint_ids) else term._joint_ids
+                for i, j_id in enumerate(joint_ids):
+                    j_name = robot_entity.data.joint_names[j_id]
+                    print(f"  Network Output Index [{action_idx:2d}] --> Controls Joint: {j_name} (Sim Internal ID: {j_id})")
+                    action_idx += 1
+            else:
+                print(f"  Term {term_name} has no _joint_ids")
+    except Exception as e:
+        print(f"Failed to print action mapping: {e}")
+    print("="*80 + "\n")
+    # ==============================================================================
     
-    # 获取地形信息
     terrain_origins = None
     num_rows = 1
     num_cols = 1
@@ -426,14 +409,12 @@ def main():
             terrain_origins = base_env.scene.terrain.terrain_origins
             num_rows = terrain_origins.shape[0]
             num_cols = terrain_origins.shape[1]
-            print(f"[Terrain] Detected Grid: {num_rows} Rows (Levels) x {num_cols} Cols (Types)")
     except Exception:
         pass
     
     try:
         obs_sample, _ = base_env.reset()
         if isinstance(obs_sample, dict): 
-            # [Fix] 适配 rsl_rl 观测组逻辑，尝试 policy -> student_policy -> blind_student_policy
             if "policy" in obs_sample: obs_dim = obs_sample["policy"].shape[-1]
             elif "student_policy" in obs_sample: obs_dim = obs_sample["student_policy"].shape[-1]
             elif "blind_student_policy" in obs_sample: obs_dim = obs_sample["blind_student_policy"].shape[-1]
@@ -441,20 +422,39 @@ def main():
         else: 
             obs_dim = obs_sample.shape[-1]
     except: 
-        obs_dim = 48 # Fallback
+        obs_dim = 48 
 
     # 3. 加载模型配置
     train_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
     if hasattr(train_cfg, "to_dict"): train_cfg_dict = train_cfg.to_dict()
     else: train_cfg_dict = train_cfg
     
-    # [Fix] 强制使用 SplitMoEActorCritic 进行推理
-    # 即使训练时用的是 SplitMoEStudentTeacher，推理时只需要 Student 部分（它是 SplitMoEActorCritic 实例）
     train_cfg_dict["policy"]["class_name"] = "SplitMoEActorCritic"
     
     if args.num_wheel_experts: train_cfg_dict["policy"]["num_wheel_experts"] = args.num_wheel_experts
     if args.num_leg_experts: train_cfg_dict["policy"]["num_leg_experts"] = args.num_leg_experts
     for k in ["checkpoint_wheel", "checkpoint_leg", "freeze_experts"]: train_cfg_dict["policy"].pop(k, None)
+
+    # 强行兼容推理配置
+    algo_class_name = train_cfg_dict["algorithm"].get("class_name", "")
+    if "Distillation" in algo_class_name:
+        print(f"[Info] Detected {algo_class_name} in config. Switching to PPO for inference compatibility.")
+        train_cfg_dict["algorithm"]["class_name"] = "PPO"
+        for k in ["gradient_length", "loss_type", "optimizer"]:
+            train_cfg_dict["algorithm"].pop(k, None)
+            
+        train_cfg_dict["algorithm"].setdefault("value_loss_coef", 1.0)
+        train_cfg_dict["algorithm"].setdefault("use_clipped_value_loss", True)
+        train_cfg_dict["algorithm"].setdefault("clip_param", 0.2)
+        train_cfg_dict["algorithm"].setdefault("entropy_coef", 0.01)
+        train_cfg_dict["algorithm"].setdefault("num_learning_epochs", 5)
+        train_cfg_dict["algorithm"].setdefault("num_mini_batches", 4)
+        train_cfg_dict["algorithm"].setdefault("learning_rate", 1.0e-3)
+        train_cfg_dict["algorithm"].setdefault("schedule", "adaptive")
+        train_cfg_dict["algorithm"].setdefault("gamma", 0.99)
+        train_cfg_dict["algorithm"].setdefault("lam", 0.95)
+        train_cfg_dict["algorithm"].setdefault("desired_kl", 0.01)
+        train_cfg_dict["algorithm"].setdefault("max_grad_norm", 1.0)
 
     # 4. 寻找 Checkpoint
     experiment_name = train_cfg_dict.get("experiment_name", "h_moe_end2end")
@@ -480,43 +480,11 @@ def main():
     clip_actions = train_cfg_dict.get("clip_actions", True) 
     env_wrapped = RslRlVecEnvWrapper(env_gym, clip_actions=clip_actions)
     
-    # [Fix] 手动加载权重以处理蒸馏模型的 'student.' 前缀
-    # 因为 OnPolicyRunner 只能加载标准的 ActorCritic 结构
-    
-    # [New Fix] Use DistillationRunner if Algorithm is Distillation (to avoid NameError)
-    # But force Policy to be SplitMoEActorCritic (because we only want student for inference)
-    # Actually, simpler hack: If class_name is Distillation, change it to PPO for OnPolicyRunner
-    # OnPolicyRunner doesn't check algorithm logic during init, just instantiates it.
-    # BUT, PPO class requires actor_critic to have 'evaluate'. SplitMoEActorCritic has it.
-    
-    if train_cfg_dict["algorithm"]["class_name"] == "Distillation":
-        print("[Info] Detected Distillation algorithm in config. Switching to PPO for inference compatibility.")
-        train_cfg_dict["algorithm"]["class_name"] = "PPO"
-        
-        # [Fix] Remove Distillation-specific args that PPO doesn't support
-        for k in ["gradient_length", "loss_type", "optimizer"]:
-            train_cfg_dict["algorithm"].pop(k, None)
-            
-        # [Fix] Ensure PPO specific args exist (even if dummy) to pass validation
-        if "value_loss_coef" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["value_loss_coef"] = 1.0
-        if "use_clipped_value_loss" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["use_clipped_value_loss"] = True
-        if "clip_param" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["clip_param"] = 0.2
-        if "entropy_coef" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["entropy_coef"] = 0.01
-        if "num_learning_epochs" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["num_learning_epochs"] = 5
-        if "num_mini_batches" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["num_mini_batches"] = 4
-        if "learning_rate" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["learning_rate"] = 1.0e-3
-        if "schedule" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["schedule"] = "adaptive"
-        if "gamma" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["gamma"] = 0.99
-        if "lam" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["lam"] = 0.95
-        if "desired_kl" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["desired_kl"] = 0.01
-        if "max_grad_norm" not in train_cfg_dict["algorithm"]: train_cfg_dict["algorithm"]["max_grad_norm"] = 1.0
-
     runner = OnPolicyRunner(env_wrapped, train_cfg_dict, log_dir=log_dir, device=device)
     
     loaded_dict = torch.load(model_path, map_location=device)
     state_dict = loaded_dict["model_state_dict"]
     
-    # 检查是否是蒸馏 Checkpoint
     is_distilled = any(k.startswith("student.") for k in state_dict.keys())
     
     if is_distilled:
@@ -524,25 +492,15 @@ def main():
         new_state_dict = {}
         for k, v in state_dict.items():
             if k.startswith("student."):
-                # 剥离前缀 'student.'
                 new_key = k.replace("student.", "", 1)
-                
-                # [Fix] Filter out critic keys because inference model might init critic with different input dims
-                # (e.g. Teacher dims) than the student checkpoint (Student dims), causing size mismatch.
-                # We don't need critic for inference anyway.
                 if "critic" in new_key:
                     continue
-                    
                 new_state_dict[new_key] = v
         
-        # 加载剥离前缀后的权重到 runner 的 policy (SplitMoEActorCritic)
-        # Note: rsl_rl ActorCritic.load_state_dict returns bool, not (missing, unexpected)
-        # We call the nn.Module version directly to get feedback on keys
         missing, unexpected = torch.nn.Module.load_state_dict(runner.alg.policy, new_state_dict, strict=False)
         if len(missing) > 0: print(f"[Warning] Missing keys: {len(missing)}")
         if len(unexpected) > 0: print(f"[Warning] Unexpected keys: {len(unexpected)}")
     else:
-        # 普通 PPO Checkpoint，直接加载
         print("[Info] Detected Standard PPO Checkpoint.")
         runner.load(model_path)
 
@@ -551,14 +509,11 @@ def main():
 
     if args.export:
         save_configs(log_dir, env_cfg, train_cfg_dict)
-        # [Fix] 自动修正 obs_dim，使用模型真实的输入维度
         if hasattr(model_instance, "rnn"):
-            print(f"[Info] Overwriting obs_dim from Model RNN: {obs_dim} -> {model_instance.rnn.input_size}")
             obs_dim = model_instance.rnn.input_size
-        elif hasattr(model_instance, "net") and isinstance(model_instance.net, nn.Sequential): # MLP case
+        elif hasattr(model_instance, "net") and isinstance(model_instance.net, nn.Sequential): 
              first_layer = model_instance.net[0]
              if hasattr(first_layer, "in_features"):
-                 print(f"[Info] Overwriting obs_dim from Model MLP: {obs_dim} -> {first_layer.in_features}")
                  obs_dim = first_layer.in_features
         export_model_files(model_instance, log_dir, obs_dim, device=device)
 
@@ -619,7 +574,6 @@ def main():
         lines = []
         lines.append("="*30 + " H-MoE Dashboard " + "="*30)
         
-        # Controller Status
         if args.joystick:
             conn_status = "\033[92mCONNECTED\033[0m" if connected else "\033[91mDISCONNECTED\033[0m"
             lines.append(f"Controller: {conn_status}")
@@ -664,12 +618,10 @@ def main():
     obs, _ = env_wrapped.reset()
     print("\nStarting H-MoE Inference...")
     
-    # State
     camera_mode = 0  
     cur_difficulty = 0 
     cur_subterrain = 0 
     
-    # Button latches
     y_prev, x_prev = False, False
     rt_prev, lt_prev = False, False
     rb_prev, lb_prev = False, False
@@ -688,11 +640,9 @@ def main():
             ctrl_debug = {}
             is_connected = False
 
-            # === Joystick Logic ===
             if args.joystick and controller is not None:
                 is_connected = controller.connected
                 
-                # Read Inputs
                 y_curr = controller.is_button_pressed(3)
                 x_curr = controller.is_button_pressed(2)
                 rb_curr = controller.is_button_pressed(5)
@@ -703,11 +653,9 @@ def main():
                 
                 ctrl_debug = {'rt': rt_val, 'lt': lt_val, 'rb': rb_curr, 'lb': lb_curr}
                 
-                # [Fix] Threshold changed to -0.5 to catch triggers properly
                 rt_curr = rt_val > -0.5
                 lt_curr = lt_val > -0.5
 
-                # Camera (Y)
                 if y_curr and not y_prev:
                     camera_mode = (camera_mode + 1) % 3
                     mode_names = ["Forward", "Top-Down", "Front-Face"]
@@ -715,13 +663,11 @@ def main():
                     status_timer = 30
                     camera_history.clear()
                 
-                # Reset (X)
                 if x_curr and not x_prev:
                     status_message = "Resetting..."
                     status_timer = 30
                     reset_terrain_needed = True
 
-                # Difficulty (RT/LT)
                 if num_rows > 1:
                     if rt_curr and not rt_prev:
                         if cur_difficulty < num_rows - 1:
@@ -736,7 +682,6 @@ def main():
                             status_timer = 30
                             reset_terrain_needed = True
                 
-                # Sub-Terrain (RB/LB)
                 if num_cols > 1:
                     if rb_curr and not rb_prev:
                         cur_subterrain = (cur_subterrain + 1) % num_cols
@@ -749,40 +694,32 @@ def main():
                         status_timer = 30
                         reset_terrain_needed = True
                 
-                # Update Latches
                 y_prev, x_prev = y_curr, x_curr
                 rt_prev, lt_prev = rt_curr, lt_curr
                 rb_prev, lb_prev = rb_curr, lb_curr
 
-                # Execute Terrain Reset
                 if reset_terrain_needed:
-                    # 1. Force internal terrain level (for curriculum logic)
                     if hasattr(base_env.scene.terrain, "terrain_levels"):
                         levels_vec = torch.full((env_wrapped.num_envs,), cur_difficulty, device=env_wrapped.device, dtype=torch.long)
                         base_env.scene.terrain.terrain_levels[:] = levels_vec
                     
-                    # 2. Standard Reset
                     obs, _ = env_wrapped.reset()
 
-                    # 3. Teleport [CRITICAL FIX]
                     if terrain_origins is not None and robot_entity is not None:
                         r_idx = max(0, min(cur_difficulty, num_rows - 1))
                         c_idx = max(0, min(cur_subterrain, num_cols - 1))
                         target_origin = terrain_origins[r_idx, c_idx].clone()
                         target_origin[2] += 0.55 
                         
-                        # Fix: Concatenate position and quaternion into one tensor (N, 7)
                         default_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env_wrapped.device).repeat(env_wrapped.num_envs, 1)
                         target_pos = target_origin.unsqueeze(0).repeat(env_wrapped.num_envs, 1).to(env_wrapped.device)
                         
                         root_pose = torch.cat([target_pos, default_quat], dim=-1)
                         robot_entity.write_root_pose_to_sim(root_pose)
                         
-                        # [Fix] Zero out velocities instead of calling reset_buffers()
                         root_vel = torch.zeros_like(robot_entity.data.root_link_vel_w)
                         robot_entity.write_root_velocity_to_sim(root_vel)
 
-            # Estimator & GT
             est_state = None
             if hasattr(model_instance, "get_estimated_state"):
                 est_state = model_instance.get_estimated_state(obs)
@@ -806,20 +743,19 @@ def main():
                     connected=is_connected
                 )
             
-            # Camera Control
             if robot_entity is not None and (args.joystick or args.keyboard):
                 root_pos = robot_entity.data.root_pos_w[0]
                 root_quat = robot_entity.data.root_quat_w[0]
                 eye, target = None, root_pos
 
-                if camera_mode == 0: # Behind
+                if camera_mode == 0: 
                     offset_local = torch.tensor(OFFSET_FORWARD, device=root_pos.device)
                     offset_world = math_utils.quat_apply(root_quat, offset_local)
                     eye = root_pos + offset_world
-                elif camera_mode == 1: # Top
+                elif camera_mode == 1: 
                     eye = root_pos + torch.tensor([0.0, 0.0, HEIGHT_TOP], device=root_pos.device)
                     target = root_pos + torch.tensor([0.001, 0.0, 0.0], device=root_pos.device)
-                elif camera_mode == 2: # Front
+                elif camera_mode == 2: 
                     offset_local = torch.tensor(OFFSET_BACKWARD, device=root_pos.device)
                     offset_world = math_utils.quat_apply(root_quat, offset_local)
                     eye = root_pos + offset_world

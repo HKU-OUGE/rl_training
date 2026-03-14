@@ -57,12 +57,14 @@ torch.backends.cudnn.benchmark = False
 # 尝试导入 SplitMoE 相关类，包括新的 StudentTeacher 适配器
 try:
     sys.path.append(os.getcwd())
-    from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, SplitMoEStudentTeacher
+    # 👇 增加导入 SymmetricMoEDistillation
+    from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, SplitMoEStudentTeacher, SymmetricMoEDistillation
     print("[Info] Imported H-MoE classes from current directory.")
 except ImportError:
     # 尝试从项目路径导入
     try:
-        from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, SplitMoEStudentTeacher
+        # 👇 增加导入 SymmetricMoEDistillation
+        from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, SplitMoEStudentTeacher, SymmetricMoEDistillation
         print("[Info] Imported H-MoE classes from project path.")
     except ImportError:
         raise ImportError("Could not import SplitMoEActorCritic/PPO/StudentTeacher from moe_terrain.py")
@@ -80,7 +82,7 @@ rsl_modules.SharedBackboneMoEActorCritic = SplitMoEActorCritic
 # [Fix] 关键步骤：将自定义类注入到 DistillationRunner 模块的全局命名空间
 # 这样 distillation_runner.py 内部的 eval("SplitMoEStudentTeacher") 才能找到该类
 distillation_runner_module.SplitMoEStudentTeacher = SplitMoEStudentTeacher
-
+distillation_runner_module.SymmetricMoEDistillation = SymmetricMoEDistillation
 # 2. 注入 Algorithm
 runner_module.SplitMoEPPO = SplitMoEPPO
 
@@ -133,40 +135,33 @@ def main():
     if args.distill:
         print(f"\n[Info] Mode: Distillation (Student-Teacher)")
         
-        # 1. 切换策略类为适配器
-        train_cfg_dict["policy"]["class_name"] = "SplitMoEStudentTeacher"
-        # 蒸馏时 Student 不需要 Estimator，Teacher 也不需要跑训练
-        train_cfg_dict["policy"]["estimator_output_dim"] = 0 
-
-        # 2. 切换算法配置为 Distillation
-        # 参数可以根据需要微调，这里使用典型值
-        train_cfg_dict["algorithm"] = {
-            "class_name": "Distillation",
-            "num_learning_epochs": 5,
-            # "num_mini_batches": 4, # [Fix] rsl_rl Distillation does not use this parameter
-            "gradient_length": 15, # Distillation 特定参数
-            "learning_rate": 1.0e-4, # 模仿学习通常使用较小 LR
-            "loss_type": "mse",
-            "optimizer": "adam",
-            "max_grad_norm": 1.0
-        }
-
-        # 3. 重新映射观测组
-        # policy -> Student Input (blind_student_policy defined in EnvCfg)
-        # teacher -> Teacher Input (policy defined in EnvCfg, containing priv info)
-        # [Fix] 根据您的环境报错信息，学生观测组应为 'blind_student_policy'
-        train_cfg_dict["obs_groups"] = {"policy": ["blind_student_policy"], "teacher": ["policy"]}
+        # [Fix] 核心拦截：强制清理并修正 algorithm 字典中的奇怪类型
+        algo_cfg = train_cfg_dict.get("algorithm", {})
         
-        # 4. 修改实验名称
-        train_cfg_dict["experiment_name"] = "split_moe_distill"
+        # 1. 强制提取并转换 gradient_length 为 int
+        grad_len = algo_cfg.get("gradient_length", 15)
+        if isinstance(grad_len, dict):
+            # 如果被错误地包装成了字典，解包它（如 {"value": 15} -> 15）
+            grad_len = grad_len.get("value", 15) 
+        algo_cfg["gradient_length"] = int(grad_len)
         
-        # 5. 确保 Teacher Checkpoint 存在
+        # 2. 补齐其他可能丢失的基础参数
+        if "loss_type" not in algo_cfg:
+            algo_cfg["loss_type"] = "mse"
+        if "optimizer" not in algo_cfg:
+            algo_cfg["optimizer"] = "adam"
+            
+        # 回写洗干净的配置
+        train_cfg_dict["algorithm"] = algo_cfg
+        
+        # 确保 Teacher Checkpoint 存在
         if not args.teacher_ckpt and not args.resume:
             raise ValueError("Distillation mode requires --teacher_ckpt to load the teacher policy!")
 
     else:
         print(f"\n[Info] Mode: PPO Training")
         train_cfg_dict["policy"]["class_name"] = "SplitMoEActorCritic"
+
 
     # === 路径设置 (Logging & Resume) ===
     experiment_name = train_cfg_dict.get("experiment_name", "h_moe_end2end")

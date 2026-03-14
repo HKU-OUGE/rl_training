@@ -125,12 +125,20 @@ def main():
     # 1. 解析 Resume 路径
     resume_path = None
     if args.resume:
-        try:
-            resume_path = get_checkpoint_path(log_root_path, args.load_run, args.checkpoint)
-            print(f"[INFO] Loading model checkpoint from: {resume_path}")
-        except Exception as e:
-            print(f"[Error] Failed to resolve checkpoint path from root {log_root_path}: {e}")
-            sys.exit(1)
+        # 如果用户直接提供了完整存在的文件路径，直接使用
+        if args.checkpoint and os.path.exists(args.checkpoint):
+            resume_path = args.checkpoint
+            print(f"[INFO] Directly using exact checkpoint path: {resume_path}")
+        else:
+            try:
+                # 修复 load_run 默认为 None 导致正则匹配崩溃的问题
+                load_run = args.load_run if args.load_run is not None else ".*"
+                ckpt = args.checkpoint if args.checkpoint is not None else ".*"
+                resume_path = get_checkpoint_path(log_root_path, load_run, ckpt)
+                print(f"[INFO] Loading model checkpoint from: {resume_path}")
+            except Exception as e:
+                print(f"[Error] Failed to resolve checkpoint path from root {log_root_path}: {e}")
+                sys.exit(1)
 
     # 2. 创建本次运行的新日志目录
     log_dir = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
@@ -149,7 +157,32 @@ def main():
 
     # === 加载 Checkpoint ===
     if resume_path:
-        runner.load(resume_path)
+        # 手动接管加载过程
+        loaded_dict = torch.load(resume_path, map_location=device)
+        state_dict = loaded_dict.get("model_state_dict", loaded_dict)
+        
+        # 检查是否为蒸馏模型（含有 student. 前缀）
+        if any(k.startswith("student.") for k in state_dict.keys()):
+            print("[INFO] Detected Distilled Checkpoint. Stripping 'student.' prefix...")
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith("student."):
+                    # 剥离前缀
+                    new_key = k.replace("student.", "", 1)
+                    new_state_dict[new_key] = v
+                else:
+                    new_state_dict[k] = v
+            
+            # 加载到策略网络，strict=False 防止由于 Critic 优化器不完全导致报错
+            runner.alg.policy.load_state_dict(new_state_dict, strict=False)
+            
+            # 恢复训练步数记录
+            if "iter" in loaded_dict:
+                runner.current_learning_iteration = loaded_dict["iter"]
+                
+        else:
+            print("[INFO] Standard PPO checkpoint. Loading natively...")
+            runner.load(resume_path)
 
     # [Debug] 打印架构
     print("\n" + "="*80)
