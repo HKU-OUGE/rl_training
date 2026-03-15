@@ -899,14 +899,29 @@ class SplitMoEStudentTeacher(nn.Module):
         return self.student.get_hidden_states()
     
     def detach_hidden_states(self, dones=None):
-        def detach_recursive(h):
-            if isinstance(h, tuple): return tuple(detach_recursive(x) for x in h)
-            return h.detach()
+        if dones is not None and hasattr(dones, "dtype") and dones.dtype == torch.uint8:
+            dones = dones.bool()
+
+        def detach_recursive(h, mask):
+            if isinstance(h, tuple): 
+                return tuple(detach_recursive(x, mask) for x in h)
             
+            # 断开计算图，防止梯度回传过长导致 OOM
+            h = h.detach() 
+            
+            # 如果环境结束了 (done)，则清空隐藏状态
+            if mask is not None:
+                h = h.clone() # 必须 clone，否则原地修改会报错
+                h[:, mask, :] = 0.0
+            return h
+            
+        # 1. 处理 Actor 的隐藏状态
         if self.student.active_hidden_states is not None:
-             self.student.active_hidden_states = detach_recursive(self.student.active_hidden_states)
+             self.student.active_hidden_states = detach_recursive(self.student.active_hidden_states, dones)
+             
+        # 2. 处理 Critic 的隐藏状态
         if hasattr(self.student, "active_critic_hidden_states") and self.student.active_critic_hidden_states is not None:
-             self.student.active_critic_hidden_states = detach_recursive(self.student.active_critic_hidden_states)
+             self.student.active_critic_hidden_states = detach_recursive(self.student.active_critic_hidden_states, dones)
 
     def update_normalization(self, obs):
         self.student.update_normalization(obs)

@@ -485,7 +485,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.observations.student_policy,
             self.observations.critic,
             self.observations.estimator,
-            self.observations.noisy_elevation
+            self.observations.noisy_elevation,
+            self.observations.pretraincfg,
         ]
 
         for obs_group in obs_groups_to_process:
