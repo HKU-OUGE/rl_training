@@ -61,7 +61,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=1.0/18, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
         ),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=1.0/18, noise_range=(0.02, 0.10), noise_step=0.02, border_width=0.25
+            proportion=1.0/18, noise_range=(0.02, 0.16), noise_step=0.02, border_width=0.25
         ),
         "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
             proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
@@ -308,6 +308,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     vertical_scale=0.005,
     slope_threshold=0.75,
     use_cache=False,
+    curriculum=True,
     sub_terrains={
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.2,

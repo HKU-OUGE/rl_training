@@ -501,6 +501,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         self.observations.blind_student_policy.base_lin_vel = None
         self.observations.student_policy.base_lin_vel = None
+
+        self.observations.pretraincfg.base_lin_vel.scale = 2.0
+        self.observations.pretraincfg.base_ang_vel.scale = 0.25
+        self.observations.pretraincfg.joint_pos.scale = 1.0
+        self.observations.pretraincfg.joint_vel.scale = 0.05
         self.observations.pretraincfg.base_lin_vel = None
         self.observations.pretraincfg.height_scan = None
         self.actions.joint_pos.scale = {".*_hipx_joint": 0.125, "^(?!.*_hipx_joint).*": 0.25}
@@ -535,10 +540,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
 
-        self.scene.terrain.terrain_generator = ROUGH_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG
         if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.10)
+            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
             self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
@@ -594,12 +599,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.0
+        self.rewards.joint_mirror.weight = -0.03
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_mirror.weight = -0.03
+        self.rewards.action_mirror.weight = -0.0
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -611,8 +616,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 3.0 
-        self.rewards.track_ang_vel_z_exp.weight = 1.5
+        self.rewards.track_lin_vel_xy_exp.weight = 2.5 # 1.8
+        self.rewards.track_ang_vel_z_exp.weight = 1.5 # 1.2
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0.5
         self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
@@ -645,7 +650,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.bad_orientation_2 = None
 
         self.curriculum.command_levels.params["range_multiplier"] = (0.2, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         # self.rewards.base_height_l2.params["sensor_cfg"] = None

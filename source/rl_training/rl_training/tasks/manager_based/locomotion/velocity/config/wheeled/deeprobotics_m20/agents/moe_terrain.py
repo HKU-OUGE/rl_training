@@ -1074,6 +1074,7 @@ class SplitMoEPPO(PPO):
                     loss_dict["Noise/Leg_Std"] = std_np[:n_legs].mean()
                     loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
         # 👇 ========================== 新增：序列级 Actor 对称性正则化 ========================== 👇
+
         if model is not None and not getattr(model, "is_student_mode", False) and self.num_learning_epochs > 0:
             device = self.device
             # 1. 动作映射
@@ -1138,6 +1139,7 @@ class SplitMoEPPO(PPO):
             
             model.reset(dones=force_reset_dones)
             loss_dict["Loss/Actor_Symmetry_Reg"] = sym_loss.item()
+
         # 👆 ====================================================================================== 👆
         
         return loss_dict
@@ -1334,7 +1336,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 @configclass
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
-    num_steps_per_env = 24
+    num_steps_per_env = 36
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
@@ -1344,8 +1346,8 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     
     policy = SplitMoEActorCriticCfg(
         init_noise_std=1.0, 
-        init_noise_legs=1.0,
-        init_noise_wheels=1.0, 
+        init_noise_legs=0.8,
+        init_noise_wheels=0.5, 
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
