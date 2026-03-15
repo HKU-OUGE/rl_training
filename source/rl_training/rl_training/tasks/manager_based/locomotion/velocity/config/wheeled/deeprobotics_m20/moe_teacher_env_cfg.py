@@ -22,6 +22,7 @@ from rl_training.tasks.manager_based.locomotion.velocity.velocity_env_cfg import
 from isaaclab.terrains import TerrainImporterCfg
 import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
+from isaaclab.sensors import MultiMeshRayCasterCfg
 ##
 # Pre-defined configs
 ##
@@ -599,6 +600,87 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        # ==============================================================
+        # 多层 2D 扫描：分成 3 个独立的 1D 传感器，彻底避免网格重叠
+        # ==============================================================
+        # 基础四元数 w=0.707, y=-0.707 (绕 Y 轴负向转 90 度，使射线对准 +X 正前方)
+        FORWARD_ROT = (0.7071068, 0.0, -0.7071068, 0.0) 
+        # 视野配置：Z方向 0m(1层)，Y方向 3m (水平铺开 61 条射线)
+        SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 3.0])
+        # 扫描目标：地面 + 障碍物 (开启网格实时追踪)
+        SCAN_MESHES = [
+            "/World/ground", "/World/obstacles",
+        ]
+
+        # 第 1 层：底盘下方 (处理矮小障碍/门槛)
+        # M20 base_link 初始高度约 0.52m。偏移 -0.2m -> 绝对高度约 0.32m
+        self.scene.forward_scanner_layer0 = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, -0.2), rot=FORWARD_ROT),
+            ray_alignment="base", 
+            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+
+        # 第 2 层：底盘正前方 (躯干高度)
+        # 偏移 0.0m -> 绝对高度约 0.52m
+        self.scene.forward_scanner_layer1 = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 0.0), rot=FORWARD_ROT),
+            ray_alignment="base", 
+            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+
+        # 第 3 层：底盘上方 (探测悬挂物/圆环顶部)
+        # 偏移 +0.2m -> 绝对高度约 0.72m
+        self.scene.forward_scanner_layer2 = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 0.2), rot=FORWARD_ROT),
+            ray_alignment="base", 
+            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+        self.scene.forward_scanner_layer0.update_period = 0.1  # 每0.1秒更新一次 (10Hz)
+        self.scene.forward_scanner_layer1.update_period = 0.1  # 每0.1秒更新一次 (10Hz)
+        self.scene.forward_scanner_layer2.update_period = 0.1  # 每0.1秒更新一次 (10Hz)
+        # ==============================================================
+        # 向后看的多层 2D 扫描 (后雷达)
+        # ==============================================================
+        # 基础四元数 w=0.707, y=0.707 (绕 Y 轴正向转 90 度，使射线对准 -X 正后方)
+        BACKWARD_ROT = (0.7071068, 0.0, 0.7071068, 0.0) 
+
+        # 第 1 层：后方底盘下方
+        self.scene.backward_scanner_layer0 = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, -0.2), rot=BACKWARD_ROT),
+            ray_alignment="base", 
+            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+
+        # 第 2 层：后方底盘正中
+        self.scene.backward_scanner_layer1 = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, 0.0), rot=BACKWARD_ROT),
+            ray_alignment="base", 
+            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+
+        # 第 3 层：后方底盘上方
+        self.scene.backward_scanner_layer2 = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, 0.2), rot=BACKWARD_ROT),
+            ray_alignment="base", 
+            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+
+        # 设置更新频率为 10Hz
+        self.scene.backward_scanner_layer0.update_period = 0.1
+        self.scene.backward_scanner_layer1.update_period = 0.1  
+        self.scene.backward_scanner_layer2.update_period = 0.1
 
         # Rewards
         self.rewards.is_terminated.weight = 0

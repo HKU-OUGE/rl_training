@@ -1571,9 +1571,10 @@ class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
 
     # Student 用 policy 组(纯本体)，Teacher 用 policy 组(平地时没有复杂特权信息)
     obs_groups = {
-        "policy": ["policy"], 
+        # "policy": ["policy"], 
+        "policy": ["blind_student_policy"], 
         "teacher": ["pretraincfg"],
-        "noisy_elevation": ["noisy_elevation"]
+        # "noisy_elevation": ["noisy_elevation"]
     }
 
     policy = SplitMoEActorCriticCfg(
@@ -1586,7 +1587,7 @@ class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
         num_wheel_experts=3, num_leg_experts=6, num_leg_actions=12,
         latent_dim=256, rnn_type="gru", aux_loss_coef=0.01,
         
-        blind_vision=False, use_elevation_ae=True, feed_ae_to_policy=True, elevation_dim=187,
+        blind_vision=True, use_elevation_ae=False, feed_ae_to_policy=False, elevation_dim=187,
         estimator_output_dim=3,
     )
 
