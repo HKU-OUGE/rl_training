@@ -539,19 +539,59 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-
-        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG
-        if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
-            self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
+        # ground terrain
+        self.scene.terrain = TerrainImporterCfg(
+            prim_path="/World/obstacles",
+            terrain_type="generator",
+            terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
+            max_init_terrain_level=5,
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=1.0,
+            ),
+            visual_material=sim_utils.MdlFileCfg(
+                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+                project_uvw=True,
+                texture_scale=(0.25, 0.25),
+            ),
+            debug_vis=False,
+        )
+        self.scene.terrain2 = TerrainImporterCfg(
+            prim_path="/World/ground",
+            terrain_type="generator",
+            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
+            max_init_terrain_level=5,
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=1.0,
+            ),
+            visual_material=sim_utils.MdlFileCfg(
+                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+                project_uvw=True,
+                texture_scale=(0.25, 0.25),
+            ),
+            debug_vis=False,
+        )
+        self.scene.terrain2.terrain_generator = MOE_ROUGH_TERRAINS_CFG
+        if(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
+            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain.terrain_generator == ROUGH_TERRAINS_CFG):
-            self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
+        elif(self.scene.terrain2.terrain_generator == ROUGH_TERRAINS_CFG):
+            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
