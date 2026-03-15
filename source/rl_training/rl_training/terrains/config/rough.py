@@ -271,10 +271,10 @@ STAIR_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.25, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
+            proportion=0.25, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
         ),
         "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
-            proportion=0.25, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
+            proportion=0.25, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
         ),
     }
 )

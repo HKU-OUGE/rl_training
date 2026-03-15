@@ -1547,7 +1547,7 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
 class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
     """用于第一阶段：从平地 MLP 蒸馏到 MoE Teacher"""
     num_steps_per_env = 24
-    max_iterations = 3000  # BC 蒸馏不需要太多 epoch
+    max_iterations = 5000  # BC 蒸馏不需要太多 epoch
     save_interval = 200
     experiment_name = "mlp_to_moe_distill"
     empirical_normalization = False
@@ -1555,7 +1555,7 @@ class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
     # Student 用 policy 组(纯本体)，Teacher 用 policy 组(平地时没有复杂特权信息)
     obs_groups = {
         "policy": ["policy"], 
-        "teacher": ["blind_student_policy"],
+        "teacher": ["pretraincfg"],
         "noisy_elevation": ["noisy_elevation"]
     }
 
