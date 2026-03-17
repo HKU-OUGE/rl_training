@@ -293,7 +293,12 @@ def export_model_files(policy, log_dir, obs_dim, device):
     
     if hasattr(policy, "estimator") and policy.estimator is not None:
         try:
-            if hasattr(policy.estimator, "net") and len(policy.estimator.net) > 0:
+            # 替换为你以下的逻辑
+            if hasattr(policy, "estimator_obs_normalizer") and policy.estimator_obs_normalizer is not None:
+                est_input_dim = policy.estimator_obs_normalizer.mean.shape[0]
+            elif hasattr(policy.estimator, "encoder_mlp") and hasattr(policy.estimator.encoder_mlp, "net"):
+                est_input_dim = policy.estimator.encoder_mlp.net[0].in_features
+            elif hasattr(policy.estimator, "net") and len(policy.estimator.net) > 0:
                 est_input_dim = policy.estimator.net[0].in_features
             elif isinstance(policy.estimator, nn.Linear):
                 est_input_dim = policy.estimator.in_features

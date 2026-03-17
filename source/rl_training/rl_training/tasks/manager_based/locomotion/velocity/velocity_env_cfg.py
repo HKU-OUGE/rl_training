@@ -76,7 +76,7 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/base",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
         ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[2.0, 1.0]),
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
@@ -815,6 +815,7 @@ class LocomotionVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
         self.sim.physx.max_position_iteration_count = 4
         self.sim.physx.max_velocity_iteration_count = 1
+        self.sim.physx.enable_external_forces_every_iteration = True
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
         if self.scene.height_scanner is not None:

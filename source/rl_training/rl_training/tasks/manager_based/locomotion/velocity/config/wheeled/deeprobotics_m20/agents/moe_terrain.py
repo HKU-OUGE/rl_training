@@ -96,7 +96,7 @@ class MLP(nn.Module):
 
 class ElevationAE(nn.Module):
     """用于 1D 高程图/地形扫描的自编码器 (对应论文 Elevation Map AE)"""
-    def __init__(self, input_dim=187, output_dim=64, hidden_dims=[128, 64]):
+    def __init__(self, input_dim=231, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
         # Encoder: 提取地形隐变量 z_t^E
         self.encoder = MLP(input_dim, output_dim, hidden_dims, activation="elu")
@@ -107,7 +107,48 @@ class ElevationAE(nn.Module):
         latent = self.encoder(x) # z_t^E
         recon = self.decoder(latent) if self.training else None
         return latent, recon
+class MultiLayerScanAE(nn.Module):
+    """用于处理前后多层 2D 伪激光扫描的 1D-CNN"""
+    def __init__(self, num_channels=6, num_rays=61, output_dim=64, hidden_dims=[128, 64]):
+        super().__init__()
+        self.num_channels = num_channels
+        self.num_rays = num_rays
+        self.flat_dim = num_channels * num_rays
+        
+        # Encoder (1D-CNN)
+        self.encoder_conv = nn.Sequential(
+            nn.Conv1d(num_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
+            nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
+        )
+        
+        conv_out_len = (num_rays + 1) // 2
+        conv_out_len = (conv_out_len + 1) // 2
+        linear_in_dim = 32 * conv_out_len # 对于 61 来说，长度最后是 16，所以是 32*16=512
+        
+        self.encoder_linear = nn.Sequential(
+            nn.Linear(linear_in_dim, hidden_dims[0]), nn.ELU(),
+            nn.Linear(hidden_dims[0], output_dim)
+        )
+        
+        # Decoder (MLP)
+        self.decoder = MLP(output_dim, self.flat_dim, hidden_dims[::-1], activation="elu")
 
+    def forward(self, x):
+        # 记录原始的前置维度 (例如: [Seq_len, Batch] 或仅 [Batch])
+        original_shape = x.shape[:-1] 
+        
+        # [修改点 1]: 将 view 换成 reshape
+        x_reshaped = x.reshape(-1, self.num_channels, self.num_rays)
+        
+        # 1D-CNN 提取特征
+        conv_features = self.encoder_conv(x_reshaped).reshape(x_reshaped.shape[0], -1)
+        latent_flat = self.encoder_linear(conv_features)
+        
+        # [修改点 2]: 将 view 换成 reshape
+        latent = latent_flat.reshape(*original_shape, -1)
+        
+        recon = self.decoder(latent) if self.training else None
+        return latent, recon
 class DepthAE(nn.Module):
     """用于 2D 高程图/深度图的自编码器 (如果使用相机 CNN)"""
     def __init__(self, input_channels=2, output_dim=128, camera_height=58, camera_width=87):
@@ -214,7 +255,7 @@ class SplitMoEActorCritic(ActorCritic):
                  # === AE Params ===
                  blind_vision=True,     
                  use_elevation_ae=True, 
-                 elevation_dim=187,     
+                 elevation_dim=231,     
                  use_cnn=False,
                  num_cameras=2,       
                  camera_height=58,    
@@ -232,7 +273,9 @@ class SplitMoEActorCritic(ActorCritic):
             "estimator_obs_normalization", "init_noise_legs", "init_noise_wheels",
             "actor_obs_normalization", "critic_obs_normalization",
             "use_elevation_ae", "elevation_dim", "blind_vision", "is_student_mode",
-            "feed_estimator_to_policy", "feed_ae_to_policy"
+            "feed_estimator_to_policy", "feed_ae_to_policy",
+            "use_multilayer_scan", "num_scan_channels", "num_scan_rays", "teacher_is_mlp",
+            "use_cnn", "num_cameras", "camera_height", "camera_width"
         ]}
 
         super().__init__(obs, obs_groups, num_actions, 
@@ -365,25 +408,28 @@ class SplitMoEActorCritic(ActorCritic):
         # -------------------------------------------------------------
         # 3. 初始化地形感知 AE 并动态计算 RNN input_size
         # -------------------------------------------------------------
+        self.use_multilayer_scan = kwargs.get("use_multilayer_scan", True)
+        self.num_scan_channels = kwargs.get("num_scan_channels", 6)
+        self.num_scan_rays = kwargs.get("num_scan_rays", 61)
+        self.scan_dim = self.num_scan_channels * self.num_scan_rays
+
         self.ae_output_dim = 0
         if self.use_elevation_ae:
-            self.ae_output_dim = 64
-            self.elevation_encoder = ElevationAE(input_dim=self.elevation_dim, output_dim=self.ae_output_dim)
+            self.elev_out_dim = 64
+            self.ae_output_dim += self.elev_out_dim
+            self.elevation_encoder = ElevationAE(input_dim=self.elevation_dim, output_dim=self.elev_out_dim)
             if self.is_student_mode:
-                for param in self.elevation_encoder.parameters():
-                    param.requires_grad = False
+                for param in self.elevation_encoder.parameters(): param.requires_grad = False
                 self.elevation_encoder.eval()
                 
-        elif self.use_cnn:
-            self.ae_output_dim = 128
-            self.depth_encoder = DepthAE(
-                input_channels=num_cameras, output_dim=self.ae_output_dim,
-                camera_height=camera_height, camera_width=camera_width
-            )
+        if self.use_multilayer_scan:
+            self.scan_out_dim = 64
+            self.ae_output_dim += self.scan_out_dim
+            self.scan_encoder = MultiLayerScanAE(
+                num_channels=self.num_scan_channels, num_rays=self.num_scan_rays, output_dim=self.scan_out_dim)
             if self.is_student_mode:
-                for param in self.depth_encoder.parameters():
-                    param.requires_grad = False
-                self.depth_encoder.eval()
+                for param in self.scan_encoder.parameters(): param.requires_grad = False
+                self.scan_encoder.eval()
 
         # =============================================================
         # 核心修改：根据 Router 开关解耦输入维度
@@ -526,22 +572,32 @@ class SplitMoEActorCritic(ActorCritic):
         # 1. 外部地形感知 AE 特征提取 (根据解耦开关判断是否喂给 RNN)
         # -------------------------------------------------------------
         env_feat_for_rnn = None
-        if self.use_elevation_ae:
-            if not getattr(self, 'has_elevation_input', True) and (obs_dict is None or "noisy_elevation" not in obs_dict.keys()):
-                if self.feed_ae:
-                    env_feat_for_rnn = torch.zeros((*x.shape[:-1], self.ae_output_dim), device=x.device)
+        if (self.use_elevation_ae or self.use_multilayer_scan) and self.feed_ae:
+            if obs_dict is not None and "noisy_elevation" in obs_dict:
+                env_raw_full = obs_dict["noisy_elevation"]
             else:
-                if obs_dict is not None and "noisy_elevation" in obs_dict:
-                    env_raw = obs_dict["noisy_elevation"]
-                else:
-                    env_raw = x[..., proprio_dim:] 
-                    
-                env_feat_ae, env_recon = self.elevation_encoder(env_raw)
+                env_raw_full = x[..., proprio_dim:]
+            
+            feats = []
+            current_idx = 0
+            
+            # 流 1: 高程图 (看脚下坑洼)
+            if self.use_elevation_ae:
+                env_raw_elev = env_raw_full[..., current_idx : current_idx + self.elevation_dim]
+                latent_elev, _ = self.elevation_encoder(env_raw_elev)
+                feats.append(latent_elev)
+                current_idx += self.elevation_dim
                 
-                env_feat_for_rnn = env_feat_ae if self.feed_ae else env_raw
-                if self.blind_vision:
-                    env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
-
+            # 流 2: 多层扫描 (看前后悬垂物)
+            if self.use_multilayer_scan:
+                env_raw_scan = env_raw_full[..., current_idx : current_idx + self.scan_dim]
+                latent_scan, _ = self.scan_encoder(env_raw_scan)
+                feats.append(latent_scan)
+                
+            env_feat_for_rnn = torch.cat(feats, dim=-1)
+            
+            if getattr(self, "blind_vision", False):
+                env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
         elif self.use_cnn:
             if not getattr(self, 'has_elevation_input', True) and (obs_dict is None or "noisy_elevation" not in obs_dict.keys()):
                 if self.feed_ae:
@@ -577,22 +633,24 @@ class SplitMoEActorCritic(ActorCritic):
         vae_latent_for_rnn = None
         vel_pred_for_rnn = None
         if self.estimator is not None and obs_dict is not None:
-            est_input = self._get_estimator_input(obs_dict)
-            if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
-                est_input = self.estimator_obs_normalizer(est_input)
-            
-            vel_pred, recon_x, mu, logvar, z = self.estimator(est_input)
-            
-            if self.training:
-                self.active_vae_recon = recon_x
-                self.active_vae_mu = mu
-                self.active_vae_logvar = logvar
-                self.active_vae_vel_pred = vel_pred
-                self.active_vae_input = est_input 
-            
-            if self.feed_estimator:
-                vae_latent_for_rnn = z
-                vel_pred_for_rnn = vel_pred
+            # 【新增判断】仅在训练时计算 Loss，或策略确实需要 VAE 特征时，才进行前向传播
+            if self.training or self.feed_estimator:
+                est_input = self._get_estimator_input(obs_dict)
+                if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
+                    est_input = self.estimator_obs_normalizer(est_input)
+                
+                vel_pred, recon_x, mu, logvar, z = self.estimator(est_input)
+                
+                if self.training:
+                    self.active_vae_recon = recon_x
+                    self.active_vae_mu = mu
+                    self.active_vae_logvar = logvar
+                    self.active_vae_vel_pred = vel_pred
+                    self.active_vae_input = est_input 
+                
+                if self.feed_estimator:
+                    vae_latent_for_rnn = z
+                    vel_pred_for_rnn = vel_pred
                 
         elif self.estimator is not None and obs_dict is None:
             if self.feed_estimator:
@@ -1009,20 +1067,42 @@ class SplitMoEPPO(PPO):
             if model.use_elevation_ae and not getattr(model, "blind_vision", False) and not model.is_student_mode:
                 # ====== 优先从独立的 noisy_elevation 组获取训练数据 ======
                 if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
-                    env_raw = obs_batch["noisy_elevation"]
+                    env_raw_full = obs_batch["noisy_elevation"]
                 else:
                     x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
-                    env_raw = x_raw[..., model.proprio_dim:]
+                    env_raw_full = x_raw[..., model.proprio_dim:]
                 
-                _, env_recon = model.elevation_encoder(env_raw)
+                # 【修改点 1】：必须对 553 维的数据进行切片，只取前 187 维的高程图！
+                env_raw_elev = env_raw_full[..., :model.elevation_dim]
+                
+                # 传入切片后的 187 维数据
+                _, env_recon = model.elevation_encoder(env_raw_elev)
                 
                 if env_recon is not None:
-                    elev_ae_loss = (env_recon - env_raw).pow(2).mean()
+                    # 【修改点 2】：计算 Loss 时也要用切片后的目标数据 env_raw_elev
+                    elev_ae_loss = (env_recon - env_raw_elev).pow(2).mean()
                     total_aux_loss += elev_ae_loss
                     if not hasattr(model, 'loss_dict_cache'):
                         model.loss_dict_cache = {}
                     model.loss_dict_cache["Loss/Elevation_AE_Recon"] = elev_ae_loss.item()
-
+            # 3. 核心计算: MultiLayer Scan 重构 Loss
+            if getattr(model, "use_multilayer_scan", False) and not getattr(model, "blind_vision", False) and not model.is_student_mode:
+                if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
+                    env_raw_full = obs_batch["noisy_elevation"]
+                else:
+                    x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
+                    env_raw_full = x_raw[..., model.proprio_dim:]
+                
+                scan_start_idx = model.elevation_dim if model.use_elevation_ae else 0
+                env_raw_scan = env_raw_full[..., scan_start_idx : scan_start_idx + model.scan_dim]
+                
+                _, scan_recon = model.scan_encoder(env_raw_scan)
+                
+                if scan_recon is not None:
+                    scan_ae_loss = (scan_recon - env_raw_scan).pow(2).mean()
+                    total_aux_loss += scan_ae_loss
+                    if not hasattr(model, 'loss_dict_cache'): model.loss_dict_cache = {}
+                    model.loss_dict_cache["Loss/Scan_AE_Recon"] = scan_ae_loss.item()
             # -------------------------------------------------------------
             # 3. 核心计算: DepthAE 重构 Loss
             # -------------------------------------------------------------
@@ -1077,27 +1157,40 @@ class SplitMoEPPO(PPO):
 
         if model is not None and not getattr(model, "is_student_mode", False) and self.num_learning_epochs > 0:
             device = self.device
-            # 1. 动作映射
+            # 1. 动作映射 (保持不变)
             action_swap_idx = torch.tensor([3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device)
             action_neg_mask = torch.tensor([-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device)
             
-            # 2. 获取完整的 TensorDict，保留所有环境特征(如 estimator, noisy_elevation)
             obs_all = self.storage.observations
             obs_mirrored_all = obs_all.clone()
             
-            # 3. 仅对 policy 组进行精确镜像
-            obs_neg_mask = torch.ones(60, dtype=torch.float32, device=device)
-            obs_neg_mask[1] = -1.0  # lin_vel y
-            obs_neg_mask[3] = -1.0  # ang_vel roll
-            obs_neg_mask[5] = -1.0  # ang_vel yaw
-            obs_neg_mask[7] = -1.0  # gravity y
-            obs_neg_mask[10] = -1.0 # cmd vy
-            obs_neg_mask[11] = -1.0 # cmd wz
+            #3. 仅对 policy 组进行精确镜像 【关键修改区：适配 57 维】
+            # 因为去除了 base_lin_vel，整体维度前移 3 维
+            obs_neg_mask = torch.ones(57, dtype=torch.float32, device=device)
+            obs_neg_mask[0] = -1.0  # ang_vel roll (原为 3)
+            obs_neg_mask[2] = -1.0  # ang_vel yaw (原为 5)
+            obs_neg_mask[4] = -1.0  # gravity y (原为 7)
+            obs_neg_mask[7] = -1.0  # cmd vy (原为 10)
+            obs_neg_mask[8] = -1.0  # cmd wz (原为 11)
             
-            obs_swap_idx = torch.arange(60, dtype=torch.long, device=device)
-            for offset in [12, 28, 44]:
+            obs_swap_idx = torch.arange(57, dtype=torch.long, device=device)
+            # 对应的 joint_pos, joint_vel, actions 的起始索引也前移了 3
+            for offset in [9, 25, 41]: 
                 obs_swap_idx[offset:offset+16] = action_swap_idx + offset
                 obs_neg_mask[offset:offset+16] = action_neg_mask
+            # # 3. 仅对 policy 组进行精确镜像
+            # obs_neg_mask = torch.ones(60, dtype=torch.float32, device=device)
+            # obs_neg_mask[1] = -1.0  # lin_vel y
+            # obs_neg_mask[3] = -1.0  # ang_vel roll
+            # obs_neg_mask[5] = -1.0  # ang_vel yaw
+            # obs_neg_mask[7] = -1.0  # gravity y
+            # obs_neg_mask[10] = -1.0 # cmd vy
+            # obs_neg_mask[11] = -1.0 # cmd wz
+            
+            # obs_swap_idx = torch.arange(60, dtype=torch.long, device=device)
+            # for offset in [12, 28, 44]:
+            #     obs_swap_idx[offset:offset+16] = action_swap_idx + offset
+            #     obs_neg_mask[offset:offset+16] = action_neg_mask
 
             if "policy" in obs_mirrored_all.keys():
                 p = obs_mirrored_all["policy"]
@@ -1302,8 +1395,10 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     # === AE / Vision Params ===
     blind_vision: bool = False       
     use_elevation_ae: bool = True   
-    elevation_dim: int = 187        
-    
+    elevation_dim: int = 231      
+    use_multilayer_scan: bool = False
+    num_scan_channels: int = 6  # 3前 + 3后
+    num_scan_rays: int = 61     # 每个通道的射线数
     use_cnn: bool = False           
     num_cameras: int = 2
     camera_height: int = 58
@@ -1323,7 +1418,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     critic_hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
 
     # === 解耦开关 ===
-    feed_estimator_to_policy: bool = False 
+    feed_estimator_to_policy: bool = True 
     feed_ae_to_policy: bool = True
     teacher_is_mlp: bool = False
 
@@ -1360,7 +1455,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         
         blind_vision=False, # 盲视平地训练
         use_elevation_ae=True, 
-        elevation_dim=187,
+        elevation_dim=231,
         use_cnn=False, 
         
         estimator_output_dim=3,
@@ -1368,12 +1463,16 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_target_indices=[0, 1, 2], 
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
-        
+
+        use_multilayer_scan=True,
+        num_scan_channels=6,  # 3前 + 3后
+        num_scan_rays=61,     # 每个通道的射线数
+
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
 
         # Teacher 保持纯净特权视野，不接收未训练好的 AE/VAE
-        feed_estimator_to_policy=False, 
+        feed_estimator_to_policy=True, 
         feed_ae_to_policy=True,
     )
 
@@ -1420,7 +1519,7 @@ class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         
         blind_vision=True, 
         use_elevation_ae=True,
-        elevation_dim=187,
+        elevation_dim=231,
         use_cnn=False, 
         
         estimator_output_dim=3,
@@ -1489,7 +1588,7 @@ class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
         blind_vision=False,
         
         use_elevation_ae=True, 
-        elevation_dim=187,
+        elevation_dim=231,
         use_cnn=False,
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
@@ -1540,7 +1639,7 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
         
         blind_vision=False,
         use_elevation_ae=True, 
-        elevation_dim=187,
+        elevation_dim=231,
         use_cnn=False,
         
         estimator_output_dim=3,
@@ -1562,24 +1661,25 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
 
 @configclass
 class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
-    """用于第一阶段：从平地 MLP 蒸馏到 MoE Teacher"""
+    """用于第一阶段：从平地 MLP 蒸馏到 MoE Teacher (带 Estimator)"""
     num_steps_per_env = 24
     max_iterations = 5000  # BC 蒸馏不需要太多 epoch
     save_interval = 200
     experiment_name = "mlp_to_moe_distill"
     empirical_normalization = False
 
-    # Student 用 policy 组(纯本体)，Teacher 用 policy 组(平地时没有复杂特权信息)
+    # 【修改点 1】: 将 estimator 观测组加入字典，以便传入网络
     obs_groups = {
         # "policy": ["policy"], 
         "policy": ["blind_student_policy"], 
         "teacher": ["pretraincfg"],
         # "noisy_elevation": ["noisy_elevation"]
+        # "estimator": ["estimator"]
     }
 
     policy = SplitMoEActorCriticCfg(
         class_name="SplitMoEStudentTeacher", 
-        teacher_is_mlp=True, # <--- 关键！开启 MLP Teacher
+        teacher_is_mlp=True, # 开启 MLP Teacher
         
         init_noise_std=1.0, init_noise_legs=0.8, init_noise_wheels=0.5, 
         actor_hidden_dims=[256, 128, 128], critic_hidden_dims=[512, 256, 128],
@@ -1587,8 +1687,23 @@ class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
         num_wheel_experts=3, num_leg_experts=6, num_leg_actions=12,
         latent_dim=256, rnn_type="gru", aux_loss_coef=0.01,
         
-        blind_vision=True, use_elevation_ae=False, feed_ae_to_policy=False, elevation_dim=187,
+        # 视觉相关关闭（保持盲视）
+        blind_vision=True, 
+        use_elevation_ae=False, 
+        feed_ae_to_policy=False, 
+        elevation_dim=231,
+        
+        # === Estimator 配置 ===
         estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+        feed_estimator_to_policy=False,
     )
 
-    algorithm = RslRlDistillationAlgorithmCfg(class_name="SymmetricMoEDistillation", num_learning_epochs=5, learning_rate=1.0e-4)
+    algorithm = RslRlDistillationAlgorithmCfg(
+        class_name="SymmetricMoEDistillation", 
+        num_learning_epochs=5, 
+        learning_rate=1.0e-4
+    )

@@ -24,7 +24,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     sub_terrains={
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=2.0/18,  # 2/18 的概率生成此地形
+            proportion=1.0/18,  # 2/18 的概率生成此地形
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=3.0,
@@ -48,11 +48,17 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             platform_width=2.0,
         ),
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
-            proportion=3.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.35),platform_width=2.0
+            proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.35),platform_width=2.0
         ),
         "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
             proportion=3.0/18, # 保持比例不变
             # 生成一个纯平的平台，稍后我们在这个平台上用代码放圆环
+        ),
+        "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=2.0/18,      
+            pit_depth_range=(0.05, 0.8), 
+            double_pit=True,
+            platform_width=2.0,
         ),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
             proportion=1.0/18, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
@@ -80,7 +86,7 @@ MOE_ROUGH_TERRAINS_CFG2 = TerrainGeneratorCfg(
     curriculum=True,
     sub_terrains={
         "pyramid_stairs": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
-            proportion=2.0/18,      
+            proportion=1.0/18,      
             pit_depth_range=(3.0, 3.0), 
             double_pit=False,
             platform_width=8.0,
@@ -98,7 +104,7 @@ MOE_ROUGH_TERRAINS_CFG2 = TerrainGeneratorCfg(
             platform_width=8.0,
         ),
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
-            proportion=3.0/18,      
+            proportion=2.0/18,      
             pit_depth_range=(3.0, 3.0), 
             double_pit=False,
             platform_width=8.0,
@@ -109,6 +115,12 @@ MOE_ROUGH_TERRAINS_CFG2 = TerrainGeneratorCfg(
             ring_height_range=(0.4, 0.75),           
             ring_thickness=0.25,                 
             platform_width=2.0, 
+        ),
+        "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=2.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
         ),
         "boxes": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
             proportion=1.0/18,      

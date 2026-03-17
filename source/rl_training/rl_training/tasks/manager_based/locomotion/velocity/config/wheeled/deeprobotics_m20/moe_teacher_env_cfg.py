@@ -90,7 +90,19 @@ def student_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normal
     img = mdp.image(env, sensor_cfg=sensor_cfg, data_type=data_type, normalize=False)
     depths = img.flatten(start_dim=1)
     return process_lidar_data(depths, is_student=True)
-
+def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """处理前向雷达，输出归一化的距离数组"""
+    sensor = env.scene.sensors[sensor_cfg.name]
+    # ray_hits_w 形状: (num_envs, num_rays, 3)
+    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
+    depths = torch.norm(rel_vec, dim=-1)
+    
+    # 填补无穷远 (未击中障碍物的射线)
+    depths = torch.nan_to_num(depths, posinf=3.0, neginf=3.0)
+    
+    # 基础归一化 (使用 Tanh 或直接除以 3.0)
+    normalized_depths = torch.clip(depths / 3.0, 0.0, 1.0)
+    return normalized_depths
 @configclass
 class DeeproboticsM20ActionsCfg(ActionsCfg):
     """Action specifications for the MDP."""
@@ -180,13 +192,13 @@ class DeeproboticsM20ObservationsCfg:
         )
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
-            noise=Unoise(n_min=-0.0, n_max=0.0),
+            noise=Unoise(n_min=-0.2, n_max=0.2),
             clip=(-100.0, 100.0),
             scale=0.25, 
         )
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
-            noise=Unoise(n_min=-0.0, n_max=0.0),
+            noise=Unoise(n_min=-0.05, n_max=0.05),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
@@ -199,14 +211,14 @@ class DeeproboticsM20ObservationsCfg:
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
-            noise=Unoise(n_min=-0.0, n_max=0.0),
+            noise=Unoise(n_min=-0.01, n_max=0.01),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
         joint_vel = ObsTerm(
             func=mdp.joint_vel_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
-            noise=Unoise(n_min=-0.0, n_max=0.0),
+            noise=Unoise(n_min=-1.5, n_max=1.5),
             clip=(-100.0, 100.0),
             scale=0.05, 
         )
@@ -217,10 +229,10 @@ class DeeproboticsM20ObservationsCfg:
         )
         # 高程图已彻底移出！交给独立的 noisy_elevation 处理
         height_scan = None 
-
+        base_lin_vel = None
         def __post_init__(self):
             # Teacher Actor 使用完全无噪声的本体感觉，以追求性能上限
-            self.enable_corruption = False
+            self.enable_corruption = True
             self.concatenate_terms = True
 
     @configclass
@@ -233,6 +245,15 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-1.0, 1.0),
             scale=1.0,
         )
+        # --- 前向 3 层 ---
+        forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        
+        # --- 后向 3 层 ---
+        backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -545,7 +566,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             prim_path="/World/obstacles",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
-            max_init_terrain_level=5,
+            max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
@@ -565,7 +586,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG,
-            max_init_terrain_level=5,
+            max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
@@ -600,6 +621,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        # self.events.randomize_rigid_body_material.params["static_friction_range"] = [1.0, 1.0]
+        # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
+        # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
         # ==============================================================
         # 多层 2D 扫描：分成 3 个独立的 1D 传感器，彻底避免网格重叠
         # ==============================================================
@@ -712,16 +736,16 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.4
+        self.rewards.hipx_joint_pos_penalty.weight = -0.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.1
+        self.rewards.hipy_joint_pos_penalty.weight = -0.25
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.1
+        self.rewards.knee_joint_pos_penalty.weight = -0.25
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.03
+        self.rewards.joint_mirror.weight = -0.05
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -777,4 +801,4 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
-        self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
+        # self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
