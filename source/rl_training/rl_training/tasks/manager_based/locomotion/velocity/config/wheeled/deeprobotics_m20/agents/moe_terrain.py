@@ -96,7 +96,7 @@ class MLP(nn.Module):
 
 class ElevationAE(nn.Module):
     """用于 1D 高程图/地形扫描的自编码器 (对应论文 Elevation Map AE)"""
-    def __init__(self, input_dim=231, output_dim=64, hidden_dims=[128, 64]):
+    def __init__(self, input_dim=187, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
         # Encoder: 提取地形隐变量 z_t^E
         self.encoder = MLP(input_dim, output_dim, hidden_dims, activation="elu")
@@ -255,7 +255,7 @@ class SplitMoEActorCritic(ActorCritic):
                  # === AE Params ===
                  blind_vision=True,     
                  use_elevation_ae=True, 
-                 elevation_dim=231,     
+                 elevation_dim=187,     
                  use_cnn=False,
                  num_cameras=2,       
                  camera_height=58,    
@@ -409,8 +409,8 @@ class SplitMoEActorCritic(ActorCritic):
         # 3. 初始化地形感知 AE 并动态计算 RNN input_size
         # -------------------------------------------------------------
         self.use_multilayer_scan = kwargs.get("use_multilayer_scan", True)
-        self.num_scan_channels = kwargs.get("num_scan_channels", 6)
-        self.num_scan_rays = kwargs.get("num_scan_rays", 61)
+        self.num_scan_channels = kwargs.get("num_scan_channels", 12)
+        self.num_scan_rays = kwargs.get("num_scan_rays", 21)
         self.scan_dim = self.num_scan_channels * self.num_scan_rays
 
         self.ae_output_dim = 0
@@ -1395,10 +1395,10 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     # === AE / Vision Params ===
     blind_vision: bool = False       
     use_elevation_ae: bool = True   
-    elevation_dim: int = 231      
+    elevation_dim: int = 187      
     use_multilayer_scan: bool = False
-    num_scan_channels: int = 6  # 3前 + 3后
-    num_scan_rays: int = 61     # 每个通道的射线数
+    num_scan_channels: int = 12  # 6前 + 6后
+    num_scan_rays: int = 21     # 每个通道的射线数
     use_cnn: bool = False           
     num_cameras: int = 2
     camera_height: int = 58
@@ -1455,7 +1455,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         
         blind_vision=False, # 盲视平地训练
         use_elevation_ae=True, 
-        elevation_dim=231,
+        elevation_dim=187,
         use_cnn=False, 
         
         estimator_output_dim=3,
@@ -1465,13 +1465,13 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=6,  # 3前 + 3后
-        num_scan_rays=61,     # 每个通道的射线数
+        num_scan_channels=12,  # 6前 + 6后
+        num_scan_rays=21,     # 每个通道的射线数
 
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
 
-        # Teacher 保持纯净特权视野，不接收未训练好的 AE/VAE
+        # 接收 AE/VAE
         feed_estimator_to_policy=True, 
         feed_ae_to_policy=True,
     )
@@ -1519,7 +1519,7 @@ class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         
         blind_vision=True, 
         use_elevation_ae=True,
-        elevation_dim=231,
+        elevation_dim=187,
         use_cnn=False, 
         
         estimator_output_dim=3,
@@ -1588,7 +1588,7 @@ class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
         blind_vision=False,
         
         use_elevation_ae=True, 
-        elevation_dim=231,
+        elevation_dim=187,
         use_cnn=False,
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
@@ -1639,7 +1639,7 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
         
         blind_vision=False,
         use_elevation_ae=True, 
-        elevation_dim=231,
+        elevation_dim=187,
         use_cnn=False,
         
         estimator_output_dim=3,
@@ -1691,7 +1691,7 @@ class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
         blind_vision=True, 
         use_elevation_ae=False, 
         feed_ae_to_policy=False, 
-        elevation_dim=231,
+        elevation_dim=187,
         
         # === Estimator 配置 ===
         estimator_output_dim=3,

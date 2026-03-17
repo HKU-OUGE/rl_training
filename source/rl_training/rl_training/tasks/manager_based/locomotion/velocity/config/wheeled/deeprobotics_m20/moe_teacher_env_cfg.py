@@ -245,15 +245,21 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-1.0, 1.0),
             scale=1.0,
         )
-        # --- 前向 3 层 ---
+        # --- 前向 6 层 ---
         forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        forward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        forward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        forward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         
-        # --- 后向 3 层 ---
+        # --- 后向 6 层 ---
         backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        backward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        backward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        backward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -625,86 +631,41 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
         # ==============================================================
-        # 多层 2D 扫描：分成 3 个独立的 1D 传感器，彻底避免网格重叠
+        # 多层 2D 扫描：宽度降低到 1.0m，前后各 6 层，均匀分布在 -0.2 ~ 0.2
         # ==============================================================
-        # 基础四元数 w=0.707, y=-0.707 (绕 Y 轴负向转 90 度，使射线对准 +X 正前方)
         FORWARD_ROT = (0.7071068, 0.0, -0.7071068, 0.0) 
-        # 视野配置：Z方向 0m(1层)，Y方向 3m (水平铺开 61 条射线)
-        SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 3.0])
-        # 扫描目标：地面 + 障碍物 (开启网格实时追踪)
-        SCAN_MESHES = [
-            "/World/ground", "/World/obstacles",
-        ]
-
-        # 第 1 层：底盘下方 (处理矮小障碍/门槛)
-        # M20 base_link 初始高度约 0.52m。偏移 -0.2m -> 绝对高度约 0.32m
-        self.scene.forward_scanner_layer0 = MultiMeshRayCasterCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, -0.2), rot=FORWARD_ROT),
-            ray_alignment="base", 
-            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-            mesh_prim_paths=SCAN_MESHES,
-        )
-
-        # 第 2 层：底盘正前方 (躯干高度)
-        # 偏移 0.0m -> 绝对高度约 0.52m
-        self.scene.forward_scanner_layer1 = MultiMeshRayCasterCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 0.0), rot=FORWARD_ROT),
-            ray_alignment="base", 
-            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-            mesh_prim_paths=SCAN_MESHES,
-        )
-
-        # 第 3 层：底盘上方 (探测悬挂物/圆环顶部)
-        # 偏移 +0.2m -> 绝对高度约 0.72m
-        self.scene.forward_scanner_layer2 = MultiMeshRayCasterCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 0.2), rot=FORWARD_ROT),
-            ray_alignment="base", 
-            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-            mesh_prim_paths=SCAN_MESHES,
-        )
-        self.scene.forward_scanner_layer0.update_period = 0.1  # 每0.1秒更新一次 (10Hz)
-        self.scene.forward_scanner_layer1.update_period = 0.1  # 每0.1秒更新一次 (10Hz)
-        self.scene.forward_scanner_layer2.update_period = 0.1  # 每0.1秒更新一次 (10Hz)
-        # ==============================================================
-        # 向后看的多层 2D 扫描 (后雷达)
-        # ==============================================================
-        # 基础四元数 w=0.707, y=0.707 (绕 Y 轴正向转 90 度，使射线对准 -X 正后方)
         BACKWARD_ROT = (0.7071068, 0.0, 0.7071068, 0.0) 
+        
+        # 视野配置：Y方向 1.0m (产生 21 条射线)
+        SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
+        SCAN_MESHES = ["/World/ground", "/World/obstacles"]
 
-        # 第 1 层：后方底盘下方
-        self.scene.backward_scanner_layer0 = MultiMeshRayCasterCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, -0.2), rot=BACKWARD_ROT),
-            ray_alignment="base", 
-            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-            mesh_prim_paths=SCAN_MESHES,
-        )
+        # 均匀分布的 Z 高度
+        z_heights = [-0.20, -0.12, -0.04, 0.04, 0.12, 0.20]
 
-        # 第 2 层：后方底盘正中
-        self.scene.backward_scanner_layer1 = MultiMeshRayCasterCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, 0.0), rot=BACKWARD_ROT),
-            ray_alignment="base", 
-            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-            mesh_prim_paths=SCAN_MESHES,
-        )
+        # 动态创建前向 6 层与后向 6 层
+        for i, z in enumerate(z_heights):
+            # 前向
+            fwd_sensor = MultiMeshRayCasterCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/base_link",
+                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, z), rot=FORWARD_ROT),
+                ray_alignment="base", 
+                pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+                mesh_prim_paths=SCAN_MESHES,
+            )
+            fwd_sensor.update_period = 0.1
+            setattr(self.scene, f"forward_scanner_layer{i}", fwd_sensor)
 
-        # 第 3 层：后方底盘上方
-        self.scene.backward_scanner_layer2 = MultiMeshRayCasterCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, 0.2), rot=BACKWARD_ROT),
-            ray_alignment="base", 
-            pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-            mesh_prim_paths=SCAN_MESHES,
-        )
-
-        # 设置更新频率为 10Hz
-        self.scene.backward_scanner_layer0.update_period = 0.1
-        self.scene.backward_scanner_layer1.update_period = 0.1  
-        self.scene.backward_scanner_layer2.update_period = 0.1
+            # 后向
+            bwd_sensor = MultiMeshRayCasterCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/base_link",
+                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, z), rot=BACKWARD_ROT),
+                ray_alignment="base", 
+                pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+                mesh_prim_paths=SCAN_MESHES,
+            )
+            bwd_sensor.update_period = 0.1
+            setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
 
         # Rewards
         self.rewards.is_terminated.weight = 0
