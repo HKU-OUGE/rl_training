@@ -941,7 +941,7 @@ def wheel_lateral_slip_penalty(env, asset_cfg: SceneEntityCfg, sensor_cfg: Scene
     wheel_vel_w_flat = wheel_vel_w.view(-1, 3)
     
     # 3. 将轮子的速度转换到基座坐标系 (Base Frame) 下
-    wheel_vel_b = math_utils.quat_rotate_inverse(base_quat_expanded, wheel_vel_w_flat).view(wheel_vel_w.shape)
+    wheel_vel_b = math_utils.quat_apply_inverse(base_quat_expanded, wheel_vel_w_flat).view(wheel_vel_w.shape)
     
     # 4. 提取侧向速度 (假设基座系下 X是前进，Y是侧向)
     lateral_vel_sq = torch.square(wheel_vel_b[:, :, 1])
