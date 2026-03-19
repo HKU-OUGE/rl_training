@@ -544,7 +544,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.pretraincfg.joint_vel.scale = 0.05
         self.observations.pretraincfg.base_lin_vel = None
         self.observations.pretraincfg.height_scan = None
-        self.actions.joint_pos.scale = {".*_hipx_joint": 0.125, "^(?!.*_hipx_joint).*": 0.25}
+        self.actions.joint_pos.scale = {".*_hipx_joint": 0.25, "^(?!.*_hipx_joint).*": 0.25}
         self.actions.joint_vel.scale = 5.0
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_vel.clip = {".*": (-100.0, 100.0)}
@@ -774,7 +774,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
-        # self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
+        self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
         # override rewards
         self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
@@ -783,7 +783,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # no terrain curriculum
         self.curriculum.terrain_levels = None
         self.rewards.lin_vel_z_l2.func = mdp.lin_vel_z_l2
-        self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
+        # self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
         self.rewards.base_height_l2.func = mdp.base_height_l2
         
         
