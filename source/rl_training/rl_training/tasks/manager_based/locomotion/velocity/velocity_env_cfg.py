@@ -601,18 +601,8 @@ class RewardsCfg:
         func=mdp.track_ang_vel_z_exp, weight=0.0, params={"command_name": "base_velocity", "std": math.sqrt(0.1)}
     )
     # Others
-    # feet_air_time = RewTerm(
-    #     func=mdp.feet_air_time,
-    #     weight=0.0,
-    #     params={
-    #         "command_name": "base_velocity",
-    #         "threshold": 0.5,
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
-    #     },
-    # )
-
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_curriculum,
+        func=mdp.feet_air_time_including_ang_z,
         weight=0.0,
         params={
             "command_name": "base_velocity",
@@ -620,6 +610,16 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
         },
     )
+
+    # feet_air_time = RewTerm(
+    #     func=mdp.feet_air_time_curriculum,
+    #     weight=0.0,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "threshold": 0.5,
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
+    #     },
+    # )
 
     feet_air_time_variance = RewTerm(
         func=mdp.feet_air_time_variance_penalty,

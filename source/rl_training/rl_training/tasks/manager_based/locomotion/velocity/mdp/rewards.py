@@ -874,3 +874,51 @@ def feet_air_time_curriculum(
         scale = 1.0
         
     return raw_reward * scale
+
+def track_ang_vel_z_exp_tool(
+    env: ManagerBasedRLEnv, 
+    command_name: str, 
+    std: float
+) -> torch.Tensor:
+    """奖励机器人精确跟踪 Z 轴角速度指令。
+    
+    使用指数内核 (Exponential Kernel)，误差越小奖励越高，且对大误差有很好的惩罚过渡。
+    """
+    # 1. 获取当前机身的角速度 (Base angular velocity in body frame)
+    ang_vel_z = env.scene["robot"].data.root_com_ang_vel_b[:, 2]
+    
+    # 2. 获取目标指令角速度
+    target_ang_vel_z = env.command_manager.get_command(command_name)[:, 2]
+    
+    # 3. 计算误差并映射到 [0, 1]
+    error = torch.square(target_ang_vel_z - ang_vel_z)
+    reward = torch.exp(-error / std)
+    
+    return reward
+
+def yaw_foot_placement_rotation(
+    env: ManagerBasedRLEnv, 
+    command_name: str, 
+    sensor_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """转向时的‘足端落点’启发奖励。
+    
+    逻辑：当机器人向左转时，右侧的脚应该向前迈，左侧的脚应该向后迈（相对于机身）。
+    这能有效防止机器人原地‘搓地’，强迫它走出漂亮的圆弧步。
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # 获取足端相对于机身中心(CoM)的水平位置 (x, y)
+    foot_pos_b = contact_sensor.data.test_points_w[:, :, :2] - env.scene["robot"].data.root_com_pos_w[:, None, :2]
+    
+    # 获取转向指令
+    yaw_command = env.command_manager.get_command(command_name)[:, 2] # rad/s
+    
+    # 计算每个足端在转向时理想的切向位移趋势
+    # 简化逻辑：向左转(yaw > 0)时，位于机身右侧的脚(y < 0)应该有正向的x速度/位置
+    # reward = yaw_rate * (foot_pos_x * (-foot_pos_y) + foot_pos_y * (foot_pos_x))
+    # 这里我们只奖励在摆动相(Swing)结束准备落地时，脚是否站到了能产生转矩的位置
+    
+    # 简易版：奖励转向指令与足端相对位置的乘积一致性
+    reward = yaw_command[:, None] * foot_pos_b[:, :, 0] * (-foot_pos_b[:, :, 1])
+    
+    return torch.sum(reward, dim=1)
