@@ -1707,3 +1707,60 @@ class MlpToMoeDistillationCfg(RslRlDistillationRunnerCfg):
         num_learning_epochs=5, 
         learning_rate=1.0e-4
     )
+
+@configclass
+class BlindMoECfg(RslRlOnPolicyRunnerCfg):
+    """全盲 MoE 训练配置，仅包含 57 维本体感受信息。"""
+
+    num_steps_per_env = 24
+    max_iterations = 5000
+    save_interval = 200
+    experiment_name = "blind_moe_training"
+    empirical_normalization = False
+
+    # 仅包含本体信息输入，对应 57 维观测
+    obs_groups = {
+        "policy": ["blind_student_policy"], 
+    }
+
+    policy = SplitMoEActorCriticCfg(
+        class_name="SplitMoEStudentTeacher", 
+        teacher_is_mlp=True,
+        
+        # 网络维度配置
+        init_noise_std=1.0, 
+        init_noise_legs=0.8, 
+        init_noise_wheels=0.5, 
+        actor_hidden_dims=[256, 128, 128], 
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        
+        # MoE 专家设置
+        num_wheel_experts=3, 
+        num_leg_experts=6, 
+        num_leg_actions=12,
+        latent_dim=256, 
+        rnn_type="gru", 
+        aux_loss_coef=0.01,
+        
+        # 全盲核心配置
+        blind_vision=True,           # 显式开启全盲模式
+        use_elevation_ae=False,      # 关闭海拔自编码器
+        feed_ae_to_policy=False,     # 不将 AE 特征传入 Policy
+        elevation_dim=187,           # 默认维度
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
