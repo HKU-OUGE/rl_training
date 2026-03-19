@@ -714,11 +714,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.0
+        self.rewards.hipx_joint_pos_penalty.weight = -0.25
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.0
+        self.rewards.hipy_joint_pos_penalty.weight = -0.25
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.0
+        self.rewards.knee_joint_pos_penalty.weight = -0.25
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
@@ -745,8 +745,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0.5
         self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
-        self.rewards.feet_air_time.weight = 2.0
-        self.rewards.feet_air_time.params["threshold"] = 0.2
+        self.rewards.feet_air_time.weight = 1.0
+        self.rewards.feet_air_time.params["threshold"] = 0.5
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         # self.rewards.feet_air_time_long.weight = 1.0
         # self.rewards.feet_air_time_long.params["threshold"] = 0.5
@@ -768,7 +768,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        # self.rewards.upward.weight = 0.08
+        self.rewards.upward.weight = 0.08
 
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()
@@ -777,9 +777,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.bad_orientation_2 = None
 
         self.curriculum.command_levels.params["range_multiplier"] = (0.2, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
         self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
