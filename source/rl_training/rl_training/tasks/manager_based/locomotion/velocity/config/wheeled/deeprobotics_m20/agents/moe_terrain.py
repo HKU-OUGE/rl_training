@@ -375,6 +375,11 @@ class SplitMoEActorCritic(ActorCritic):
         if self.estimator_output_dim > 0:
             self.has_estimator_group = False
             try:
+                # >>> ADD THIS CHECK <<<
+                # Strictly enforce that we only use the estimator group if the config requests it
+                if obs_groups is not None and "estimator" not in obs_groups:
+                    raise KeyError("estimator explicitly omitted from obs_groups")
+
                 est_group = obs["estimator"]
                 est_input_dim = est_group.shape[-1]
                 self.has_estimator_group = True
@@ -699,9 +704,10 @@ class SplitMoEActorCritic(ActorCritic):
         return latent, next_rnn_state
 
     def _get_estimator_input(self, obs_dict):
-        # 增加 isinstance 检查，防止 ONNX 导出时 Tensor 被当成字典索引
-        if self.has_estimator_group and isinstance(obs_dict, dict) and "estimator" in obs_dict:
-            return obs_dict["estimator"]
+        # 增加 hasattr 检查，兼容 TensorDict 等 RSL-RL 数据结构
+        if self.has_estimator_group and (isinstance(obs_dict, dict) or hasattr(obs_dict, "keys")):
+            if "estimator" in obs_dict:
+                return obs_dict["estimator"]
         
         if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
             try: 
