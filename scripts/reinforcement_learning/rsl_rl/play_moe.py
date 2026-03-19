@@ -186,29 +186,63 @@ def get_truly_unwrapped_env(env):
         unwrapped = unwrapped.unwrapped
     return unwrapped
 
-class ExportablePolicy(nn.Module):
+# ==============================================================================
+#  Unified Export Helpers
+# ==============================================================================
+
+def get_flat_obs_dim(policy):
+    """根据网络配置，自动推断部署端需要传入的总 Tensor 维度"""
+    dim = policy.proprio_dim
+    if not getattr(policy, "blind_vision", False):
+        if getattr(policy, "use_elevation_ae", False):
+            dim += policy.elevation_dim
+        if getattr(policy, "use_multilayer_scan", False):
+            dim += policy.scan_dim
+        if getattr(policy, "use_cnn", False):
+            dim += policy.image_raw_dim
+    return dim
+
+class UnifiedExportPolicy(nn.Module):
+    """
+    统一导出包装器 (终极版)：
+    动态构造字典，完美支持 855维 VAE 历史特征输入。
+    部署时 C++ 端需提供:
+      1. proprio_and_env: [本体感受 57 + 高程 187 + 雷达 252]
+      2. estimator_history: [VAE 历史 855] (如果开启了)
+    """
     def __init__(self, policy):
         super().__init__()
         self.policy = policy
         self.policy.eval()
-    def forward(self, obs, hidden_states):
-        batch_size = obs.shape[0]
-        masks = torch.ones(batch_size, dtype=torch.bool, device=obs.device)
-        action_mean, _, next_state = self.policy.forward(
-            obs, masks=masks, hidden_states=hidden_states, save_dist=False
-        )
-        return action_mean, next_state
+        # 冻结所有参数
+        for param in self.policy.parameters():
+            param.requires_grad = False
+            
+        self.rnn_type = getattr(policy, "rnn_type", "gru").lower()
 
-class ExportableEstimator(nn.Module):
-    def __init__(self, policy):
-        super().__init__()
-        self.estimator = policy.estimator
-        self.normalizer = policy.estimator_obs_normalizer
-        self.estimator.eval()
-        if self.normalizer: self.normalizer.eval()
-    def forward(self, obs):
-        if self.normalizer is not None: obs = self.normalizer(obs)
-        return self.estimator(obs)
+    def forward(self, proprio_and_env, estimator_history, h0, c0=None):
+        # 处理不同 RNN 类型的隐藏状态
+        if self.rnn_type == "lstm":
+            hidden_states = (h0, c0)
+        else:
+            hidden_states = h0
+            
+        # 动态构造字典，欺骗内部的提取逻辑，完美避免维度坍塌
+        obs_dict = {
+            "policy": proprio_and_env[..., :self.policy.proprio_dim],
+            "noisy_elevation": proprio_and_env[..., self.policy.proprio_dim:]
+        }
+        if estimator_history.shape[-1] > 0:
+            obs_dict["estimator"] = estimator_history
+            
+        action_mean, _, next_state = self.policy.forward(
+            obs_dict, masks=None, hidden_states=hidden_states, save_dist=False
+        )
+        
+        if self.rnn_type == "lstm":
+            return action_mean, next_state[0], next_state[1]
+        else:
+            return action_mean, next_state
 
 def resolve_checkpoint_path(root_log_dir, run_name_or_path, checkpoint_pattern):
     run_dir = None
@@ -247,78 +281,63 @@ def save_configs(log_dir, env_cfg, train_cfg_dict):
             yaml.dump(sanitize(env_cfg), f, sort_keys=False)
     except: pass
 
-def export_model_files(policy, log_dir, obs_dim, device):
+def export_model_files(policy, log_dir, device):
     exported_dir = os.path.join(log_dir, "exported")
     os.makedirs(exported_dir, exist_ok=True)
-    print(f"\n[Export] Exporting models to: {exported_dir}")
+    print(f"\n[Export] Exporting UNIFIED End-to-End models to: {exported_dir}")
+    
     try:
-        base_model = ExportablePolicy(policy).to(device)
-        base_model.eval()
+        base_model = UnifiedExportPolicy(policy).to(device)
         
+        # 1. 自动计算维度
+        flat_obs_dim = get_flat_obs_dim(policy)
         batch_size = 1
-        dummy_obs = torch.zeros(batch_size, obs_dim, device=device)
         latent_dim = getattr(policy, "latent_dim", 256)
+        rnn_type = getattr(policy, "rnn_type", "gru").lower()
         
-        if getattr(policy, "rnn_type", "gru") == "lstm":
-            dummy_hidden = (torch.zeros(1, 1, latent_dim, device=device), 
-                           torch.zeros(1, 1, latent_dim, device=device))
+        # 动态获取 Estimator 的维度 (这里通常是 855)
+        est_dim = 0
+        if getattr(policy, "has_estimator_group", False) and policy.estimator_obs_normalizer is not None:
+            est_dim = policy.estimator_obs_normalizer.mean.shape[-1]
+        
+        # 2. 构造包含历史信息的 Dummy 输入
+        dummy_obs = torch.zeros(batch_size, flat_obs_dim, device=device)
+        dummy_est = torch.zeros(batch_size, est_dim, device=device)
+        
+        if rnn_type == "lstm":
+            dummy_h0 = torch.zeros(1, batch_size, latent_dim, device=device)
+            dummy_c0 = torch.zeros(1, batch_size, latent_dim, device=device)
+            inputs = (dummy_obs, dummy_est, dummy_h0, dummy_c0)
+            input_names = ["proprio_and_env", "estimator_history", "h0", "c0"]
+            output_names = ["action", "next_h0", "next_c0"]
         else:
-            dummy_hidden = torch.zeros(1, 1, latent_dim, device=device)
+            dummy_h0 = torch.zeros(1, batch_size, latent_dim, device=device)
+            inputs = (dummy_obs, dummy_est, dummy_h0)
+            input_names = ["proprio_and_env", "estimator_history", "h0"]
+            output_names = ["action", "next_h0"]
             
+        # 3. 导出 ONNX
+        onnx_path = os.path.join(exported_dir, "unified_policy.onnx")
         torch.onnx.export(
-            base_model, 
-            (dummy_obs, dummy_hidden), 
-            os.path.join(exported_dir, "policy.onnx"), 
-            input_names=["obs", "hidden_state"], 
-            output_names=["action", "next_hidden"], 
-            opset_version=13
+            base_model, inputs, onnx_path, 
+            input_names=input_names, output_names=output_names, opset_version=14 
         )
-        print(f"  - Policy ONNX saved")
+        print(f"  - [Success] Unified ONNX saved: {onnx_path}")
+        print(f"    * Input Names: {input_names}")
+        print(f"    * Proprio+Env Dim: {flat_obs_dim} (Proprio: {policy.proprio_dim})")
+        print(f"    * Estimator History Dim: {est_dim}")
 
+        # 4. 导出 TorchScript
+        ts_path = os.path.join(exported_dir, "unified_policy.pt")
         try:
-            scripted_model = torch.jit.script(base_model)
-            scripted_model.save(os.path.join(exported_dir, "policy.pt"))
-            print(f"  - Policy TorchScript (Script) saved")
-        except Exception as e_script:
-            print(f"  [Warning] JIT Script failed. Trying JIT Trace...")
-            try:
-                traced_model = torch.jit.trace(base_model, (dummy_obs, dummy_hidden))
-                traced_model.save(os.path.join(exported_dir, "policy.pt"))
-                print(f"  - Policy TorchScript (Trace) saved")
-            except Exception as e_trace:
-                print(f"  - Policy TorchScript Export Error: {e_trace}")
+            traced_model = torch.jit.trace(base_model, inputs)
+            traced_model.save(ts_path)
+            print(f"  - [Success] Unified TorchScript saved: {ts_path}")
+        except Exception as e_trace:
+            print(f"  [Warning] TorchScript Trace failed: {e_trace}")
 
     except Exception as e:
-        print(f"  - Policy Export Error: {e}")
-    
-    if hasattr(policy, "estimator") and policy.estimator is not None:
-        try:
-            # 替换为你以下的逻辑
-            if hasattr(policy, "estimator_obs_normalizer") and policy.estimator_obs_normalizer is not None:
-                est_input_dim = policy.estimator_obs_normalizer.mean.shape[0]
-            elif hasattr(policy.estimator, "encoder_mlp") and hasattr(policy.estimator.encoder_mlp, "net"):
-                est_input_dim = policy.estimator.encoder_mlp.net[0].in_features
-            elif hasattr(policy.estimator, "net") and len(policy.estimator.net) > 0:
-                est_input_dim = policy.estimator.net[0].in_features
-            elif isinstance(policy.estimator, nn.Linear):
-                est_input_dim = policy.estimator.in_features
-            else:
-                est_idx = getattr(policy, "estimator_input_indices", list(range(3, 32)))
-                est_input_dim = len(est_idx)
-            
-            dummy_est_obs = torch.zeros(1, est_input_dim, device=device)
-            est_wrapper = ExportableEstimator(policy).to(device)
-            
-            torch.onnx.export(est_wrapper, dummy_est_obs, os.path.join(exported_dir, "estimator.onnx"),
-                input_names=["proprioception"], output_names=["estimated_state"], opset_version=13)
-            print(f"  - Estimator ONNX saved (Input Dim: {est_input_dim})")
-            
-            traced_est = torch.jit.trace(est_wrapper, dummy_est_obs)
-            traced_est.save(os.path.join(exported_dir, "estimator.pt"))
-            print(f"  - Estimator TorchScript saved")
-            
-        except Exception as e:
-            print(f"  - Estimator Export Error: {e}")
+        print(f"  [Error] Unified Policy Export Failed: {e}")
 
 # ==============================================================================
 #  Main
@@ -514,13 +533,8 @@ def main():
 
     if args.export:
         save_configs(log_dir, env_cfg, train_cfg_dict)
-        if hasattr(model_instance, "rnn"):
-            obs_dim = model_instance.rnn.input_size
-        elif hasattr(model_instance, "net") and isinstance(model_instance.net, nn.Sequential): 
-             first_layer = model_instance.net[0]
-             if hasattr(first_layer, "in_features"):
-                 obs_dim = first_layer.in_features
-        export_model_files(model_instance, log_dir, obs_dim, device=device)
+        # 直接调用，不再需要手动提取 RNN size，统一包装器会自动处理
+        export_model_files(model_instance, log_dir, device=device)
 
     # 6. Hooks
     monitor_data = {}
@@ -639,7 +653,9 @@ def main():
     step = 0
     with torch.inference_mode():
         while simulation_app.is_running():
-            actions = policy(obs)
+            # 核心修复：绕过 env_wrapped，直接从底层 IsaacLab 环境中获取包含所有传感器数据的完整字典
+            obs_dict = base_env.obs_buf
+            actions = policy(obs_dict)
             
             reset_terrain_needed = False
             ctrl_debug = {}
@@ -727,7 +743,7 @@ def main():
 
             est_state = None
             if hasattr(model_instance, "get_estimated_state"):
-                est_state = model_instance.get_estimated_state(obs)
+                est_state = model_instance.get_estimated_state(obs_dict)
             
             gt_state = None
             if robot_entity is not None:

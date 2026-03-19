@@ -573,7 +573,7 @@ class SplitMoEActorCritic(ActorCritic):
         # -------------------------------------------------------------
         env_feat_for_rnn = None
         if (self.use_elevation_ae or self.use_multilayer_scan) and self.feed_ae:
-            if obs_dict is not None and "noisy_elevation" in obs_dict:
+            if obs_dict is not None and isinstance(obs_dict, dict) and "noisy_elevation" in obs_dict:
                 env_raw_full = obs_dict["noisy_elevation"]
             else:
                 env_raw_full = x[..., proprio_dim:]
@@ -599,7 +599,7 @@ class SplitMoEActorCritic(ActorCritic):
             if getattr(self, "blind_vision", False):
                 env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
         elif self.use_cnn:
-            if not getattr(self, 'has_elevation_input', True) and (obs_dict is None or "noisy_elevation" not in obs_dict.keys()):
+            if not getattr(self, 'has_elevation_input', True) and (obs_dict is None or (isinstance(obs_dict, dict) and "noisy_elevation" not in obs_dict)):
                 if self.feed_ae:
                     env_feat_for_rnn = torch.zeros((*x.shape[:-1], self.ae_output_dim), device=x.device)
             else:
@@ -699,9 +699,9 @@ class SplitMoEActorCritic(ActorCritic):
         return latent, next_rnn_state
 
     def _get_estimator_input(self, obs_dict):
-        if self.has_estimator_group:
-            try: return obs_dict["estimator"]
-            except (KeyError, TypeError): pass
+        # 增加 isinstance 检查，防止 ONNX 导出时 Tensor 被当成字典索引
+        if self.has_estimator_group and isinstance(obs_dict, dict) and "estimator" in obs_dict:
+            return obs_dict["estimator"]
         
         if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
             try: 
