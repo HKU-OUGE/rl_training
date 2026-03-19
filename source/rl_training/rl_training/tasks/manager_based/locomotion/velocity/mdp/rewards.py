@@ -836,3 +836,41 @@ def base_height_l2_curriculum(
     scale = torch.clamp(1.0 - (curr_levels / 15.0), min=0.2, max=1.0)
     
     return error * scale
+
+def feet_air_time_curriculum(
+    env: ManagerBasedRLEnv, 
+    command_name: str, 
+    sensor_cfg: SceneEntityCfg, 
+    threshold: float
+) -> torch.Tensor:
+    """
+    Reward long steps taken by the feet, scaled by terrain difficulty.
+    - Flat terrain (Level 0): Reward is 0. Encourages efficient wheel rolling.
+    - Rough terrain (Level N): Reward scales up to 1.0. Encourages stepping/jumping over obstacles.
+    """
+    # 提取接触传感器
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    
+    # 计算基础的腾空时间奖励 (只在脚掌落地的瞬间结算)
+    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    raw_reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
+    
+    # 过滤微小指令：如果没有移动指令，不给予腾空奖励
+    command_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    raw_reward *= (command_norm > 0.1)
+    
+    # --- 核心：地形课程 (Curriculum) 缩放 ---
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_levels"):
+        curr_levels = env.scene.terrain.terrain_levels.float()
+        
+        # 设定一个过渡区间，例如从 Level 0 到 Level 5
+        # Level 0 (平地): scale = 0.0 -> 纯轮式
+        # Level 5+ (复杂地形): scale = 1.0 -> 强制足式抬腿
+        # 你可以根据你地形生成的难度，调整这里的 5.0
+        scale = torch.clamp(curr_levels / 5.0, min=0.0, max=1.0)
+    else:
+        # 如果环境没有启用 terrain curriculum，则默认给全额奖励
+        scale = 1.0
+        
+    return raw_reward * scale
