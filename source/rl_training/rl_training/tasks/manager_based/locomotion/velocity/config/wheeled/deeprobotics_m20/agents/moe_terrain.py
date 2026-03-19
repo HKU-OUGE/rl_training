@@ -1730,7 +1730,7 @@ class BlindMoECfg(RslRlOnPolicyRunnerCfg):
     }
 
     policy = SplitMoEActorCriticCfg(
-        class_name="SplitMoEStudentTeacher", 
+        class_name="SplitMoEActorCritic", 
         teacher_is_mlp=True,
         
         # 网络维度配置

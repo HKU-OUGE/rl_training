@@ -922,3 +922,33 @@ def yaw_foot_placement_rotation(
     reward = yaw_command[:, None] * foot_pos_b[:, :, 0] * (-foot_pos_b[:, :, 1])
     
     return torch.sum(reward, dim=1)
+
+    import isaaclab.utils.math as math_utils
+from isaaclab.sensors import ContactSensor
+
+def wheel_lateral_slip_penalty(env, asset_cfg: SceneEntityCfg, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """轮足终极防侧滑：只惩罚接地的轮子在基座 Y 轴（侧向）的滑动"""
+    asset = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    
+    # 1. 获取轮子在世界坐标系下的线速度 (B, 4, 3)
+    wheel_vel_w = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :]
+    
+    # 2. 获取基座的姿态并扩展，用于坐标系转换
+    base_quat = asset.data.root_quat_w
+    num_wheels = wheel_vel_w.shape[1]
+    base_quat_expanded = base_quat.unsqueeze(1).repeat(1, num_wheels, 1).view(-1, 4)
+    wheel_vel_w_flat = wheel_vel_w.view(-1, 3)
+    
+    # 3. 将轮子的速度转换到基座坐标系 (Base Frame) 下
+    wheel_vel_b = math_utils.quat_rotate_inverse(base_quat_expanded, wheel_vel_w_flat).view(wheel_vel_w.shape)
+    
+    # 4. 提取侧向速度 (假设基座系下 X是前进，Y是侧向)
+    lateral_vel_sq = torch.square(wheel_vel_b[:, :, 1])
+    
+    # 5. 检测轮子是否触地
+    # 注意：这里的 contact_sensor 应该指向 contact_forces 传感器
+    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
+    
+    # 6. 只有触地时的侧滑才会导致惩罚
+    return torch.sum(lateral_vel_sq * contacts, dim=1)

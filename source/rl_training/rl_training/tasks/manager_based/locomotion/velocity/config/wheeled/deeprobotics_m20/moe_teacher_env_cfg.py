@@ -178,6 +178,14 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
         },
     )
+    wheel_lat_slip = RewTerm(
+        func=mdp.wheel_lateral_slip_penalty, # 指向你刚在 rewards.py 写的函数
+        weight=-1.5, # 给一个比较大的负权重
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_wheel"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel")
+        }
+    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
@@ -706,11 +714,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.4
+        self.rewards.hipx_joint_pos_penalty.weight = -1.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.1
+        self.rewards.hipy_joint_pos_penalty.weight = -0.0
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.1
+        self.rewards.knee_joint_pos_penalty.weight = -0.0
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
@@ -737,8 +745,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0.5
         self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
-        self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params["threshold"] = 0.25
+        self.rewards.feet_air_time.weight = 2.0
+        self.rewards.feet_air_time.params["threshold"] = 0.2
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         # self.rewards.feet_air_time_long.weight = 1.0
         # self.rewards.feet_air_time_long.params["threshold"] = 0.5
