@@ -178,14 +178,6 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
         },
     )
-    wheel_lat_slip = RewTerm(
-        func=mdp.wheel_lateral_slip_penalty, # 指向你刚在 rewards.py 写的函数
-        weight=-1.5, # 给一个比较大的负权重
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_wheel"),
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel")
-        }
-    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
@@ -552,7 +544,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.pretraincfg.joint_vel.scale = 0.05
         self.observations.pretraincfg.base_lin_vel = None
         self.observations.pretraincfg.height_scan = None
-        self.actions.joint_pos.scale = {".*_hipx_joint": 0.25, "^(?!.*_hipx_joint).*": 0.25}
+        self.actions.joint_pos.scale = {".*_hipx_joint": 0.125, "^(?!.*_hipx_joint).*": 0.25}
         self.actions.joint_vel.scale = 5.0
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_vel.clip = {".*": (-100.0, 100.0)}
@@ -584,59 +576,58 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
         # ground terrain
-        # self.scene.terrain = TerrainImporterCfg(
-        #     prim_path="/World/obstacles",
-        #     terrain_type="generator",
-        #     terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
-        #     max_init_terrain_level=0,
-        #     collision_group=-1,
-        #     physics_material=sim_utils.RigidBodyMaterialCfg(
-        #         friction_combine_mode="multiply",
-        #         restitution_combine_mode="multiply",
-        #         static_friction=1.0,
-        #         dynamic_friction=1.0,
-        #         restitution=1.0,
-        #     ),
-        #     visual_material=sim_utils.MdlFileCfg(
-        #         mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-        #         project_uvw=True,
-        #         texture_scale=(0.25, 0.25),
-        #     ),
-        #     debug_vis=False,
-        # )
-        # self.scene.terrain2 = TerrainImporterCfg(
-        #     prim_path="/World/ground",
-        #     terrain_type="generator",
-        #     terrain_generator=MOE_ROUGH_TERRAINS_CFG,
-        #     max_init_terrain_level=0,
-        #     collision_group=-1,
-        #     physics_material=sim_utils.RigidBodyMaterialCfg(
-        #         friction_combine_mode="multiply",
-        #         restitution_combine_mode="multiply",
-        #         static_friction=1.0,
-        #         dynamic_friction=1.0,
-        #         restitution=1.0,
-        #     ),
-        #     visual_material=sim_utils.MdlFileCfg(
-        #         mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-        #         project_uvw=True,
-        #         texture_scale=(0.25, 0.25),
-        #     ),
-        #     debug_vis=False,
-        # )
-        self.scene.terrain.terrain_generator = ROUGH_TERRAINS_CFG
-        # self.scene.terrain = None
-        if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
-            self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
+        self.scene.terrain = TerrainImporterCfg(
+            prim_path="/World/obstacles",
+            terrain_type="generator",
+            terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG2,
+            max_init_terrain_level=0,
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=1.0,
+            ),
+            visual_material=sim_utils.MdlFileCfg(
+                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+                project_uvw=True,
+                texture_scale=(0.25, 0.25),
+            ),
+            debug_vis=False,
+        )
+        self.scene.terrain2 = TerrainImporterCfg(
+            prim_path="/World/ground",
+            terrain_type="generator",
+            terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG,
+            max_init_terrain_level=0,
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=1.0,
+            ),
+            visual_material=sim_utils.MdlFileCfg(
+                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+                project_uvw=True,
+                texture_scale=(0.25, 0.25),
+            ),
+            debug_vis=False,
+        )
+        self.scene.terrain2.terrain_generator = ELEMOE_ROUGH_TERRAINS_CFG
+        if(self.scene.terrain2.terrain_generator == ELEMOE_ROUGH_TERRAINS_CFG):
+            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain.terrain_generator == ROUGH_TERRAINS_CFG):
-            self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
+        elif(self.scene.terrain2.terrain_generator == ELEMOE_ROUGH_TERRAINS_CFG2):
+            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
+            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
@@ -714,7 +705,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.25
+        self.rewards.hipx_joint_pos_penalty.weight = -1.0
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.hipy_joint_pos_penalty.weight = -0.25
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
@@ -723,7 +714,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.03
+        self.rewards.joint_mirror.weight = -0.05
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -746,10 +737,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
         self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params["threshold"] = 0.5
+        self.rewards.feet_air_time.params["threshold"] = 0.25
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
-        # self.rewards.feet_air_time_long.weight = 1.0
-        # self.rewards.feet_air_time_long.params["threshold"] = 0.5
+        self.rewards.feet_air_time_long.weight = 1.0
+        self.rewards.feet_air_time_long.params["threshold"] = 0.5
         self.rewards.feet_air_time_long.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
         self.rewards.feet_contact.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -768,7 +759,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        self.rewards.upward.weight = 0.08
+        # self.rewards.upward.weight = 0.08
 
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()
@@ -777,21 +768,18 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.bad_orientation_2 = None
 
         self.curriculum.command_levels.params["range_multiplier"] = (0.2, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
-        self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
+        # self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
         # override rewards
-        self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
         # no terrain curriculum
         self.curriculum.terrain_levels = None
         self.rewards.lin_vel_z_l2.func = mdp.lin_vel_z_l2
-        # self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
+        self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
         self.rewards.base_height_l2.func = mdp.base_height_l2
-        
-        

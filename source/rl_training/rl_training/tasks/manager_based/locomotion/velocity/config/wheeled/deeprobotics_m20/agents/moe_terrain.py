@@ -375,11 +375,8 @@ class SplitMoEActorCritic(ActorCritic):
         if self.estimator_output_dim > 0:
             self.has_estimator_group = False
             try:
-                # >>> ADD THIS CHECK <<<
-                # Strictly enforce that we only use the estimator group if the config requests it
                 if obs_groups is not None and "estimator" not in obs_groups:
                     raise KeyError("estimator explicitly omitted from obs_groups")
-
                 est_group = obs["estimator"]
                 est_input_dim = est_group.shape[-1]
                 self.has_estimator_group = True
@@ -704,7 +701,6 @@ class SplitMoEActorCritic(ActorCritic):
         return latent, next_rnn_state
 
     def _get_estimator_input(self, obs_dict):
-        # 增加 hasattr 检查，兼容 TensorDict 等 RSL-RL 数据结构
         if self.has_estimator_group and (isinstance(obs_dict, dict) or hasattr(obs_dict, "keys")):
             if "estimator" in obs_dict:
                 return obs_dict["estimator"]
@@ -1765,6 +1761,71 @@ class BlindMoECfg(RslRlOnPolicyRunnerCfg):
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+
+@configclass
+class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
+    """PPO Configuration for training the Teacher."""
+    num_steps_per_env = 36
+    max_iterations = 25000
+    save_interval = 200
+    experiment_name = "ele_moe_teacher_parallel" 
+    empirical_normalization = False
+    
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
+    
+    policy = SplitMoEActorCriticCfg(
+        init_noise_std=1.0, 
+        init_noise_legs=0.8,
+        init_noise_wheels=0.5, 
+        actor_hidden_dims=[256, 128, 128], 
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=6,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+        
+        blind_vision=False, # 盲视平地训练
+        use_elevation_ae=True, 
+        elevation_dim=187,
+        use_cnn=False, 
+        
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2], 
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+
+        use_multilayer_scan=False,
+        num_scan_channels=12,  # 6前 + 6后
+        num_scan_rays=21,     # 每个通道的射线数
+
+        actor_obs_normalization=True, 
+        critic_obs_normalization=True,
+
+        # 接收 AE/VAE
+        feed_estimator_to_policy=True, 
+        feed_ae_to_policy=True,
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        class_name="SplitMoEPPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3, 
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
