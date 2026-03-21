@@ -45,6 +45,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import carb
+import carb.input
+import omni.appwindow
+
 from rl_utils import camera_follow 
 from isaaclab_tasks.utils import parse_env_cfg
 from rsl_rl.runners import OnPolicyRunner
@@ -78,6 +82,31 @@ if "SplitMoEActorCritic" in globals():
     if "SplitMoEStudentTeacher" in globals():
         import rsl_rl.runners.distillation_runner as dist_runner_module
         dist_runner_module.SplitMoEStudentTeacher = SplitMoEStudentTeacher
+
+# ==============================================================================
+#  Keyboard Controller Extension (For Camera, Reset, and Terrain)
+# ==============================================================================
+class KeyboardExtension:
+    """监听 Omniverse 底层键盘事件，用于补充控制视野和地形。"""
+    def __init__(self):
+        self._input = carb.input.acquire_input_interface()
+        appwindow = omni.appwindow.get_default_app_window()
+        self._keyboard = appwindow.get_keyboard()
+        self._keyboard_sub = self._input.subscribe_to_keyboard_events(
+            self._keyboard, self._on_keyboard_event
+        )
+        self.key_just_pressed = {}
+
+    def _on_keyboard_event(self, event, *args, **kwargs):
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            self.key_just_pressed[event.input] = True
+        return True # 返回 True 允许其他模块（如 Se2Keyboard）继续处理该事件
+
+    def check_and_clear(self, key):
+        if self.key_just_pressed.get(key, False):
+            self.key_just_pressed[key] = False
+            return True
+        return False
 
 # ==============================================================================
 #  Joystick Controller (Robust Hot-Swap)
@@ -203,31 +232,21 @@ def get_flat_obs_dim(policy):
     return dim
 
 class UnifiedExportPolicy(nn.Module):
-    """
-    统一导出包装器 (终极版)：
-    动态构造字典，完美支持 855维 VAE 历史特征输入。
-    部署时 C++ 端需提供:
-      1. proprio_and_env: [本体感受 57 + 高程 187 + 雷达 252]
-      2. estimator_history: [VAE 历史 855] (如果开启了)
-    """
+    """统一导出包装器"""
     def __init__(self, policy):
         super().__init__()
         self.policy = policy
         self.policy.eval()
-        # 冻结所有参数
         for param in self.policy.parameters():
             param.requires_grad = False
-            
         self.rnn_type = getattr(policy, "rnn_type", "gru").lower()
 
     def forward(self, proprio_and_env, estimator_history, h0, c0=None):
-        # 处理不同 RNN 类型的隐藏状态
         if self.rnn_type == "lstm":
             hidden_states = (h0, c0)
         else:
             hidden_states = h0
             
-        # 动态构造字典，欺骗内部的提取逻辑，完美避免维度坍塌
         obs_dict = {
             "policy": proprio_and_env[..., :self.policy.proprio_dim],
             "noisy_elevation": proprio_and_env[..., self.policy.proprio_dim:]
@@ -289,18 +308,15 @@ def export_model_files(policy, log_dir, device):
     try:
         base_model = UnifiedExportPolicy(policy).to(device)
         
-        # 1. 自动计算维度
         flat_obs_dim = get_flat_obs_dim(policy)
         batch_size = 1
         latent_dim = getattr(policy, "latent_dim", 256)
         rnn_type = getattr(policy, "rnn_type", "gru").lower()
         
-        # 动态获取 Estimator 的维度 (这里通常是 855)
         est_dim = 0
         if getattr(policy, "has_estimator_group", False) and policy.estimator_obs_normalizer is not None:
             est_dim = policy.estimator_obs_normalizer.mean.shape[-1]
         
-        # 2. 构造包含历史信息的 Dummy 输入
         dummy_obs = torch.zeros(batch_size, flat_obs_dim, device=device)
         dummy_est = torch.zeros(batch_size, est_dim, device=device)
         
@@ -316,18 +332,13 @@ def export_model_files(policy, log_dir, device):
             input_names = ["proprio_and_env", "estimator_history", "h0"]
             output_names = ["action", "next_h0"]
             
-        # 3. 导出 ONNX
         onnx_path = os.path.join(exported_dir, "unified_policy.onnx")
         torch.onnx.export(
             base_model, inputs, onnx_path, 
             input_names=input_names, output_names=output_names, opset_version=14 
         )
         print(f"  - [Success] Unified ONNX saved: {onnx_path}")
-        print(f"    * Input Names: {input_names}")
-        print(f"    * Proprio+Env Dim: {flat_obs_dim} (Proprio: {policy.proprio_dim})")
-        print(f"    * Estimator History Dim: {est_dim}")
 
-        # 4. 导出 TorchScript
         ts_path = os.path.join(exported_dir, "unified_policy.pt")
         try:
             traced_model = torch.jit.trace(base_model, inputs)
@@ -348,8 +359,12 @@ def main():
     env_cfg = parse_env_cfg(args.task, device=device, num_envs=args.num_envs)
     
     controller = None
+    kb_ext = None
+    
     if args.keyboard:
         print("[Info] Enabling Keyboard Control")
+        print("[Controls] W/A/S/D: Move | Q/E: Rotate")
+        print("[Controls] T/G: Difficulty +/- | H/F: Sub-Terrain +/- | C: Camera | R: Reset")
         env_cfg.scene.num_envs = 1
         env_cfg.terminations.time_out = None
         env_cfg.commands.base_velocity.debug_vis = False
@@ -359,6 +374,7 @@ def main():
             omega_z_sensitivity=float(env_cfg.commands.base_velocity.ranges.ang_vel_z[1]),
         )
         controller = Se2Keyboard(kb_cfg)
+        kb_ext = KeyboardExtension()
         
     elif args.joystick:
         print("[Info] Enabling Direct Linux Joystick Control")
@@ -377,6 +393,7 @@ def main():
 
     if controller is not None:
         def custom_velocity_commands(env):
+            # controller.advance() works for both Se2Keyboard and DirectLinuxGamepad!
             cmds = controller.advance().to(env.device, dtype=torch.float32)
             return cmds.unsqueeze(0).repeat(env.num_envs, 1)
 
@@ -398,32 +415,6 @@ def main():
     if not hasattr(base_env, "scene"):
         raise RuntimeError(f"Base Env {type(base_env)} does not have 'scene' attribute.")
     robot_entity = base_env.scene["robot"]
-    # ==============================================================================
-    # [NEW] 打印 Action Tensor 的确切顺序
-    # ==============================================================================
-    print("\n" + "="*80)
-    print("[CRITICAL] ACTION TENSOR MAPPING (RL Network Output -> Physical Joint)")
-    print("This determines how symmetry swap indices should be built!")
-    action_idx = 0
-    try:
-        # 获取底层字典 _terms
-        terms_dict = getattr(base_env.action_manager, "_terms", {})
-        
-        for term_name, term in terms_dict.items():
-            print(f"\n--- Action Term: {term_name} ---")
-            if hasattr(term, "_joint_ids"):
-                # 处理 Tensor 或 list
-                joint_ids = term._joint_ids.tolist() if torch.is_tensor(term._joint_ids) else term._joint_ids
-                for i, j_id in enumerate(joint_ids):
-                    j_name = robot_entity.data.joint_names[j_id]
-                    print(f"  Network Output Index [{action_idx:2d}] --> Controls Joint: {j_name} (Sim Internal ID: {j_id})")
-                    action_idx += 1
-            else:
-                print(f"  Term {term_name} has no _joint_ids")
-    except Exception as e:
-        print(f"Failed to print action mapping: {e}")
-    print("="*80 + "\n")
-    # ==============================================================================
     
     terrain_origins = None
     num_rows = 1
@@ -435,18 +426,6 @@ def main():
             num_cols = terrain_origins.shape[1]
     except Exception:
         pass
-    
-    try:
-        obs_sample, _ = base_env.reset()
-        if isinstance(obs_sample, dict): 
-            if "policy" in obs_sample: obs_dim = obs_sample["policy"].shape[-1]
-            elif "student_policy" in obs_sample: obs_dim = obs_sample["student_policy"].shape[-1]
-            elif "blind_student_policy" in obs_sample: obs_dim = obs_sample["blind_student_policy"].shape[-1]
-            else: obs_dim = list(obs_sample.values())[0].shape[-1]
-        else: 
-            obs_dim = obs_sample.shape[-1]
-    except: 
-        obs_dim = 48 
 
     # 3. 加载模型配置
     train_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
@@ -462,23 +441,13 @@ def main():
     # 强行兼容推理配置
     algo_class_name = train_cfg_dict["algorithm"].get("class_name", "")
     if "Distillation" in algo_class_name:
-        print(f"[Info] Detected {algo_class_name} in config. Switching to PPO for inference compatibility.")
         train_cfg_dict["algorithm"]["class_name"] = "PPO"
         for k in ["gradient_length", "loss_type", "optimizer"]:
             train_cfg_dict["algorithm"].pop(k, None)
-            
         train_cfg_dict["algorithm"].setdefault("value_loss_coef", 1.0)
         train_cfg_dict["algorithm"].setdefault("use_clipped_value_loss", True)
         train_cfg_dict["algorithm"].setdefault("clip_param", 0.2)
         train_cfg_dict["algorithm"].setdefault("entropy_coef", 0.01)
-        train_cfg_dict["algorithm"].setdefault("num_learning_epochs", 5)
-        train_cfg_dict["algorithm"].setdefault("num_mini_batches", 4)
-        train_cfg_dict["algorithm"].setdefault("learning_rate", 1.0e-3)
-        train_cfg_dict["algorithm"].setdefault("schedule", "adaptive")
-        train_cfg_dict["algorithm"].setdefault("gamma", 0.99)
-        train_cfg_dict["algorithm"].setdefault("lam", 0.95)
-        train_cfg_dict["algorithm"].setdefault("desired_kl", 0.01)
-        train_cfg_dict["algorithm"].setdefault("max_grad_norm", 1.0)
 
     # 4. 寻找 Checkpoint
     experiment_name = train_cfg_dict.get("experiment_name", "h_moe_end2end")
@@ -522,8 +491,6 @@ def main():
                 new_state_dict[new_key] = v
         
         missing, unexpected = torch.nn.Module.load_state_dict(runner.alg.policy, new_state_dict, strict=False)
-        if len(missing) > 0: print(f"[Warning] Missing keys: {len(missing)}")
-        if len(unexpected) > 0: print(f"[Warning] Unexpected keys: {len(unexpected)}")
     else:
         print("[Info] Detected Standard PPO Checkpoint.")
         runner.load(model_path)
@@ -533,7 +500,6 @@ def main():
 
     if args.export:
         save_configs(log_dir, env_cfg, train_cfg_dict)
-        # 直接调用，不再需要手动提取 RNN size，统一包装器会自动处理
         export_model_files(model_instance, log_dir, device=device)
 
     # 6. Hooks
@@ -593,11 +559,12 @@ def main():
         lines = []
         lines.append("="*30 + " H-MoE Dashboard " + "="*30)
         
-        if args.joystick:
+        if args.joystick or args.keyboard:
+            ctrl_type = "Gamepad" if args.joystick else "Keyboard"
             conn_status = "\033[92mCONNECTED\033[0m" if connected else "\033[91mDISCONNECTED\033[0m"
-            lines.append(f"Controller: {conn_status}")
-            if controller_debug and connected:
-                lines.append(f"Inputs (Raw): RT={controller_debug['rt']:.2f}, LT={controller_debug['lt']:.2f}, RB={int(controller_debug['rb'])}, LB={int(controller_debug['lb'])}")
+            lines.append(f"Controller: [{ctrl_type}] {conn_status}")
+            if controller_debug and connected and args.joystick:
+                lines.append(f"Inputs (Raw): RT={controller_debug.get('rt',0):.2f}, LT={controller_debug.get('lt',0):.2f}, RB={int(controller_debug.get('rb',0))}, LB={int(controller_debug.get('lb',0))}")
         
         if cur_terrain_info:
             cur_lvl, cur_type = cur_terrain_info
@@ -653,7 +620,6 @@ def main():
     step = 0
     with torch.inference_mode():
         while simulation_app.is_running():
-            # 核心修复：绕过 env_wrapped，直接从底层 IsaacLab 环境中获取包含所有传感器数据的完整字典
             obs_dict = base_env.obs_buf
             actions = policy(obs_dict)
             
@@ -661,85 +627,96 @@ def main():
             ctrl_debug = {}
             is_connected = False
 
+            y_curr, x_curr, rt_curr, lt_curr, rb_curr, lb_curr = False, False, False, False, False, False
+
+            # --- 获取输入逻辑：手柄 vs 键盘 ---
             if args.joystick and controller is not None:
                 is_connected = controller.connected
-                
-                y_curr = controller.is_button_pressed(3)
-                x_curr = controller.is_button_pressed(2)
-                rb_curr = controller.is_button_pressed(5)
-                lb_curr = controller.is_button_pressed(4)
-                
+                y_curr = controller.is_button_pressed(3)  # Y
+                x_curr = controller.is_button_pressed(2)  # X
+                rb_curr = controller.is_button_pressed(5) # RB
+                lb_curr = controller.is_button_pressed(4) # LB
                 rt_val = controller.get_axis(5)
                 lt_val = controller.get_axis(2)
-                
                 ctrl_debug = {'rt': rt_val, 'lt': lt_val, 'rb': rb_curr, 'lb': lb_curr}
-                
                 rt_curr = rt_val > -0.5
                 lt_curr = lt_val > -0.5
-
-                if y_curr and not y_prev:
-                    camera_mode = (camera_mode + 1) % 3
-                    mode_names = ["Forward", "Top-Down", "Front-Face"]
-                    status_message = f"Camera: {mode_names[camera_mode]}"
-                    status_timer = 30
-                    camera_history.clear()
                 
-                if x_curr and not x_prev:
-                    status_message = "Resetting..."
+            elif args.keyboard and kb_ext is not None:
+                is_connected = True
+                # 利用 KeyboardExtension 读取状态 (按一次只触发一帧)
+                y_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.C)
+                x_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.R)
+                rt_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.T)
+                lt_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.G)
+                rb_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.H)
+                lb_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.F)
+
+            # --- 执行指令处理逻辑 ---
+            if y_curr and not y_prev:
+                camera_mode = (camera_mode + 1) % 3
+                mode_names = ["Forward", "Top-Down", "Front-Face"]
+                status_message = f"Camera: {mode_names[camera_mode]}"
+                status_timer = 30
+                camera_history.clear()
+            
+            if x_curr and not x_prev:
+                status_message = "Resetting..."
+                status_timer = 30
+                reset_terrain_needed = True
+
+            if num_rows > 1:
+                if rt_curr and not rt_prev:
+                    if cur_difficulty < num_rows - 1:
+                        cur_difficulty += 1
+                        status_message = f"Difficulty INCREASED -> {cur_difficulty}"
+                        status_timer = 30
+                        reset_terrain_needed = True
+                if lt_curr and not lt_prev:
+                    if cur_difficulty > 0:
+                        cur_difficulty -= 1
+                        status_message = f"Difficulty DECREASED -> {cur_difficulty}"
+                        status_timer = 30
+                        reset_terrain_needed = True
+            
+            if num_cols > 1:
+                if rb_curr and not rb_prev:
+                    cur_subterrain = (cur_subterrain + 1) % num_cols
+                    status_message = f"Sub-Terrain NEXT -> {cur_subterrain}"
                     status_timer = 30
                     reset_terrain_needed = True
+                if lb_curr and not lb_prev:
+                    cur_subterrain = (cur_subterrain - 1) % num_cols
+                    status_message = f"Sub-Terrain PREV -> {cur_subterrain}"
+                    status_timer = 30
+                    reset_terrain_needed = True
+            
+            # 手柄依然需要 prev 状态记录，键盘由于是 check_and_clear 机制，这里赋值也不影响
+            y_prev, x_prev = y_curr, x_curr
+            rt_prev, lt_prev = rt_curr, lt_curr
+            rb_prev, lb_prev = rb_curr, lb_curr
 
-                if num_rows > 1:
-                    if rt_curr and not rt_prev:
-                        if cur_difficulty < num_rows - 1:
-                            cur_difficulty += 1
-                            status_message = f"Difficulty INCREASED -> {cur_difficulty}"
-                            status_timer = 30
-                            reset_terrain_needed = True
-                    if lt_curr and not lt_prev:
-                        if cur_difficulty > 0:
-                            cur_difficulty -= 1
-                            status_message = f"Difficulty DECREASED -> {cur_difficulty}"
-                            status_timer = 30
-                            reset_terrain_needed = True
+            if reset_terrain_needed:
+                if hasattr(base_env.scene.terrain, "terrain_levels"):
+                    levels_vec = torch.full((env_wrapped.num_envs,), cur_difficulty, device=env_wrapped.device, dtype=torch.long)
+                    base_env.scene.terrain.terrain_levels[:] = levels_vec
                 
-                if num_cols > 1:
-                    if rb_curr and not rb_prev:
-                        cur_subterrain = (cur_subterrain + 1) % num_cols
-                        status_message = f"Sub-Terrain NEXT -> {cur_subterrain}"
-                        status_timer = 30
-                        reset_terrain_needed = True
-                    if lb_curr and not lb_prev:
-                        cur_subterrain = (cur_subterrain - 1) % num_cols
-                        status_message = f"Sub-Terrain PREV -> {cur_subterrain}"
-                        status_timer = 30
-                        reset_terrain_needed = True
-                
-                y_prev, x_prev = y_curr, x_curr
-                rt_prev, lt_prev = rt_curr, lt_curr
-                rb_prev, lb_prev = rb_curr, lb_curr
+                obs, _ = env_wrapped.reset()
 
-                if reset_terrain_needed:
-                    if hasattr(base_env.scene.terrain, "terrain_levels"):
-                        levels_vec = torch.full((env_wrapped.num_envs,), cur_difficulty, device=env_wrapped.device, dtype=torch.long)
-                        base_env.scene.terrain.terrain_levels[:] = levels_vec
+                if terrain_origins is not None and robot_entity is not None:
+                    r_idx = max(0, min(cur_difficulty, num_rows - 1))
+                    c_idx = max(0, min(cur_subterrain, num_cols - 1))
+                    target_origin = terrain_origins[r_idx, c_idx].clone()
+                    target_origin[2] += 0.55 
                     
-                    obs, _ = env_wrapped.reset()
-
-                    if terrain_origins is not None and robot_entity is not None:
-                        r_idx = max(0, min(cur_difficulty, num_rows - 1))
-                        c_idx = max(0, min(cur_subterrain, num_cols - 1))
-                        target_origin = terrain_origins[r_idx, c_idx].clone()
-                        target_origin[2] += 0.55 
-                        
-                        default_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env_wrapped.device).repeat(env_wrapped.num_envs, 1)
-                        target_pos = target_origin.unsqueeze(0).repeat(env_wrapped.num_envs, 1).to(env_wrapped.device)
-                        
-                        root_pose = torch.cat([target_pos, default_quat], dim=-1)
-                        robot_entity.write_root_pose_to_sim(root_pose)
-                        
-                        root_vel = torch.zeros_like(robot_entity.data.root_link_vel_w)
-                        robot_entity.write_root_velocity_to_sim(root_vel)
+                    default_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env_wrapped.device).repeat(env_wrapped.num_envs, 1)
+                    target_pos = target_origin.unsqueeze(0).repeat(env_wrapped.num_envs, 1).to(env_wrapped.device)
+                    
+                    root_pose = torch.cat([target_pos, default_quat], dim=-1)
+                    robot_entity.write_root_pose_to_sim(root_pose)
+                    
+                    root_vel = torch.zeros_like(robot_entity.data.root_link_vel_w)
+                    robot_entity.write_root_velocity_to_sim(root_vel)
 
             est_state = None
             if hasattr(model_instance, "get_estimated_state"):
@@ -764,6 +741,7 @@ def main():
                     connected=is_connected
                 )
             
+            # 统一 Camera Follow 逻辑（适用于手柄和键盘）
             if robot_entity is not None and (args.joystick or args.keyboard):
                 root_pos = robot_entity.data.root_pos_w[0]
                 root_quat = robot_entity.data.root_quat_w[0]
@@ -786,8 +764,6 @@ def main():
                     if len(camera_history) > 50: camera_history.pop(0)
                     smooth_eye = torch.stack(camera_history).mean(dim=0)
                     base_env.sim.set_camera_view(smooth_eye.cpu().numpy(), target.cpu().numpy())
-            else:
-                if args.keyboard: camera_follow(env_wrapped)
 
     env_wrapped.close()
     if args.joystick and controller is not None:

@@ -773,10 +773,18 @@ class CurriculumCfg:
 
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
 
-    command_levels = CurrTerm(
-        func=mdp.command_levels_vel,
+    command_levels_lin_vel = CurrTerm(
+        func=mdp.command_levels_lin_vel,
         params={
-            "reward_term_name": "track_lin_vel_xy_exp",
+            "reward_term_name": "track_lin_vel_xy_exp", # 只有线速度得分高，才放宽线速度指令
+            "range_multiplier": (0.1, 1.0),
+        },
+    )
+
+    command_levels_ang_vel = CurrTerm(
+        func=mdp.command_levels_ang_vel,
+        params={
+            "reward_term_name": "track_ang_vel_z_exp",  # 只有角速度得分高，才放宽角速度指令
             "range_multiplier": (0.1, 1.0),
         },
     )

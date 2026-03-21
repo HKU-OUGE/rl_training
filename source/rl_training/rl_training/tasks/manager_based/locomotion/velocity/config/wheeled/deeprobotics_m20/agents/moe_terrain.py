@@ -575,11 +575,27 @@ class SplitMoEActorCritic(ActorCritic):
         # -------------------------------------------------------------
         env_feat_for_rnn = None
         if (self.use_elevation_ae or self.use_multilayer_scan) and self.feed_ae:
-            if obs_dict is not None and isinstance(obs_dict, dict) and "noisy_elevation" in obs_dict:
-                env_raw_full = obs_dict["noisy_elevation"]
+            # 【修复点】：强制安全地从环境观测字典中提取 noisy_elevation
+            if obs_dict is not None and (isinstance(obs_dict, dict) or hasattr(obs_dict, "keys")):
+                if "noisy_elevation" in obs_dict:
+                    env_raw_full = obs_dict["noisy_elevation"]
+                elif "policy" in obs_dict:
+                     # 极端回退：如果没配置 noisy_elevation，试图从 policy 截取（假设全部拼在一起）
+                     env_raw_full = obs_dict["policy"][..., proprio_dim:]
+                else:
+                    raise KeyError("Obs dictionary does not contain 'noisy_elevation'!")
             else:
+                # 如果传入的不是字典而是纯 Tensor，才使用切片
                 env_raw_full = x[..., proprio_dim:]
             
+            # 校验一下我们拿到的数据够不够长
+            expected_min_dim = 0
+            if self.use_elevation_ae: expected_min_dim += self.elevation_dim
+            if self.use_multilayer_scan: expected_min_dim += self.scan_dim
+            
+            if env_raw_full.shape[-1] < expected_min_dim:
+                 raise RuntimeError(f"Extracted environment feature dimension ({env_raw_full.shape[-1]}) "
+                                    f"is smaller than required ({expected_min_dim}). Check your ObsGroup config!")
             feats = []
             current_idx = 0
             
