@@ -787,7 +787,9 @@ class SplitMoEActorCritic(ActorCritic):
         if hidden_state is None: self.active_hidden_states = next_state
         
         mean = self._compute_actor_output(latent, obs_dict=obs) 
-        self.distribution = torch.distributions.Normal(mean, self.std)
+        safe_std = torch.clamp(self.std, min=1e-4)
+        self.distribution = torch.distributions.Normal(mean, safe_std)
+        
         return self.distribution.sample()
 
     def act_inference(self, obs, masks=None, hidden_states=None):
@@ -831,8 +833,11 @@ class SplitMoEActorCritic(ActorCritic):
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
         latent, next_state = self._run_rnn(self.rnn, x_in, current_state, masks)
         action_mean = self._compute_actor_output(latent, obs_dict=obs)
-        if save_dist: self.distribution = torch.distributions.Normal(action_mean, self.std)
-        return action_mean, self.std, next_state
+        
+        safe_std = torch.clamp(self.std, min=1e-4)
+        if save_dist: self.distribution = torch.distributions.Normal(action_mean, safe_std)
+        
+        return action_mean, safe_std, next_state
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
@@ -1903,8 +1908,8 @@ class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
         use_clipped_value_loss=True,
         clip_param=0.2,
         entropy_coef=0.01,
-        num_learning_epochs=5,
-        num_mini_batches=32,
+        num_learning_epochs=3,
+        num_mini_batches=16,
         learning_rate=1.0e-3, 
         schedule="adaptive",
         gamma=0.99,
