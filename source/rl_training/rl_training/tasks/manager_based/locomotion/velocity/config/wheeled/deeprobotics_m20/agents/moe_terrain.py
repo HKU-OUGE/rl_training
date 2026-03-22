@@ -1857,7 +1857,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 @configclass
 class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
-    num_steps_per_env = 36
+    num_steps_per_env = 48
     max_iterations = 25000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
@@ -1909,7 +1909,7 @@ class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.01,
         num_learning_epochs=3,
-        num_mini_batches=16,
+        num_mini_batches=32,
         learning_rate=1.0e-3, 
         schedule="adaptive",
         gamma=0.99,
