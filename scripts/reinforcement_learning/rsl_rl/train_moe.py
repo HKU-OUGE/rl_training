@@ -43,7 +43,7 @@ is_master = (local_rank == 0)
 
 if args.video and is_master:
     args.enable_cameras = True
-
+args.device = f"cuda:{local_rank}"
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
