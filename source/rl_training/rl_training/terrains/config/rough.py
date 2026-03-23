@@ -458,7 +458,7 @@ ELEMOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
             proportion=3.0/18,      
-            pit_depth_range=(0.05, 0.4), 
+            pit_depth_range=(0.05, 0.6), 
             double_pit=True,
             platform_width=2.0,
         ),

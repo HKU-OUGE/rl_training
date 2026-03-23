@@ -138,7 +138,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
     joint_mirror_lr = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.0,
+        weight=-0.02,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -273,21 +273,21 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-1.0, 1.0),
             scale=1.0,
         )
-        # # --- 前向 6 层 ---
-        forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # # # --- 前向 6 层 ---
+        # forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # forward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # forward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # forward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         
-        # --- 后向 6 层 ---
-        backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # # --- 后向 6 层 ---
+        # backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # backward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # backward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # backward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -599,7 +599,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.terrain = TerrainImporterCfg(
             prim_path="/World/obstacles",
             terrain_type="generator",
-            terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
+            terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG2,
             max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -619,7 +619,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.terrain2 = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
-            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
+            terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG,
             max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -636,15 +636,15 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
-        self.scene.terrain2.terrain_generator = MOE_ROUGH_TERRAINS_CFG
-        if(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
+        self.scene.terrain2.terrain_generator = ELEMOE_ROUGH_TERRAINS_CFG
+        if(self.scene.terrain2.terrain_generator == ELEMOE_ROUGH_TERRAINS_CFG):
             self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG2):
+        elif(self.scene.terrain2.terrain_generator == ELEMOE_ROUGH_TERRAINS_CFG2):
             self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
@@ -672,28 +672,28 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         z_heights = [-0.20, -0.12, -0.04, 0.04, 0.12, 0.20]
 
         # # 动态创建前向 6 层与后向 6 层
-        for i, z in enumerate(z_heights):
-            # 前向
-            fwd_sensor = MultiMeshRayCasterCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, z), rot=FORWARD_ROT),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-                mesh_prim_paths=SCAN_MESHES,
-            )
-            fwd_sensor.update_period = 0.1
-            setattr(self.scene, f"forward_scanner_layer{i}", fwd_sensor)
+        # for i, z in enumerate(z_heights):
+        #     # 前向
+        #     fwd_sensor = MultiMeshRayCasterCfg(
+        #         prim_path="{ENV_REGEX_NS}/Robot/base_link",
+        #         offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, z), rot=FORWARD_ROT),
+        #         ray_alignment="base", 
+        #         pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+        #         mesh_prim_paths=SCAN_MESHES,
+        #     )
+        #     fwd_sensor.update_period = 0.1
+        #     setattr(self.scene, f"forward_scanner_layer{i}", fwd_sensor)
 
-            # 后向
-            bwd_sensor = MultiMeshRayCasterCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, z), rot=BACKWARD_ROT),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
-                mesh_prim_paths=SCAN_MESHES,
-            )
-            bwd_sensor.update_period = 0.1
-            setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
+        #     # 后向
+        #     bwd_sensor = MultiMeshRayCasterCfg(
+        #         prim_path="{ENV_REGEX_NS}/Robot/base_link",
+        #         offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, z), rot=BACKWARD_ROT),
+        #         ray_alignment="base", 
+        #         pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+        #         mesh_prim_paths=SCAN_MESHES,
+        #     )
+        #     bwd_sensor.update_period = 0.1
+        #     setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
 
         # Rewards
         self.rewards.is_terminated.weight = 0
@@ -725,16 +725,16 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.05
+        self.rewards.hipx_joint_pos_penalty.weight = -0.2
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.05
+        self.rewards.hipy_joint_pos_penalty.weight = -0.1
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.05
+        self.rewards.knee_joint_pos_penalty.weight = -0.1
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.05
+        self.rewards.joint_mirror.weight = -0.03
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],

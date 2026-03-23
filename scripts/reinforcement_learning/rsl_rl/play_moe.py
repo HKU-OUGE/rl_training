@@ -740,7 +740,6 @@ def main():
                     controller_debug=ctrl_debug if args.joystick else None,
                     connected=is_connected
                 )
-            
             # 统一 Camera Follow 逻辑（适用于手柄和键盘）
             if robot_entity is not None and (args.joystick or args.keyboard):
                 root_pos = robot_entity.data.root_pos_w[0]

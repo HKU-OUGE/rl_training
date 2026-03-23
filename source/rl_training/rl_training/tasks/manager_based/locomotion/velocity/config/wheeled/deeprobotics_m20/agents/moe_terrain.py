@@ -1834,7 +1834,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         critic_obs_normalization=True,
 
         # 接收 AE/VAE
-        feed_estimator_to_policy=True, 
+        feed_estimator_to_policy=False, 
         feed_ae_to_policy=True,
     )
 
