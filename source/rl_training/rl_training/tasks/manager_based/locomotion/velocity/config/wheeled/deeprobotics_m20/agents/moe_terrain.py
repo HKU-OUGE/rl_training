@@ -226,6 +226,10 @@ class ProprioVAE(nn.Module):
 
     def forward(self, x):
         mu, logvar, vel_pred = self.encode(x)
+        
+        # === 【修复 1】：防止 VAE 的 KL 散度发生 exp() 指数爆炸 ===
+        logvar = torch.clamp(logvar, min=-20.0, max=10.0)
+        
         z = self.reparameterize(mu, logvar) if self.training else mu # z_t^H
         recon_x = self.decode(z) if self.training else None
         return vel_pred, recon_x, mu, logvar, z
@@ -1218,7 +1222,16 @@ class SplitMoEPPO(PPO):
             if "policy" in obs_mirrored_all.keys():
                 p = obs_mirrored_all["policy"]
                 obs_mirrored_all["policy"] = p[..., obs_swap_idx] * obs_neg_mask
-            
+            if "estimator" in obs_mirrored_all.keys():
+                e = obs_mirrored_all["estimator"]
+                # 历史序列是 855 维 (15帧 * 57维)
+                history_len = e.shape[-1] // 57
+                est_neg_mask = obs_neg_mask.repeat(history_len)
+                est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=device)
+                for h_i in range(history_len):
+                    est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
+                
+                obs_mirrored_all["estimator"] = e[..., est_swap_idx] * est_neg_mask
             force_reset_dones = torch.ones(self.storage.num_envs, dtype=torch.bool, device=device)
 
             # 4. PASS 1 (无梯度): 真实观测下的动作基准
@@ -1315,8 +1328,28 @@ class SymmetricMoEDistillation(Distillation):
                 for offset in [9, 25, 41]:
                     b[..., offset:offset+16] = b[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
                 obs_mirrored[group_name] = b
+
+        # === 【修复 3】：蒸馏阶段同样需要镜像 estimator 序列 ===
+        if "estimator" in obs_mirrored.keys():
+            e = obs_mirrored["estimator"].clone()
+            
+            # 构造单帧 57 维的掩码和索引
+            obs_neg_mask = torch.ones(57, dtype=torch.float32, device=self.device)
+            obs_neg_mask[0], obs_neg_mask[2], obs_neg_mask[4], obs_neg_mask[7], obs_neg_mask[8] = -1.0, -1.0, -1.0, -1.0, -1.0
+            obs_swap_idx = torch.arange(57, dtype=torch.long, device=self.device)
+            for offset in [9, 25, 41]:
+                obs_swap_idx[offset:offset+16] = self.action_swap_idx + offset
+                obs_neg_mask[offset:offset+16] = self.action_neg_mask
                 
-        # noisy_elevation 高程图在平地时对称，暂不反转；若未来在崎岖地形上也想镜像，需翻转 grid
+            history_len = e.shape[-1] // 57
+            est_neg_mask = obs_neg_mask.repeat(history_len)
+            est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=self.device)
+            for h_i in range(history_len):
+                est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
+                
+            obs_mirrored["estimator"] = e[..., est_swap_idx] * est_neg_mask
+        # =======================================================
+        
         return obs_mirrored
 
     def update(self) -> dict[str, float]:
@@ -1834,7 +1867,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         critic_obs_normalization=True,
 
         # 接收 AE/VAE
-        feed_estimator_to_policy=True, 
+        feed_estimator_to_policy=False, 
         feed_ae_to_policy=True,
     )
 
