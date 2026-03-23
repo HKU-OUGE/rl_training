@@ -1794,8 +1794,8 @@ class BlindMoECfg(RslRlOnPolicyRunnerCfg):
 class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 25000
-    save_interval = 200
+    max_iterations = 2500
+    save_interval = 100
     experiment_name = "ele_moe_teacher_parallel" 
     empirical_normalization = False
     
@@ -1834,7 +1834,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         critic_obs_normalization=True,
 
         # 接收 AE/VAE
-        feed_estimator_to_policy=False, 
+        feed_estimator_to_policy=True, 
         feed_ae_to_policy=True,
     )
 
