@@ -1076,6 +1076,7 @@ class SplitMoEPPO(PPO):
 
                 vel_loss = (vel_pred - target_state).pow(2).mean()
                 recon_loss = (recon_x - est_input).pow(2).mean()
+                logvar = torch.clamp(logvar, min=-20.0, max=10.0)
                 kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1).mean()
 
                 beta = 0.01 
@@ -1233,7 +1234,25 @@ class SplitMoEPPO(PPO):
                 
                 obs_mirrored_all["estimator"] = e[..., est_swap_idx] * est_neg_mask
             force_reset_dones = torch.ones(self.storage.num_envs, dtype=torch.bool, device=device)
-
+            if "noisy_elevation" in obs_mirrored_all.keys():
+                env_raw = obs_mirrored_all["noisy_elevation"].clone()
+                
+                # 1. 镜像高程图 (187维) -> 11(Y) x 17(X)
+                if model.use_elevation_ae:
+                    elev = env_raw[..., :model.elevation_dim]
+                    # 沿 Y 轴反转 (dim=-2)
+                    elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], model.elevation_dim)
+                    env_raw[..., :model.elevation_dim] = elev_mirrored
+                
+                # 2. 镜像多层雷达扫描 (252维) -> 12(Channel) x 21(Ray)
+                if getattr(model, "use_multilayer_scan", False):
+                    scan_start = model.elevation_dim if model.use_elevation_ae else 0
+                    scan = env_raw[..., scan_start : scan_start + model.scan_dim]
+                    # 沿 Ray 射线轴反转 (dim=-1)
+                    scan_mirrored = scan.view(*scan.shape[:-1], model.num_scan_channels, model.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], model.scan_dim)
+                    env_raw[..., scan_start : scan_start + model.scan_dim] = scan_mirrored
+                
+                obs_mirrored_all["noisy_elevation"] = env_raw
             # 4. PASS 1 (无梯度): 真实观测下的动作基准
             model.reset(dones=force_reset_dones)
             target_actions = []
@@ -1349,7 +1368,21 @@ class SymmetricMoEDistillation(Distillation):
                 
             obs_mirrored["estimator"] = e[..., est_swap_idx] * est_neg_mask
         # =======================================================
-        
+        if "noisy_elevation" in obs_mirrored.keys():
+            env_raw = obs_mirrored["noisy_elevation"].clone()
+            
+            if self.policy.use_elevation_ae:
+                elev = env_raw[..., :self.policy.elevation_dim]
+                elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], self.policy.elevation_dim)
+                env_raw[..., :self.policy.elevation_dim] = elev_mirrored
+            
+            if getattr(self.policy, "use_multilayer_scan", False):
+                scan_start = self.policy.elevation_dim if self.policy.use_elevation_ae else 0
+                scan = env_raw[..., scan_start : scan_start + self.policy.scan_dim]
+                scan_mirrored = scan.view(*scan.shape[:-1], self.policy.num_scan_channels, self.policy.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], self.policy.scan_dim)
+                env_raw[..., scan_start : scan_start + self.policy.scan_dim] = scan_mirrored
+                
+            obs_mirrored["noisy_elevation"] = env_raw
         return obs_mirrored
 
     def update(self) -> dict[str, float]:
