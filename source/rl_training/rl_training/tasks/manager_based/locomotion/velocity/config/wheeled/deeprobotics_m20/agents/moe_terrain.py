@@ -1860,7 +1860,7 @@ class BlindMoECfg(RslRlOnPolicyRunnerCfg):
 class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 2500
+    max_iterations = 6000
     save_interval = 100
     experiment_name = "ele_moe_teacher_parallel" 
     empirical_normalization = False
@@ -1924,8 +1924,8 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 25000
-    save_interval = 200
+    max_iterations = 6000
+    save_interval = 1000
     experiment_name = "split_moe_teacher_parallel" 
     empirical_normalization = False
     
@@ -1974,10 +1974,10 @@ class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
         use_clipped_value_loss=True,
         clip_param=0.2,
         entropy_coef=0.01,
-        num_learning_epochs=3,
-        num_mini_batches=16,
-        learning_rate=3e-4,
-        schedule="fixed",
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3, 
+        schedule="adaptive",
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,

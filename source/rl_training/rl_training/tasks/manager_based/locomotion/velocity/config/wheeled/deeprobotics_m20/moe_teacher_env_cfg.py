@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import math
 import torch # Added torch for depth calculation
+import torch.nn.functional as F
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -114,6 +115,105 @@ def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     )
     
     return normalized_depths
+def height_scan_sim2real(
+    env, 
+    sensor_cfg: SceneEntityCfg, 
+    offset: float = 0.5, 
+    mask_prob: float = 0.15, 
+    min_latency: int = 1, 
+    max_latency: int = 3,
+    smooth_kernel_size: int = 3, # [新增] 用于边缘倒角的滑动窗口大小
+    max_drift_pixels: int = 2    # [新增] 用于模拟空间漂移的最大像素位移
+) -> torch.Tensor:
+    """
+    终极 Sim-to-Real 高程图处理 (CMoE 论文对齐版)：
+    包含边缘倒角、空间漂移、非线性椒盐噪声、以及高效的随机延迟Buffer。
+    """
+    sensor = env.scene.sensors[sensor_cfg.name]
+    
+    # 1. 获取当前完美的物理深度 (num_envs, num_rays)
+    current_depths = sensor.data.pos_w[:, 2].unsqueeze(1) - sensor.data.ray_hits_w[..., 2] - offset
+
+    # =========================================================================
+    # B. 边缘倒角 (Edge Chamfering)
+    # 论文指出：由于传感器分辨率限制，真实世界高程图呈现平滑弯曲边缘而非锐利直角。
+    # 实现方案：使用 1D 平均池化 (Average Pooling) 模拟这种物理平滑效应。
+    # =========================================================================
+    if smooth_kernel_size > 1:
+        # 增加一个 channel 维度以供 F.avg_pool1d 使用: (num_envs, 1, num_rays)
+        smoothed_depths = F.avg_pool1d(
+            current_depths.unsqueeze(1), 
+            kernel_size=smooth_kernel_size, 
+            stride=1, 
+            padding=smooth_kernel_size // 2
+        ).squeeze(1)
+        current_depths = smoothed_depths
+
+    # =========================================================================
+    # C. 里程计/空间漂移 (Odometry / Spatial Drift)
+    # 实现方案：通过在射线张量上进行随机水平平移 (torch.roll)，低成本模拟状态估计偏差。
+    # 这比在物理层级动态修改 RayCaster 偏移量要快得多。
+    # =========================================================================
+    if max_drift_pixels > 0:
+        # 为每个环境生成独立的随机偏移量 [-max_drift_pixels, max_drift_pixels]
+        shifts = torch.randint(-max_drift_pixels, max_drift_pixels + 1, (1,)).item()
+        current_depths = torch.roll(current_depths, shifts=shifts, dims=-1)
+
+    # =========================================================================
+    # A. 论文中的非线性椒盐噪声 (Nonlinear Salt-and-Pepper Noise)
+    # 论文公式：以概率 p 取 U(M, 2M-m)，以概率 p 取 U(2m-M, m)。
+    # =========================================================================
+    if mask_prob > 0.0:
+        # 论文中的 2p 对应我们的 mask_prob
+        p = mask_prob / 2.0 
+        rand_tensor = torch.rand_like(current_depths)
+        
+        # 动态计算当前环境扫描到的最大值 M 和最小值 m
+        M = current_depths.amax(dim=-1, keepdim=True)
+        m = current_depths.amin(dim=-1, keepdim=True)
+        
+        # 划分两个极值区间的 mask
+        mask_high = rand_tensor < p
+        mask_low = (rand_tensor >= p) & (rand_tensor < mask_prob)
+        
+        # 生成论文中要求的均匀分布极端噪声
+        noise_high = M + torch.rand_like(current_depths) * (M - m) # 等价于 U(M, 2M-m)
+        noise_low = m - torch.rand_like(current_depths) * (M - m)  # 等价于 U(2m-M, m)
+        
+        # 应用噪声
+        current_depths = torch.where(mask_high, noise_high, current_depths)
+        current_depths = torch.where(mask_low, noise_low, current_depths)
+        
+    if max_latency <= 0:
+        return current_depths
+
+    # =========================================================================
+    # D. 纯 GPU 张量化 Buffer 与随机延迟处理 (保留您的优秀设计)
+    # =========================================================================
+    buffer_len = max_latency + 1
+    
+    if not hasattr(env, "_sim2real_height_buffer"):
+        env._sim2real_height_buffer = current_depths.unsqueeze(1).repeat(1, buffer_len, 1)
+
+    if hasattr(env, "reset_buf"):
+        reset_idx = env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if len(reset_idx) > 0:
+            env._sim2real_height_buffer[reset_idx, :, :] = current_depths[reset_idx].unsqueeze(1)
+
+    env._sim2real_height_buffer = torch.roll(env._sim2real_height_buffer, shifts=-1, dims=1)
+    env._sim2real_height_buffer[:, -1, :] = current_depths
+
+    delays = torch.randint(
+        min_latency, 
+        max_latency + 1, 
+        (env.num_envs,), 
+        device=current_depths.device
+    )
+    
+    gather_indices = (max_latency - delays).view(-1, 1, 1).expand(-1, 1, current_depths.shape[-1])
+    delayed_depths = torch.gather(env._sim2real_height_buffer, dim=1, index=gather_indices).squeeze(1)
+
+    return delayed_depths
 @configclass
 class DeeproboticsM20ActionsCfg(ActionsCfg):
     """Action specifications for the MDP."""
@@ -138,7 +238,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
     joint_mirror_lr = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.02,
+        weight=-0.03,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -267,9 +367,17 @@ class DeeproboticsM20ObservationsCfg:
     class NoisyElevationCfg(ObsGroup):
         """专门用于训练 AE 以及提供给所有策略 (Teacher/Student) 使用的带噪声高程组"""
         height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            noise=Unoise(n_min=-0.1, n_max=0.1), # 加入噪声模拟真实传感器
+            func=height_scan_sim2real,
+            params={
+                "sensor_cfg": SceneEntityCfg("height_scanner"),
+                "offset": 0.5,
+                "mask_prob": 0.15,          # 15% 概率触发椒盐极端噪声
+                "min_latency": 1,
+                "max_latency": 4,
+                "smooth_kernel_size": 3,    # 设置倒角平滑程度，越大越平滑 (推荐奇数 3 或 5)
+                "max_drift_pixels": 2       # 最大随机漂移像素数
+            },
+            noise=Unoise(n_min=-0.05, n_max=0.05), # 基础白噪声保留
             clip=(-1.0, 1.0),
             scale=1.0,
         )
@@ -700,7 +808,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.lin_vel_z_l2.weight = -0.5
         self.rewards.ang_vel_xy_l2.weight = -0.02
         self.rewards.flat_orientation_l2.weight = 0
-        self.rewards.base_height_l2.weight = -0.0
+        self.rewards.base_height_l2.weight = -0.25
         self.rewards.base_height_l2.params["target_height"] = 0.40
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
@@ -723,18 +831,18 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_vel_limits.params["asset_cfg"].joint_names = self.wheel_joint_names
         self.rewards.joint_power.weight = -2e-5
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.stand_still.weight = -2.0
+        self.rewards.stand_still.weight = -3.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.hipx_joint_pos_penalty.weight = -0.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.hipy_joint_pos_penalty.weight = -0.25
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.1
+        self.rewards.knee_joint_pos_penalty.weight = -0.15
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.03
+        self.rewards.joint_mirror.weight = -0.05
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -756,8 +864,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.rewards.track_lin_vel_xy_pre_exp.weight = 1.0
         # self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
-        self.rewards.feet_air_time.weight = 1.5
-        self.rewards.feet_air_time.params["threshold"] = 0.35
+        self.rewards.feet_air_time.weight = 0.5
+        self.rewards.feet_air_time.params["threshold"] = 0.20
         # self.rewards.feet_air_time_long.weight = 1.5
         # self.rewards.feet_air_time_long.params["threshold"] = 0.5
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -796,6 +904,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
         # self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
