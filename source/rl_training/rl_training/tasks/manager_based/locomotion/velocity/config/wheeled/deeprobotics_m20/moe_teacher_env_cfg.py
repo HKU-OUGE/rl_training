@@ -115,6 +115,7 @@ def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     )
     
     return normalized_depths
+
 def height_scan_sim2real(
     env, 
     sensor_cfg: SceneEntityCfg, 
@@ -122,65 +123,85 @@ def height_scan_sim2real(
     mask_prob: float = 0.15, 
     min_latency: int = 1, 
     max_latency: int = 3,
-    smooth_kernel_size: int = 3, # [新增] 用于边缘倒角的滑动窗口大小
-    max_drift_pixels: int = 2    # [新增] 用于模拟空间漂移的最大像素位移
+    smooth_kernel_size: int = 3, 
+    max_drift_pixels: int = 2,
+    grid_length: int = 17, 
+    min_noise_amp: float = 0.1
 ) -> torch.Tensor:
     """
-    终极 Sim-to-Real 高程图处理 (CMoE 论文对齐版)：
-    包含边缘倒角、空间漂移、非线性椒盐噪声、以及高效的随机延迟Buffer。
+    终极 Sim-to-Real 高程图处理 (Batched Vectorized 版本)
+    新增修复：
+    1. 使用 O(1) 的指针式环形缓冲区替代低效的 torch.roll 内存拷贝。
+    2. 修复 reset_buf 维度挤压隐患，使用更安全的 torch.where 提取索引。
     """
     sensor = env.scene.sensors[sensor_cfg.name]
+    num_envs = env.num_envs
+    device = sensor.data.pos_w.device
     
     # 1. 获取当前完美的物理深度 (num_envs, num_rays)
     current_depths = sensor.data.pos_w[:, 2].unsqueeze(1) - sensor.data.ray_hits_w[..., 2] - offset
+    num_rays = current_depths.shape[-1]
 
     # =========================================================================
-    # B. 边缘倒角 (Edge Chamfering)
-    # 论文指出：由于传感器分辨率限制，真实世界高程图呈现平滑弯曲边缘而非锐利直角。
-    # 实现方案：使用 1D 平均池化 (Average Pooling) 模拟这种物理平滑效应。
+    # 防崩溃与严格维度校验
+    # =========================================================================
+    if num_rays % grid_length != 0:
+        raise ValueError(
+            f"[Sim2Real Error] 射线总数 ({num_rays}) 无法被 grid_length ({grid_length}) 整除！"
+            "请检查 RayCaster 的 pattern_cfg 分辨率设置。"
+        )
+    
+    grid_width = num_rays // grid_length
+    depths_2d = current_depths.view(num_envs, 1, grid_length, grid_width)
+
+    # =========================================================================
+    # B. 边缘倒角 (Edge Chamfering) - Replicate Padding
     # =========================================================================
     if smooth_kernel_size > 1:
-        # 增加一个 channel 维度以供 F.avg_pool1d 使用: (num_envs, 1, num_rays)
-        smoothed_depths = F.avg_pool1d(
-            current_depths.unsqueeze(1), 
-            kernel_size=smooth_kernel_size, 
-            stride=1, 
-            padding=smooth_kernel_size // 2
-        ).squeeze(1)
-        current_depths = smoothed_depths
+        pad_size = smooth_kernel_size // 2
+        padded_depths = F.pad(depths_2d, (pad_size, pad_size, pad_size, pad_size), mode='replicate')
+        depths_2d = F.avg_pool2d(padded_depths, kernel_size=smooth_kernel_size, stride=1, padding=0)
 
     # =========================================================================
-    # C. 里程计/空间漂移 (Odometry / Spatial Drift)
-    # 实现方案：通过在射线张量上进行随机水平平移 (torch.roll)，低成本模拟状态估计偏差。
-    # 这比在物理层级动态修改 RayCaster 偏移量要快得多。
+    # C. 空间漂移 (Spatial Drift) - 全环境并行独立采样 + 高级索引切片
     # =========================================================================
     if max_drift_pixels > 0:
-        # 为每个环境生成独立的随机偏移量 [-max_drift_pixels, max_drift_pixels]
-        shifts = torch.randint(-max_drift_pixels, max_drift_pixels + 1, (1,)).item()
-        current_depths = torch.roll(current_depths, shifts=shifts, dims=-1)
+        shift_x = torch.randint(-max_drift_pixels, max_drift_pixels + 1, (num_envs,), device=device)
+        shift_y = torch.randint(-max_drift_pixels, max_drift_pixels + 1, (num_envs,), device=device)
+        
+        padded_for_drift = F.pad(depths_2d, (max_drift_pixels, max_drift_pixels, max_drift_pixels, max_drift_pixels), mode='replicate')
+        
+        start_x = max_drift_pixels - shift_x
+        start_y = max_drift_pixels - shift_y
+        
+        b = torch.arange(num_envs, device=device).view(-1, 1, 1)
+        grid_x = torch.arange(grid_length, device=device).view(1, -1, 1) + start_x.view(-1, 1, 1)
+        grid_y = torch.arange(grid_width, device=device).view(1, 1, -1) + start_y.view(-1, 1, 1)
+        
+        depths_2d = padded_for_drift[b, 0, grid_x, grid_y].unsqueeze(1)
 
     # =========================================================================
-    # A. 论文中的非线性椒盐噪声 (Nonlinear Salt-and-Pepper Noise)
-    # 论文公式：以概率 p 取 U(M, 2M-m)，以概率 p 取 U(2m-M, m)。
+    # 展平回 1D 进行 Element-wise 处理
+    # =========================================================================
+    current_depths = depths_2d.reshape(num_envs, num_rays)
+
+    # =========================================================================
+    # A. 非线性椒盐噪声 (Nonlinear Salt-and-Pepper Noise)
     # =========================================================================
     if mask_prob > 0.0:
-        # 论文中的 2p 对应我们的 mask_prob
         p = mask_prob / 2.0 
         rand_tensor = torch.rand_like(current_depths)
         
-        # 动态计算当前环境扫描到的最大值 M 和最小值 m
         M = current_depths.amax(dim=-1, keepdim=True)
         m = current_depths.amin(dim=-1, keepdim=True)
+        noise_amp = torch.clamp(M - m, min=min_noise_amp)
         
-        # 划分两个极值区间的 mask
         mask_high = rand_tensor < p
         mask_low = (rand_tensor >= p) & (rand_tensor < mask_prob)
         
-        # 生成论文中要求的均匀分布极端噪声
-        noise_high = M + torch.rand_like(current_depths) * (M - m) # 等价于 U(M, 2M-m)
-        noise_low = m - torch.rand_like(current_depths) * (M - m)  # 等价于 U(2m-M, m)
+        noise_high = M + torch.rand_like(current_depths) * noise_amp
+        noise_low = m - torch.rand_like(current_depths) * noise_amp
         
-        # 应用噪声
         current_depths = torch.where(mask_high, noise_high, current_depths)
         current_depths = torch.where(mask_low, noise_low, current_depths)
         
@@ -188,30 +209,43 @@ def height_scan_sim2real(
         return current_depths
 
     # =========================================================================
-    # D. 纯 GPU 张量化 Buffer 与随机延迟处理 (保留您的优秀设计)
+    # D. 纯 GPU 高效指针环形延迟 Buffer (修复核心)
     # =========================================================================
     buffer_len = max_latency + 1
     
+    # 初始化 Buffer 和 指针
     if not hasattr(env, "_sim2real_height_buffer"):
         env._sim2real_height_buffer = current_depths.unsqueeze(1).repeat(1, buffer_len, 1)
+        env._sim2real_buffer_head = 0  # 记录当前写入位置的指针
 
+    # 【修复 D】使用 torch.where 替代 .nonzero().squeeze(-1)，避免维度变化导致的挤压崩溃
     if hasattr(env, "reset_buf"):
-        reset_idx = env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        reset_idx = torch.where(env.reset_buf)[0]
         if len(reset_idx) > 0:
+            # 环境重置时，用当前无延迟的清晰帧填满该环境的所有历史 Buffer
             env._sim2real_height_buffer[reset_idx, :, :] = current_depths[reset_idx].unsqueeze(1)
 
-    env._sim2real_height_buffer = torch.roll(env._sim2real_height_buffer, shifts=-1, dims=1)
-    env._sim2real_height_buffer[:, -1, :] = current_depths
+    # 【修复 C】通过循环指针移动，替代 torch.roll 的暴力内存拷贝
+    env._sim2real_buffer_head = (env._sim2real_buffer_head + 1) % buffer_len
+    head_idx = env._sim2real_buffer_head
 
+    # 将最新的一帧写入指针所指向的位置 (O(1) 复杂度)
+    env._sim2real_height_buffer[:, head_idx, :] = current_depths
+
+    # 为每个环境独立采样延迟帧数
     delays = torch.randint(
         min_latency, 
         max_latency + 1, 
-        (env.num_envs,), 
-        device=current_depths.device
+        (num_envs,), 
+        device=device
     )
     
-    gather_indices = (max_latency - delays).view(-1, 1, 1).expand(-1, 1, current_depths.shape[-1])
-    delayed_depths = torch.gather(env._sim2real_height_buffer, dim=1, index=gather_indices).squeeze(1)
+    # 计算每个环境需要读取的历史索引 (处理负数取模，自动回绕)
+    read_indices = (head_idx - delays) % buffer_len
+    
+    # 使用高级索引高效并行提取延迟帧
+    batch_indices = torch.arange(num_envs, device=device)
+    delayed_depths = env._sim2real_height_buffer[batch_indices, read_indices, :]
 
     return delayed_depths
 @configclass
@@ -371,13 +405,14 @@ class DeeproboticsM20ObservationsCfg:
             params={
                 "sensor_cfg": SceneEntityCfg("height_scanner"),
                 "offset": 0.5,
-                "mask_prob": 0.15,          # 15% 概率触发椒盐极端噪声
+                "mask_prob": 0.15,          
                 "min_latency": 1,
                 "max_latency": 4,
-                "smooth_kernel_size": 3,    # 设置倒角平滑程度，越大越平滑 (推荐奇数 3 或 5)
-                "max_drift_pixels": 2       # 最大随机漂移像素数
+                "smooth_kernel_size": 3,    
+                "max_drift_pixels": 2,      
+                "grid_length": 17,
             },
-            noise=Unoise(n_min=-0.05, n_max=0.05), # 基础白噪声保留
+            noise=Unoise(n_min=-0.0, n_max=0.0),
             clip=(-1.0, 1.0),
             scale=1.0,
         )
@@ -704,26 +739,26 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
         # ground terrain
-        # self.scene.terrain = TerrainImporterCfg(
-        #     prim_path="/World/obstacles",
-        #     terrain_type="generator",
-        #     terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG2,
-        #     max_init_terrain_level=0,
-        #     collision_group=-1,
-        #     physics_material=sim_utils.RigidBodyMaterialCfg(
-        #         friction_combine_mode="multiply",
-        #         restitution_combine_mode="multiply",
-        #         static_friction=1.0,
-        #         dynamic_friction=1.0,
-        #         restitution=1.0,
-        #     ),
-        #     visual_material=sim_utils.MdlFileCfg(
-        #         mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-        #         project_uvw=True,
-        #         texture_scale=(0.25, 0.25),
-        #     ),
-        #     debug_vis=False,
-        # )
+        self.scene.terrain = TerrainImporterCfg(
+            prim_path="/World/obstacles",
+            terrain_type="generator",
+            terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG2,
+            max_init_terrain_level=0,
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=1.0,
+            ),
+            visual_material=sim_utils.MdlFileCfg(
+                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+                project_uvw=True,
+                texture_scale=(0.25, 0.25),
+            ),
+            debug_vis=False,
+        )
         self.scene.terrain2 = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
@@ -907,11 +942,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
         # override rewards
         # change terrain to flat
-        self.scene.terrain.terrain_type = "plane"
-        self.scene.terrain.terrain_generator = None
-        self.scene.terrain2 = None
-        # no terrain curriculum
-        self.curriculum.terrain_levels = None
-        self.rewards.lin_vel_z_l2.func = mdp.lin_vel_z_l2
-        self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
-        self.rewards.base_height_l2.func = mdp.base_height_l2
+        # self.scene.terrain.terrain_type = "plane"
+        # self.scene.terrain.terrain_generator = None
+        # self.scene.terrain2 = None
+        # # no terrain curriculum
+        # self.curriculum.terrain_levels = None
+        # self.rewards.lin_vel_z_l2.func = mdp.lin_vel_z_l2
+        # self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
+        # self.rewards.base_height_l2.func = mdp.base_height_l2
