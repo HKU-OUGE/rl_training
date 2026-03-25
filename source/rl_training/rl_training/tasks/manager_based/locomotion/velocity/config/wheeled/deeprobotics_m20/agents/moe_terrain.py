@@ -1020,10 +1020,37 @@ class SplitMoEPPO(PPO):
             actions_log_prob_batch = model.get_actions_log_prob(actions_batch)
             value_batch = model.evaluate(obs_batch, masks=masks_batch, hidden_state=hid_states_batch[1])
             
-            # mu_batch = model.distribution.mean
-            # sigma_batch = model.distribution.stddev
+            mu_batch = model.distribution.mean
+            sigma_batch = model.distribution.stddev
             entropy_batch = model.distribution.entropy().sum(dim=-1)
+            if getattr(self, "desired_kl", None) is not None and getattr(self, "schedule", "") == "adaptive":
+                with torch.inference_mode():
+                    kl = torch.sum(
+                        torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
+                        + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
+                        / (2.0 * torch.square(sigma_batch))
+                        - 0.5,
+                        axis=-1,
+                    )
+                    kl_mean = torch.mean(kl)
 
+                    if getattr(self, "is_multi_gpu", False):
+                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                        kl_mean /= self.gpu_world_size
+
+                    if getattr(self, "gpu_global_rank", 0) == 0:
+                        if kl_mean > self.desired_kl * 2.0:
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+
+                    if getattr(self, "is_multi_gpu", False):
+                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+                        torch.distributed.broadcast(lr_tensor, src=0)
+                        self.learning_rate = lr_tensor.item()
+
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = self.learning_rate
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
             surrogate = -torch.squeeze(advantages_batch) * ratio
             surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
@@ -1282,74 +1309,72 @@ class SplitMoEPPO(PPO):
     def act(self, obs, **kwargs):
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
         
-        if not hasattr(self, "_debug_act_print"):
-            print("\n" + "="*50)
-            print("🚀 [OPTIMIZED] SplitMoEPPO.act() is running with cache-safe mirrored passes!")
-            print("="*50 + "\n")
-            self._debug_act_print = True
+        # 辅助切片函数 (兼容 GRU 和 LSTM)
+        def _slice_h(h, start, end):
+            if isinstance(h, tuple): return (h[0][start:end], h[1][start:end])
+            return h[start:end]
+            
+        def _cat_h(h1, h2):
+            if isinstance(h1, tuple): return (torch.cat([h1[0], h2[0]], dim=0), torch.cat([h1[1], h2[1]], dim=0))
+            return torch.cat([h1, h2], dim=0)
 
         # =====================================================================
-        # 1. 预处理镜像观测 (Cache-Safe & Compute-Efficient)
+        # 1. 备份当前时刻的完整隐状态 (真实状态 h_t + 镜像状态 m_t)
+        # =====================================================================
+        dev = obs["policy"].device if isinstance(obs, dict) else obs.device
+        current_h_backup = model._prepare_hidden_state(model.active_hidden_states, dev)
+        current_c_backup = model._prepare_hidden_state(model.active_critic_hidden_states, dev)
+
+        # =====================================================================
+        # 2. 调用原生 act
+        # 这会将包含 (h_t, m_t) 的元组正确无误地存入 Rollout Storage，
+        # 并通过底层的 policy.act() 将真实状态推进到 h_{t+1}，此时 m_t 原封不动
+        # =====================================================================
+        action = super().act(obs, **kwargs)
+
+        # =====================================================================
+        # 3. 在无梯度环境下，使用备份的 m_t 推进镜像 RNN 状态到 m_{t+1}
         # =====================================================================
         obs_mirrored = self._mirror_obs(obs) 
-        x_raw_mirrored = model._extract_raw_obs(obs_mirrored, model.input_keys)
         
-        # 临时切换到 eval 模式
-        # 这将阻止 Encoder 执行 Decoder 重构，防止训练专用的 cache 被意外覆盖
         was_training = model.training
-        model.eval() 
-        with torch.no_grad():
-            x_in_mirrored = model._process_obs(x_raw_mirrored, obs_dict=obs_mirrored)
-        model.train(was_training) # 立即恢复原状态
+        model.eval() # 临时切为 eval，防止 AE 重构缓存被意外覆盖
         
-        # =====================================================================
-        # 2. 在无梯度环境下，推进 Actor 与 Critic 的镜像 RNN 状态
-        # =====================================================================
         with torch.no_grad():
             # ------ A. 推进 Actor 镜像状态 ------
-            current_h = model._prepare_hidden_state(model.active_hidden_states, x_in_mirrored.device)
+            x_raw_mirrored = model._extract_raw_obs(obs_mirrored, model.input_keys)
+            x_in_mirrored = model._process_obs(x_raw_mirrored, obs_dict=obs_mirrored)
             
-            if isinstance(current_h, tuple): # LSTM
-                mirrored_h = (current_h[0][1:2], current_h[1][1:2])
-            else: # GRU
-                mirrored_h = current_h[1:2] 
-            
+            # 提取备份的 m_t (即 Layer 1)
+            mirrored_h = _slice_h(current_h_backup, 1, 2)
             _, next_mirrored_h = model._run_rnn(model.rnn, x_in_mirrored, mirrored_h, masks=None)
             
-            if isinstance(current_h, tuple):
-                new_h0 = torch.cat([current_h[0][0:1], next_mirrored_h[0]], dim=0)
-                new_h1 = torch.cat([current_h[1][0:1], next_mirrored_h[1]], dim=0)
-                model.active_hidden_states = (new_h0, new_h1)
-            else:
-                model.active_hidden_states = torch.cat([current_h[0:1], next_mirrored_h], dim=0)
-                
-            # ------ B. 推进 Critic 镜像状态 (修复隐性 Memory Leak/Stale Data) ------
-            current_c = model._prepare_hidden_state(model.active_critic_hidden_states, x_in_mirrored.device)
-            if current_c is not None:
-                # 同样需在 eval 模式下提取 Critic 观测特征
-                model.eval()
+            # ------ B. 推进 Critic 镜像状态 ------
+            if current_c_backup is not None:
                 x_raw_critic_mirrored = model._extract_raw_obs(obs_mirrored, getattr(model, "critic_keys", model.input_keys))
                 normalizer_c = model.critic_obs_normalizer if model.critic_obs_normalization else None
                 x_in_critic_mirrored = model._process_obs(
                     x_raw_critic_mirrored, obs_dict=obs_mirrored, 
                     normalizer=normalizer_c, proprio_dim=model.critic_proprio_dim
                 )
-                model.train(was_training)
-                
-                if isinstance(current_c, tuple):
-                    mirrored_c = (current_c[0][1:2], current_c[1][1:2])
-                else:
-                    mirrored_c = current_c[1:2]
-                    
+                mirrored_c = _slice_h(current_c_backup, 1, 2)
                 _, next_mirrored_c = model._run_rnn(model.critic_rnn, x_in_critic_mirrored, mirrored_c, masks=None)
+            else:
+                next_mirrored_c = None
                 
-                if isinstance(current_c, tuple):
-                    new_c0 = torch.cat([current_c[0][0:1], next_mirrored_c[0]], dim=0)
-                    new_c1 = torch.cat([current_c[1][0:1], next_mirrored_c[1]], dim=0)
-                    model.active_critic_hidden_states = (new_c0, new_c1)
-                else:
-                    model.active_critic_hidden_states = torch.cat([current_c[0:1], next_mirrored_c], dim=0)
-        return super().act(obs, **kwargs)
+        model.train(was_training)
+
+        # =====================================================================
+        # 4. 缝合：真实的 h_{t+1} 与 镜像的 m_{t+1}
+        # =====================================================================
+        real_next_h = _slice_h(model.active_hidden_states, 0, 1)
+        model.active_hidden_states = _cat_h(real_next_h, next_mirrored_h)
+
+        if next_mirrored_c is not None:
+            real_next_c = _slice_h(model.active_critic_hidden_states, 0, 1)
+            model.active_critic_hidden_states = _cat_h(real_next_c, next_mirrored_c)
+
+        return action
 # ==============================================================================
 # 自定义算法：带对称性增强的蒸馏 (Sequence-Level Augmentation 双趟遍历)
 # (完全保留原始逻辑与硬编码)
