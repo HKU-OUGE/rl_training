@@ -89,33 +89,28 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-
 # ==============================================================================
 # 2. CMoE: ElevationAE, DepthAE & ProprioVAE 
 # ==============================================================================
 
 class ElevationAE(nn.Module):
-    """用于 1D 高程图/地形扫描的自编码器 (对应论文 Elevation Map AE)"""
     def __init__(self, input_dim=187, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
-        # Encoder: 提取地形隐变量 z_t^E
         self.encoder = MLP(input_dim, output_dim, hidden_dims, activation="elu")
-        # Decoder: 用于重建高程图
         self.decoder = MLP(output_dim, input_dim, hidden_dims[::-1], activation="elu")
 
     def forward(self, x):
-        latent = self.encoder(x) # z_t^E
+        latent = self.encoder(x) 
         recon = self.decoder(latent) if self.training else None
         return latent, recon
+
 class MultiLayerScanAE(nn.Module):
-    """用于处理前后多层 2D 伪激光扫描的 1D-CNN"""
     def __init__(self, num_channels=6, num_rays=61, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
         self.num_channels = num_channels
         self.num_rays = num_rays
         self.flat_dim = num_channels * num_rays
         
-        # Encoder (1D-CNN)
         self.encoder_conv = nn.Sequential(
             nn.Conv1d(num_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
             nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
@@ -123,34 +118,25 @@ class MultiLayerScanAE(nn.Module):
         
         conv_out_len = (num_rays + 1) // 2
         conv_out_len = (conv_out_len + 1) // 2
-        linear_in_dim = 32 * conv_out_len # 对于 61 来说，长度最后是 16，所以是 32*16=512
+        linear_in_dim = 32 * conv_out_len 
         
         self.encoder_linear = nn.Sequential(
             nn.Linear(linear_in_dim, hidden_dims[0]), nn.ELU(),
             nn.Linear(hidden_dims[0], output_dim)
         )
         
-        # Decoder (MLP)
         self.decoder = MLP(output_dim, self.flat_dim, hidden_dims[::-1], activation="elu")
 
     def forward(self, x):
-        # 记录原始的前置维度 (例如: [Seq_len, Batch] 或仅 [Batch])
         original_shape = x.shape[:-1] 
-        
-        # [修改点 1]: 将 view 换成 reshape
         x_reshaped = x.reshape(-1, self.num_channels, self.num_rays)
-        
-        # 1D-CNN 提取特征
         conv_features = self.encoder_conv(x_reshaped).reshape(x_reshaped.shape[0], -1)
         latent_flat = self.encoder_linear(conv_features)
-        
-        # [修改点 2]: 将 view 换成 reshape
         latent = latent_flat.reshape(*original_shape, -1)
-        
         recon = self.decoder(latent) if self.training else None
         return latent, recon
+
 class DepthAE(nn.Module):
-    """用于 2D 高程图/深度图的自编码器 (如果使用相机 CNN)"""
     def __init__(self, input_channels=2, output_dim=128, camera_height=58, camera_width=87):
         super().__init__()
         self.camera_height = camera_height
@@ -193,27 +179,19 @@ class DepthAE(nn.Module):
         return latent, recon
 
 class ProprioVAE(nn.Module):
-    """用于历史本体感受状态蒸馏的变分自编码器 (beta-VAE)"""
     def __init__(self, input_dim, vel_dim=3, latent_dim=64, hidden_dims=[128, 64]):
         super().__init__()
-        # Encoder: 输入历史观测 o_t^H
         self.encoder_mlp = MLP(input_dim, hidden_dims[-1], hidden_dims[:-1])
-        
-        # VAE 的均值和方差
         self.fc_mu = nn.Linear(hidden_dims[-1], latent_dim)
         self.fc_logvar = nn.Linear(hidden_dims[-1], latent_dim)
-
-        # 速度估计器 (输出 v_tilde_t)
         self.vel_estimator = nn.Linear(hidden_dims[-1], vel_dim)
-
-        # Decoder: 输入隐变量 z_t^H，重建观测
         self.decoder_mlp = MLP(latent_dim, input_dim, hidden_dims[::-1])
 
     def encode(self, x):
         h = self.encoder_mlp(x)
         mu = self.fc_mu(h)
         logvar = self.fc_logvar(h)
-        vel_pred = self.vel_estimator(h) # 速度预测
+        vel_pred = self.vel_estimator(h) 
         return mu, logvar, vel_pred
 
     def reparameterize(self, mu, logvar):
@@ -226,11 +204,8 @@ class ProprioVAE(nn.Module):
 
     def forward(self, x):
         mu, logvar, vel_pred = self.encode(x)
-        
-        # === 【修复 1】：防止 VAE 的 KL 散度发生 exp() 指数爆炸 ===
         logvar = torch.clamp(logvar, min=-20.0, max=10.0)
-        
-        z = self.reparameterize(mu, logvar) if self.training else mu # z_t^H
+        z = self.reparameterize(mu, logvar) if self.training else mu 
         recon_x = self.decode(z) if self.training else None
         return vel_pred, recon_x, mu, logvar, z
 
@@ -241,35 +216,14 @@ class ProprioVAE(nn.Module):
 class SplitMoEActorCritic(ActorCritic):
     is_recurrent = True
 
-    def __init__(self, 
-                 obs, 
-                 obs_groups, 
-                 num_actions, 
-                 actor_hidden_dims=[256, 128, 128], 
-                 critic_hidden_dims=[512, 256, 128], 
-                 activation='elu', 
-                 init_noise_std=1.0,
-                 # === Split MoE Params ===
-                 num_wheel_experts=2, 
-                 num_leg_experts=2,
-                 num_leg_actions=12,
-                 latent_dim=256,
-                 rnn_type="gru",
-                 aux_loss_coef=0.01,
-                 # === AE Params ===
-                 blind_vision=True,     
-                 use_elevation_ae=True, 
-                 elevation_dim=187,     
-                 use_cnn=False,
-                 num_cameras=2,       
-                 camera_height=58,    
-                 camera_width=87,
-                 # === Distillation / Overrides ===
-                 forced_input_key=None,
-                 is_student_mode=False, 
-                 feed_estimator_to_policy=False, # 新增：Teacher设为False防止策略崩塌
-                 feed_ae_to_policy=False,        # 新增：Teacher使用Raw数据，不依赖AE
-                 **kwargs):
+    def __init__(self, obs, obs_groups, num_actions, actor_hidden_dims=[256, 128, 128], 
+                 critic_hidden_dims=[512, 256, 128], activation='elu', init_noise_std=1.0,
+                 num_wheel_experts=2, num_leg_experts=2, num_leg_actions=12,
+                 latent_dim=256, rnn_type="gru", aux_loss_coef=0.01,
+                 blind_vision=True, use_elevation_ae=True, elevation_dim=187,     
+                 use_cnn=False, num_cameras=2, camera_height=58, camera_width=87,
+                 forced_input_key=None, is_student_mode=False, 
+                 feed_estimator_to_policy=False, feed_ae_to_policy=False, **kwargs):
         
         base_kwargs = {k: v for k, v in kwargs.items() if k not in [
             "estimator_output_dim", "estimator_hidden_dims", 
@@ -282,20 +236,14 @@ class SplitMoEActorCritic(ActorCritic):
             "use_cnn", "num_cameras", "camera_height", "camera_width"
         ]}
 
-        super().__init__(obs, obs_groups, num_actions, 
-                         actor_hidden_dims=actor_hidden_dims, 
-                         critic_hidden_dims=critic_hidden_dims, 
-                         activation=activation, 
-                         init_noise_std=init_noise_std, 
-                         **base_kwargs)
+        super().__init__(obs, obs_groups, num_actions, actor_hidden_dims=actor_hidden_dims, 
+                         critic_hidden_dims=critic_hidden_dims, activation=activation, 
+                         init_noise_std=init_noise_std, **base_kwargs)
 
         self.is_student_mode = is_student_mode
         self.feed_estimator = feed_estimator_to_policy
         self.feed_ae = feed_ae_to_policy
 
-        # -------------------------------------------------------------
-        # 1. 解析基础输入维度
-        # -------------------------------------------------------------
         self.input_keys = None 
         if forced_input_key:
             self.input_keys = [forced_input_key]
@@ -332,7 +280,6 @@ class SplitMoEActorCritic(ActorCritic):
         self.use_elevation_ae = use_elevation_ae
         self.elevation_dim = elevation_dim
         
-        # 核心：计算真正的本体感觉维度 (增强了鲁棒性判断)
         self.has_elevation_input = False
         if self.use_elevation_ae:
             if num_obs > self.elevation_dim:
@@ -352,7 +299,6 @@ class SplitMoEActorCritic(ActorCritic):
         else:
             self.proprio_dim = num_obs
 
-        # Critic 维度推断
         self.critic_keys = obs_groups.get("critic", None)
         if self.critic_keys and (isinstance(obs, dict) or hasattr(obs, "keys")):
             critic_num_obs = sum(obs[k].shape[-1] for k in self.critic_keys)
@@ -366,9 +312,6 @@ class SplitMoEActorCritic(ActorCritic):
         else:
             self.critic_proprio_dim = critic_num_obs
 
-        # -------------------------------------------------------------
-        # 2. 初始化 Estimator (ProprioVAE) 并获取其额外输出维度
-        # -------------------------------------------------------------
         self.estimator_output_dim = kwargs.get("estimator_output_dim", 0)
         self.estimator_hidden_dims = kwargs.get("estimator_hidden_dims", [128, 64])
         self.estimator_obs_normalization = kwargs.get("estimator_obs_normalization", True)
@@ -411,9 +354,6 @@ class SplitMoEActorCritic(ActorCritic):
             self.estimator = None
             self.vae_feature_dim = 0
 
-        # -------------------------------------------------------------
-        # 3. 初始化地形感知 AE 并动态计算 RNN input_size
-        # -------------------------------------------------------------
         self.use_multilayer_scan = kwargs.get("use_multilayer_scan", True)
         self.num_scan_channels = kwargs.get("num_scan_channels", 12)
         self.num_scan_rays = kwargs.get("num_scan_rays", 21)
@@ -437,9 +377,6 @@ class SplitMoEActorCritic(ActorCritic):
                 for param in self.scan_encoder.parameters(): param.requires_grad = False
                 self.scan_encoder.eval()
 
-        # =============================================================
-        # 核心修改：根据 Router 开关解耦输入维度
-        # =============================================================
         rnn_input_dim = self.proprio_dim
         critic_rnn_input_dim = self.critic_proprio_dim
 
@@ -448,7 +385,6 @@ class SplitMoEActorCritic(ActorCritic):
             critic_rnn_input_dim += self.ae_output_dim if self.feed_ae else (critic_num_obs - self.critic_proprio_dim)
         else:
             if self.feed_ae:
-                # 盲视学生若开启了 feed_ae，会拼接 0 向量，所以需要加上该维度
                 rnn_input_dim += self.ae_output_dim
                 critic_rnn_input_dim += self.ae_output_dim
 
@@ -461,7 +397,6 @@ class SplitMoEActorCritic(ActorCritic):
               f"Env appended: {self.ae_output_dim if self.feed_ae else (num_obs - self.proprio_dim)}, "
               f"Blind: {self.blind_vision}, Student: {self.is_student_mode})")
 
-        # Normalization Setup
         self.actor_obs_normalization = kwargs.get("actor_obs_normalization", True)
         self.critic_obs_normalization = kwargs.get("critic_obs_normalization", True)
 
@@ -476,9 +411,6 @@ class SplitMoEActorCritic(ActorCritic):
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
 
-        # -------------------------------------------------------------
-        # 4. Initialize Actor & Critic RNNs
-        # -------------------------------------------------------------
         if self.rnn_type == "lstm":
             self.rnn = nn.LSTM(input_size=rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
             self.critic_rnn = nn.LSTM(input_size=critic_rnn_input_dim, hidden_size=self.latent_dim, batch_first=False)
@@ -491,9 +423,6 @@ class SplitMoEActorCritic(ActorCritic):
                 if 'weight' in name: nn.init.orthogonal_(param)
                 elif 'bias' in name: nn.init.constant_(param, 0)
 
-        # -------------------------------------------------------------
-        # 5. MoE Gates and Experts
-        # -------------------------------------------------------------
         self.gate_input_norm = nn.LayerNorm(self.latent_dim)
         self.leg_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_leg_experts))
         self.wheel_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_wheel_experts))
@@ -505,7 +434,6 @@ class SplitMoEActorCritic(ActorCritic):
             MLP(self.latent_dim, self.num_leg_actions, hidden_dims=actor_hidden_dims, activation=activation, output_gain=0.01) 
             for _ in range(num_leg_experts)
         ])
-
         self.actor_wheel_experts = nn.ModuleList([
             MLP(self.latent_dim, self.num_wheel_actions, hidden_dims=actor_hidden_dims, activation=activation, output_gain=0.01) 
             for _ in range(num_wheel_experts)
@@ -513,7 +441,6 @@ class SplitMoEActorCritic(ActorCritic):
 
         self.critic_mlp = MLP(self.latent_dim, 1, hidden_dims=critic_hidden_dims, activation=activation, output_gain=1.0)
 
-        # RNN State Init
         if isinstance(obs, dict): ref_tensor = obs[list(obs.keys())[0]]
         else: ref_tensor = obs
         batch_size = ref_tensor.shape[0]
@@ -525,7 +452,6 @@ class SplitMoEActorCritic(ActorCritic):
         self.latest_weights = {}
         self.active_aux_loss = 0.0
         
-        # Noise Init
         new_std = torch.ones(num_actions)
         self.num_wheel_experts = num_wheel_experts
         self.num_leg_experts = num_leg_experts
@@ -550,7 +476,7 @@ class SplitMoEActorCritic(ActorCritic):
     def _extract_raw_obs(self, obs, key_list):
         if key_list is not None and (isinstance(obs, dict) or hasattr(obs, "keys")):
             tensors = [obs[k] for k in key_list if k in obs]
-            if not tensors: return list(obs.values())[0] # Fallback
+            if not tensors: return list(obs.values())[0]
             return torch.cat(tensors, dim=-1)
         return obs
 
@@ -570,51 +496,40 @@ class SplitMoEActorCritic(ActorCritic):
             proprio_dim = self.proprio_dim
             
         proprio = x[..., :proprio_dim]
-        
         if normalizer is not None:
             proprio = normalizer(proprio)
         
-        # -------------------------------------------------------------
-        # 1. 外部地形感知 AE 特征提取 (根据解耦开关判断是否喂给 RNN)
-        # -------------------------------------------------------------
         env_feat_for_rnn = None
         if (self.use_elevation_ae or self.use_multilayer_scan) and self.feed_ae:
-            # 【修复点】：强制安全地从环境观测字典中提取 noisy_elevation
             if obs_dict is not None and (isinstance(obs_dict, dict) or hasattr(obs_dict, "keys")):
                 if "noisy_elevation" in obs_dict:
                     env_raw_full = obs_dict["noisy_elevation"]
                 elif "policy" in obs_dict:
-                     # 极端回退：如果没配置 noisy_elevation，试图从 policy 截取（假设全部拼在一起）
                      env_raw_full = obs_dict["policy"][..., proprio_dim:]
                 else:
                     raise KeyError("Obs dictionary does not contain 'noisy_elevation'!")
             else:
-                # 如果传入的不是字典而是纯 Tensor，才使用切片
                 env_raw_full = x[..., proprio_dim:]
             
-            # 校验一下我们拿到的数据够不够长
             expected_min_dim = 0
             if self.use_elevation_ae: expected_min_dim += self.elevation_dim
             if self.use_multilayer_scan: expected_min_dim += self.scan_dim
-            
             if env_raw_full.shape[-1] < expected_min_dim:
                  raise RuntimeError(f"Extracted environment feature dimension ({env_raw_full.shape[-1]}) "
                                     f"is smaller than required ({expected_min_dim}). Check your ObsGroup config!")
             feats = []
             current_idx = 0
             
-            # 流 1: 高程图 (看脚下坑洼)
             if self.use_elevation_ae:
                 env_raw_elev = env_raw_full[..., current_idx : current_idx + self.elevation_dim]
                 latent_elev, _ = self.elevation_encoder(env_raw_elev)
-                feats.append(latent_elev)
+                feats.append(latent_elev.detach()) # 【修正点 1】：加入 detach()
                 current_idx += self.elevation_dim
                 
-            # 流 2: 多层扫描 (看前后悬垂物)
             if self.use_multilayer_scan:
                 env_raw_scan = env_raw_full[..., current_idx : current_idx + self.scan_dim]
                 latent_scan, _ = self.scan_encoder(env_raw_scan)
-                feats.append(latent_scan)
+                feats.append(latent_scan.detach()) # 【修正点 1】：加入 detach()
                 
             env_feat_for_rnn = torch.cat(feats, dim=-1)
             
@@ -640,7 +555,7 @@ class SplitMoEActorCritic(ActorCritic):
                 else:
                     env_feat_ae, env_recon = self.depth_encoder(depth_image)
                 
-                env_feat_for_rnn = env_feat_ae if self.feed_ae else env_raw
+                env_feat_for_rnn = env_feat_ae.detach() if self.feed_ae else env_raw # 【修正点 1】：加入 detach()
                 if self.blind_vision:
                     env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
         else:
@@ -649,13 +564,9 @@ class SplitMoEActorCritic(ActorCritic):
                 if self.blind_vision:
                     env_feat_for_rnn = torch.zeros_like(env_feat_for_rnn)
 
-        # -------------------------------------------------------------
-        # 2. 历史上下文 VAE 特征提取 (根据解耦开关判断是否喂给 RNN)
-        # -------------------------------------------------------------
         vae_latent_for_rnn = None
         vel_pred_for_rnn = None
         if self.estimator is not None and obs_dict is not None:
-            # 【新增判断】仅在训练时计算 Loss，或策略确实需要 VAE 特征时，才进行前向传播
             if self.training or self.feed_estimator:
                 est_input = self._get_estimator_input(obs_dict)
                 if self.estimator_obs_normalization and self.estimator_obs_normalizer is not None:
@@ -671,8 +582,8 @@ class SplitMoEActorCritic(ActorCritic):
                     self.active_vae_input = est_input 
                 
                 if self.feed_estimator:
-                    vae_latent_for_rnn = z
-                    vel_pred_for_rnn = vel_pred
+                    vae_latent_for_rnn = z.detach() # 【修正点 1】：加入 detach()
+                    vel_pred_for_rnn = vel_pred.detach() # 【修正点 1】：加入 detach()
                 
         elif self.estimator is not None and obs_dict is None:
             if self.feed_estimator:
@@ -680,9 +591,6 @@ class SplitMoEActorCritic(ActorCritic):
                 vel_pred_for_rnn = torch.zeros((*orig_shape, self.estimator_output_dim), device=proprio.device)
                 vae_latent_for_rnn = torch.zeros((*orig_shape, 64), device=proprio.device)
 
-        # -------------------------------------------------------------
-        # 3. 拼接最终给到 RNN 的观测向量
-        # -------------------------------------------------------------
         components = [proprio]
         if self.feed_estimator and self.estimator is not None:
             if vel_pred_for_rnn is not None:
@@ -722,17 +630,11 @@ class SplitMoEActorCritic(ActorCritic):
 
     def _get_estimator_input(self, obs_dict):
         if self.has_estimator_group and (isinstance(obs_dict, dict) or hasattr(obs_dict, "keys")):
-            if "estimator" in obs_dict:
-                return obs_dict["estimator"]
-        
+            if "estimator" in obs_dict: return obs_dict["estimator"]
         if hasattr(obs_dict, "keys") or isinstance(obs_dict, dict):
-            try: 
-                full_obs = self._extract_raw_obs(obs_dict, self.input_keys)
-            except KeyError: 
-                full_obs = self._extract_raw_obs(obs_dict, self.input_keys)
-        else: 
-            full_obs = obs_dict 
-            
+            try: full_obs = self._extract_raw_obs(obs_dict, self.input_keys)
+            except KeyError: full_obs = self._extract_raw_obs(obs_dict, self.input_keys)
+        else: full_obs = obs_dict 
         return full_obs[..., self.estimator_input_indices]
 
     def _compute_actor_output(self, latent, obs_dict=None):
@@ -751,7 +653,7 @@ class SplitMoEActorCritic(ActorCritic):
         total_action = torch.cat([leg_act_sum, wheel_act_sum], dim=-1)
 
         if self.training:
-            # PPO update calls act() passing batch, meaning we can cache aux loss natively
+            # Note: 遵照您的指示，不修复 active_aux_loss 梯度更新问题，保留原状
             self.active_aux_loss = self._calculate_load_balancing_loss(w_leg, w_wheel) * self.aux_loss_coef
         
         with torch.no_grad():
@@ -793,7 +695,6 @@ class SplitMoEActorCritic(ActorCritic):
         mean = self._compute_actor_output(latent, obs_dict=obs) 
         safe_std = torch.clamp(self.std, min=1e-4)
         self.distribution = torch.distributions.Normal(mean, safe_std)
-        
         return self.distribution.sample()
 
     def act_inference(self, obs, masks=None, hidden_states=None):
@@ -814,9 +715,7 @@ class SplitMoEActorCritic(ActorCritic):
 
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_critic_hidden_states, x_in.device)
-        
         latent, next_state = self._run_rnn(self.critic_rnn, x_in, current_state, masks)
-        
         if hidden_state is None: self.active_critic_hidden_states = next_state
         return self.critic_mlp(latent)
     
@@ -840,7 +739,6 @@ class SplitMoEActorCritic(ActorCritic):
         
         safe_std = torch.clamp(self.std, min=1e-4)
         if save_dist: self.distribution = torch.distributions.Normal(action_mean, safe_std)
-        
         return action_mean, safe_std, next_state
 
     def get_actions_log_prob(self, actions):
@@ -885,64 +783,34 @@ class SplitMoEActorCritic(ActorCritic):
 # ==============================================================================
 
 class SplitMoEStudentTeacher(nn.Module):
-    """
-    Adapter class to make SplitMoEActorCritic compatible with rsl_rl.runners.DistillationRunner.
-    """
     is_recurrent = True
     loaded_teacher = False
 
     def __init__(self, obs, obs_groups, num_actions, activation="elu", **kwargs):
         super().__init__()
         self.obs_groups = obs_groups
-        
-        if isinstance(activation, dict):
-            activation = activation.get("value", "elu") if "value" in activation else "elu"
-        # 提取动态开关 (默认 False)
+        if isinstance(activation, dict): activation = activation.get("value", "elu") if "value" in activation else "elu"
         teacher_is_mlp = kwargs.pop("teacher_is_mlp", False) 
-        # =========================================================
-        # 初始化 Student
-        # =========================================================
+
         print("\n[Distillation] Initializing Student Policy...")
         student_kwargs = kwargs.copy()
-        
         student_obs_groups = {"policy": obs_groups["policy"]}
         student_obs_groups["critic"] = obs_groups["policy"]
         student_input_key = obs_groups["policy"][0]
 
         self.student = SplitMoEActorCritic(
-            obs, 
-            student_obs_groups, 
-            num_actions, 
-            forced_input_key=student_input_key, 
-            activation=activation,
-            is_student_mode=True, 
-            **student_kwargs
+            obs, student_obs_groups, num_actions, forced_input_key=student_input_key, 
+            activation=activation, is_student_mode=True, **student_kwargs
         )
 
-        # =========================================================
-        # 2. 动态初始化 Teacher
-        # =========================================================
         teacher_source = obs_groups["teacher"]
-        
         if teacher_is_mlp:
             print("\n[Distillation] Initializing Teacher Policy (Standard MLP)...")
-            
-            # 为 Teacher 构造满足 ActorCritic 接口要求的 obs_groups 字典
-            # 因为是平地策略，actor 和 critic 都使用相同的 teacher_source (即 policy 组)
-            teacher_obs_groups = {
-                "policy": teacher_source,
-                "critic": teacher_source
-            }
-
-            # 初始化标准 MLP，完全遵循 RSL-RL 最新 API 规范，维度对齐 agent.yaml
+            teacher_obs_groups = {"policy": teacher_source, "critic": teacher_source}
             self.teacher = ActorCritic(
-                obs=obs,
-                obs_groups=teacher_obs_groups,
-                num_actions=num_actions,
-                actor_hidden_dims=[512, 256, 128], 
-                critic_hidden_dims=[512, 256, 128],
-                activation=activation, 
-                init_noise_std=1.0,
+                obs=obs, obs_groups=teacher_obs_groups, num_actions=num_actions,
+                actor_hidden_dims=[512, 256, 128], critic_hidden_dims=[512, 256, 128],
+                activation=activation, init_noise_std=1.0,
             )
         else:
             print("\n[Distillation] Initializing Teacher Policy (SplitMoE)...")
@@ -953,69 +821,45 @@ class SplitMoEStudentTeacher(nn.Module):
             teacher_input_key = teacher_source[0]
             
             self.teacher = SplitMoEActorCritic(
-                obs, teacher_obs_groups, num_actions, 
-                forced_input_key=teacher_input_key, activation=activation, 
-                **teacher_kwargs
+                obs, teacher_obs_groups, num_actions, forced_input_key=teacher_input_key, 
+                activation=activation, **teacher_kwargs
             )
             
         self.teacher.eval()
-        for param in self.teacher.parameters():
-            param.requires_grad = False
+        for param in self.teacher.parameters(): param.requires_grad = False
 
     @property
-    def action_std(self):
-        return self.student.std
+    def action_std(self): return self.student.std
 
     def reset(self, dones=None, hidden_states=None):
         self.student.reset(dones, hidden_states=hidden_states)
         self.teacher.reset(dones)
 
-    def act(self, obs, masks=None, hidden_state=None):
-        return self.student.act(obs, masks, hidden_state)
-
-    def act_inference(self, obs):
-        return self.student.act_inference(obs)
-
+    def act(self, obs, masks=None, hidden_state=None): return self.student.act(obs, masks, hidden_state)
+    def act_inference(self, obs): return self.student.act_inference(obs)
     def evaluate(self, obs):
-        with torch.no_grad():
-            return self.teacher.act_inference(obs)
-    
-    def get_hidden_states(self):
-        return self.student.get_hidden_states()
+        with torch.no_grad(): return self.teacher.act_inference(obs)
+    def get_hidden_states(self): return self.student.get_hidden_states()
     
     def detach_hidden_states(self, dones=None):
-        if dones is not None and hasattr(dones, "dtype") and dones.dtype == torch.uint8:
-            dones = dones.bool()
-
+        if dones is not None and hasattr(dones, "dtype") and dones.dtype == torch.uint8: dones = dones.bool()
         def detach_recursive(h, mask):
-            if isinstance(h, tuple): 
-                return tuple(detach_recursive(x, mask) for x in h)
-            
-            # 断开计算图，防止梯度回传过长导致 OOM
+            if isinstance(h, tuple): return tuple(detach_recursive(x, mask) for x in h)
             h = h.detach() 
-            
-            # 如果环境结束了 (done)，则清空隐藏状态
             if mask is not None:
-                h = h.clone() # 必须 clone，否则原地修改会报错
+                h = h.clone()
                 h[:, mask, :] = 0.0
             return h
-            
-        # 1. 处理 Actor 的隐藏状态
         if self.student.active_hidden_states is not None:
              self.student.active_hidden_states = detach_recursive(self.student.active_hidden_states, dones)
-             
-        # 2. 处理 Critic 的隐藏状态
         if hasattr(self.student, "active_critic_hidden_states") and self.student.active_critic_hidden_states is not None:
              self.student.active_critic_hidden_states = detach_recursive(self.student.active_critic_hidden_states, dones)
 
-    def update_normalization(self, obs):
-        self.student.update_normalization(obs)
+    def update_normalization(self, obs): self.student.update_normalization(obs)
     
     def load_state_dict(self, state_dict, strict=True):
         print(f"[Distillation] Loading state dict with {len(state_dict)} keys...")
-        
         teacher_state_dict = {k: v for k, v in state_dict.items() if "critic" not in k}
-        
         try:
             self.teacher.load_state_dict(teacher_state_dict, strict=False)
             print("[Distillation] Successfully loaded Teacher weights (critic ignored).")
@@ -1023,9 +867,6 @@ class SplitMoEStudentTeacher(nn.Module):
         except Exception as e:
             print(f"[Distillation] Warning: Direct load to teacher failed: {e}")
 
-        # =========================================================
-        # 【关键改动】将 Teacher 预训练好的 VAE 和 AE 权重拷贝给 Student
-        # =========================================================
         if not any(k.startswith("student.") for k in state_dict.keys()):
             print("[Distillation] Initializing Student's VAE/AE from Teacher...")
             student_dict = self.student.state_dict()
@@ -1039,7 +880,6 @@ class SplitMoEStudentTeacher(nn.Module):
             super().load_state_dict(state_dict, strict=strict)
             print("[Distillation] Resumed Student-Teacher training.")
             self.loaded_teacher = True
-        
         return True
 
 # ==============================================================================
@@ -1051,117 +891,189 @@ class SplitMoEPPO(PPO):
         loss_dict = super().update()
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
         
-        if model is not None and self.num_learning_epochs > 0:
-            obs_batch = self.storage.observations.flatten(0, 1)
-            self.optimizer.zero_grad()
-            total_aux_loss = 0.0
+        # 【修正点 2 & 3】：将所有辅助损失与对称性损失放入 mini-batch 循环
+        if model is not None and self.num_learning_epochs > 0 and not getattr(model, "is_student_mode", False):
             
-            # -------------------------------------------------------------
-            # 1. 核心计算: ProprioVAE Loss
-            # -------------------------------------------------------------
-            if model.estimator is not None and not model.is_student_mode:
-                est_input = model._get_estimator_input(obs_batch)
-                if hasattr(obs_batch, "keys") or isinstance(obs_batch, dict):
-                    try: full_obs_for_target = obs_batch["critic"]
-                    except KeyError: full_obs_for_target = model._extract_raw_obs(obs_batch, getattr(model, "critic_keys", model.input_keys))
-                else: 
-                    full_obs_for_target = obs_batch
-                
-                target_state = full_obs_for_target[..., model.estimator_target_indices]
-                
-                if getattr(model, "estimator_obs_normalization", False) and model.estimator_obs_normalizer is not None:
-                    est_input = model.estimator_obs_normalizer(est_input)
-                
-                vel_pred, recon_x, mu, logvar, z = model.estimator(est_input)
+            if getattr(model, "is_recurrent", False):
+                generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+            else:
+                generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
-                vel_loss = (vel_pred - target_state).pow(2).mean()
-                recon_loss = (recon_x - est_input).pow(2).mean()
-                logvar = torch.clamp(logvar, min=-20.0, max=10.0)
-                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1).mean()
+            avg_sym_loss = 0.0
+            batch_cnt = 0
+            device = self.device
 
-                beta = 0.01 
-                vae_loss = vel_loss + recon_loss + beta * kl_loss
-                total_aux_loss += vae_loss
-                
-                if not hasattr(model, 'loss_dict_cache'):
-                    model.loss_dict_cache = {}
-                model.loss_dict_cache["Loss/VAE_Vel_MSE"] = vel_loss.item()
-                model.loss_dict_cache["Loss/VAE_Recon_MSE"] = recon_loss.item()
-                model.loss_dict_cache["Loss/VAE_KL"] = kl_loss.item()
+            # --- 保留原版的动作映射硬编码 ---
+            action_swap_idx = torch.tensor([3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device)
+            action_neg_mask = torch.tensor([-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device)
+            
+            # --- 保留原版的 57 维观测映射硬编码 ---
+            obs_neg_mask = torch.ones(57, dtype=torch.float32, device=device)
+            obs_neg_mask[0] = -1.0
+            obs_neg_mask[2] = -1.0
+            obs_neg_mask[4] = -1.0
+            obs_neg_mask[7] = -1.0
+            obs_neg_mask[8] = -1.0
+            obs_swap_idx = torch.arange(57, dtype=torch.long, device=device)
+            for offset in [9, 25, 41]: 
+                obs_swap_idx[offset:offset+16] = action_swap_idx + offset
+                obs_neg_mask[offset:offset+16] = action_neg_mask
 
-            # -------------------------------------------------------------
-            # 2. 核心计算: ElevationAE 重构 Loss
-            # -------------------------------------------------------------
-            if model.use_elevation_ae and not getattr(model, "blind_vision", False) and not model.is_student_mode:
-                # ====== 优先从独立的 noisy_elevation 组获取训练数据 ======
-                if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
-                    env_raw_full = obs_batch["noisy_elevation"]
-                else:
-                    x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
-                    env_raw_full = x_raw[..., model.proprio_dim:]
+            if not hasattr(model, 'loss_dict_cache'):
+                model.loss_dict_cache = {}
+
+            for obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
+                self.optimizer.zero_grad()
+                total_aux_loss = 0.0
                 
-                # 【修改点 1】：必须对 553 维的数据进行切片，只取前 187 维的高程图！
-                env_raw_elev = env_raw_full[..., :model.elevation_dim]
-                
-                # 传入切片后的 187 维数据
-                _, env_recon = model.elevation_encoder(env_raw_elev)
-                
-                if env_recon is not None:
-                    # 【修改点 2】：计算 Loss 时也要用切片后的目标数据 env_raw_elev
-                    elev_ae_loss = (env_recon - env_raw_elev).pow(2).mean()
-                    total_aux_loss += elev_ae_loss
-                    if not hasattr(model, 'loss_dict_cache'):
-                        model.loss_dict_cache = {}
-                    model.loss_dict_cache["Loss/Elevation_AE_Recon"] = elev_ae_loss.item()
-            # 3. 核心计算: MultiLayer Scan 重构 Loss
-            if getattr(model, "use_multilayer_scan", False) and not getattr(model, "blind_vision", False) and not model.is_student_mode:
-                if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
-                    env_raw_full = obs_batch["noisy_elevation"]
-                else:
-                    x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
-                    env_raw_full = x_raw[..., model.proprio_dim:]
-                
-                scan_start_idx = model.elevation_dim if model.use_elevation_ae else 0
-                env_raw_scan = env_raw_full[..., scan_start_idx : scan_start_idx + model.scan_dim]
-                
-                _, scan_recon = model.scan_encoder(env_raw_scan)
-                
-                if scan_recon is not None:
-                    scan_ae_loss = (scan_recon - env_raw_scan).pow(2).mean()
-                    total_aux_loss += scan_ae_loss
-                    if not hasattr(model, 'loss_dict_cache'): model.loss_dict_cache = {}
-                    model.loss_dict_cache["Loss/Scan_AE_Recon"] = scan_ae_loss.item()
-            # -------------------------------------------------------------
-            # 3. 核心计算: DepthAE 重构 Loss
-            # -------------------------------------------------------------
-            if model.use_cnn and not getattr(model, "blind_vision", False) and not model.is_student_mode:
-                if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
-                    env_raw = obs_batch["noisy_elevation"]
-                else:
-                    x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
-                    env_raw = x_raw[..., model.proprio_dim:]
-                
-                original_shape = env_raw.shape[:-1]
-                depth_image = env_raw.view(*original_shape, model.num_cameras, model.camera_height, model.camera_width)
-                if depth_image.ndim == 5:
-                    B, T, C, H, W = depth_image.shape
-                    depth_image = depth_image.view(B*T, C, H, W)
+                # -------------------------------------------------------------
+                # 1. ProprioVAE Loss
+                # -------------------------------------------------------------
+                if model.estimator is not None:
+                    est_input = model._get_estimator_input(obs_batch)
+                    if hasattr(obs_batch, "keys") or isinstance(obs_batch, dict):
+                        try: full_obs_for_target = obs_batch["critic"]
+                        except KeyError: full_obs_for_target = model._extract_raw_obs(obs_batch, getattr(model, "critic_keys", model.input_keys))
+                    else: 
+                        full_obs_for_target = obs_batch
                     
-                _, depth_recon = model.depth_encoder(depth_image)
-                if depth_recon is not None:
-                    depth_ae_loss = (depth_recon - depth_image).pow(2).mean() 
-                    total_aux_loss += depth_ae_loss
-                    if not hasattr(model, 'loss_dict_cache'):
-                        model.loss_dict_cache = {}
-                    model.loss_dict_cache["Loss/Depth_AE_Recon"] = depth_ae_loss.item()
+                    target_state = full_obs_for_target[..., model.estimator_target_indices]
+                    if getattr(model, "estimator_obs_normalization", False) and model.estimator_obs_normalizer is not None:
+                        est_input = model.estimator_obs_normalizer(est_input)
+                    
+                    vel_pred, recon_x, mu, logvar, z = model.estimator(est_input)
 
-            # --- 反向传播 ---
-            if isinstance(total_aux_loss, torch.Tensor) and total_aux_loss.requires_grad:
-                total_aux_loss.backward()
-                if self.max_grad_norm is not None:
-                    nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
-                self.optimizer.step()
-        # --- 日志记录 ---
+                    vel_loss = (vel_pred - target_state).pow(2).mean()
+                    recon_loss = (recon_x - est_input).pow(2).mean()
+                    logvar = torch.clamp(logvar, min=-20.0, max=10.0)
+                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1).mean()
+
+                    beta = 0.01 
+                    vae_loss = vel_loss + recon_loss + beta * kl_loss
+                    total_aux_loss += vae_loss
+                    
+                    model.loss_dict_cache["Loss/VAE_Vel_MSE"] = vel_loss.item()
+                    model.loss_dict_cache["Loss/VAE_Recon_MSE"] = recon_loss.item()
+                    model.loss_dict_cache["Loss/VAE_KL"] = kl_loss.item()
+
+                # -------------------------------------------------------------
+                # 2. ElevationAE Loss
+                # -------------------------------------------------------------
+                if model.use_elevation_ae and not getattr(model, "blind_vision", False):
+                    if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
+                        env_raw_full = obs_batch["noisy_elevation"]
+                    else:
+                        x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
+                        env_raw_full = x_raw[..., model.proprio_dim:]
+                    
+                    env_raw_elev = env_raw_full[..., :model.elevation_dim]
+                    _, env_recon = model.elevation_encoder(env_raw_elev)
+                    
+                    if env_recon is not None:
+                        elev_ae_loss = (env_recon - env_raw_elev).pow(2).mean()
+                        total_aux_loss += elev_ae_loss
+                        model.loss_dict_cache["Loss/Elevation_AE_Recon"] = elev_ae_loss.item()
+
+                # -------------------------------------------------------------
+                # 3. MultiLayer Scan Loss
+                # -------------------------------------------------------------
+                if getattr(model, "use_multilayer_scan", False) and not getattr(model, "blind_vision", False):
+                    if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
+                        env_raw_full = obs_batch["noisy_elevation"]
+                    else:
+                        x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
+                        env_raw_full = x_raw[..., model.proprio_dim:]
+                    
+                    scan_start_idx = model.elevation_dim if model.use_elevation_ae else 0
+                    env_raw_scan = env_raw_full[..., scan_start_idx : scan_start_idx + model.scan_dim]
+                    
+                    _, scan_recon = model.scan_encoder(env_raw_scan)
+                    
+                    if scan_recon is not None:
+                        scan_ae_loss = (scan_recon - env_raw_scan).pow(2).mean()
+                        total_aux_loss += scan_ae_loss
+                        model.loss_dict_cache["Loss/Scan_AE_Recon"] = scan_ae_loss.item()
+
+                # -------------------------------------------------------------
+                # 4. DepthAE Loss
+                # -------------------------------------------------------------
+                if model.use_cnn and not getattr(model, "blind_vision", False):
+                    if hasattr(obs_batch, "keys") and "noisy_elevation" in obs_batch:
+                        env_raw = obs_batch["noisy_elevation"]
+                    else:
+                        x_raw = model._extract_raw_obs(obs_batch, model.input_keys)
+                        env_raw = x_raw[..., model.proprio_dim:]
+                    
+                    original_shape = env_raw.shape[:-1]
+                    depth_image = env_raw.view(*original_shape, model.num_cameras, model.camera_height, model.camera_width)
+                    if depth_image.ndim == 5:
+                        B, T, C, H, W = depth_image.shape
+                        depth_image = depth_image.view(B*T, C, H, W)
+                        
+                    _, depth_recon = model.depth_encoder(depth_image)
+                    if depth_recon is not None:
+                        depth_ae_loss = (depth_recon - depth_image).pow(2).mean() 
+                        total_aux_loss += depth_ae_loss
+                        model.loss_dict_cache["Loss/Depth_AE_Recon"] = depth_ae_loss.item()
+
+                # -------------------------------------------------------------
+                # 5. 序列级 Actor 对称性正则化 (在 Mini-batch 内部解决污染)
+                # -------------------------------------------------------------
+                obs_mirrored_batch = obs_batch.clone() if not isinstance(obs_batch, dict) else {k: v.clone() for k, v in obs_batch.items()}
+                
+                # 应用您的 57 维硬编码映射至 Batch 数据
+                if isinstance(obs_mirrored_batch, dict) or hasattr(obs_mirrored_batch, "keys"):
+                    if "policy" in obs_mirrored_batch:
+                        obs_mirrored_batch["policy"] = obs_mirrored_batch["policy"][..., obs_swap_idx] * obs_neg_mask
+                    if "estimator" in obs_mirrored_batch:
+                        e = obs_mirrored_batch["estimator"]
+                        history_len = e.shape[-1] // 57
+                        est_neg_mask = obs_neg_mask.repeat(history_len)
+                        est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=device)
+                        for h_i in range(history_len):
+                            est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
+                        obs_mirrored_batch["estimator"] = e[..., est_swap_idx] * est_neg_mask
+                    if "noisy_elevation" in obs_mirrored_batch:
+                        env_raw = obs_mirrored_batch["noisy_elevation"]
+                        if model.use_elevation_ae:
+                            elev = env_raw[..., :model.elevation_dim]
+                            elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], model.elevation_dim)
+                            env_raw[..., :model.elevation_dim] = elev_mirrored
+                        if getattr(model, "use_multilayer_scan", False):
+                            scan_start = model.elevation_dim if model.use_elevation_ae else 0
+                            scan = env_raw[..., scan_start : scan_start + model.scan_dim]
+                            scan_mirrored = scan.view(*scan.shape[:-1], model.num_scan_channels, model.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], model.scan_dim)
+                            env_raw[..., scan_start : scan_start + model.scan_dim] = scan_mirrored
+                        obs_mirrored_batch["noisy_elevation"] = env_raw
+                else:
+                    obs_mirrored_batch = obs_mirrored_batch[..., obs_swap_idx] * obs_neg_mask
+
+                # (PASS 1) 获取无梯度的真实动作作为 Target，必须传入 mini-batch 对应的 mask
+                with torch.no_grad():
+                    target_actions = model.act_inference(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                target_mirrored_actions = target_actions[..., action_swap_idx] * action_neg_mask
+
+                # (PASS 2) 获取带梯度的镜像预测动作
+                pred_actions = model.act_inference(obs_mirrored_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                
+                sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions.detach())
+                sym_loss_weight = 1.0 
+                total_aux_loss += sym_loss * sym_loss_weight
+                avg_sym_loss += sym_loss.item()
+
+                # --- 6. 反向传播 ---
+                if isinstance(total_aux_loss, torch.Tensor) and total_aux_loss.requires_grad:
+                    total_aux_loss.backward()
+                    if self.max_grad_norm is not None:
+                        nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
+                    
+                batch_cnt += 1
+
+            if batch_cnt > 0:
+                loss_dict["Loss/Actor_Symmetry_Reg"] = avg_sym_loss / batch_cnt
+
+        # --- 日志记录 (遵照您的指示，MoE 梯度不修复，只记录) ---
         if model is not None:
             if hasattr(model, "latest_weights") and model.latest_weights:
                 w = model.latest_weights
@@ -1181,146 +1093,23 @@ class SplitMoEPPO(PPO):
                 if len(std_np) >= n_legs:
                     loss_dict["Noise/Leg_Std"] = std_np[:n_legs].mean()
                     loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
-        # 👇 ========================== 新增：序列级 Actor 对称性正则化 ========================== 👇
 
-        if model is not None and not getattr(model, "is_student_mode", False) and self.num_learning_epochs > 0:
-            device = self.device
-            # 1. 动作映射 (保持不变)
-            action_swap_idx = torch.tensor([3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device)
-            action_neg_mask = torch.tensor([-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device)
-            
-            obs_all = self.storage.observations
-            obs_mirrored_all = obs_all.clone()
-            
-            #3. 仅对 policy 组进行精确镜像 【关键修改区：适配 57 维】
-            # 因为去除了 base_lin_vel，整体维度前移 3 维
-            obs_neg_mask = torch.ones(57, dtype=torch.float32, device=device)
-            obs_neg_mask[0] = -1.0  # ang_vel roll (原为 3)
-            obs_neg_mask[2] = -1.0  # ang_vel yaw (原为 5)
-            obs_neg_mask[4] = -1.0  # gravity y (原为 7)
-            obs_neg_mask[7] = -1.0  # cmd vy (原为 10)
-            obs_neg_mask[8] = -1.0  # cmd wz (原为 11)
-            
-            obs_swap_idx = torch.arange(57, dtype=torch.long, device=device)
-            # 对应的 joint_pos, joint_vel, actions 的起始索引也前移了 3
-            for offset in [9, 25, 41]: 
-                obs_swap_idx[offset:offset+16] = action_swap_idx + offset
-                obs_neg_mask[offset:offset+16] = action_neg_mask
-            # # 3. 仅对 policy 组进行精确镜像
-            # obs_neg_mask = torch.ones(60, dtype=torch.float32, device=device)
-            # obs_neg_mask[1] = -1.0  # lin_vel y
-            # obs_neg_mask[3] = -1.0  # ang_vel roll
-            # obs_neg_mask[5] = -1.0  # ang_vel yaw
-            # obs_neg_mask[7] = -1.0  # gravity y
-            # obs_neg_mask[10] = -1.0 # cmd vy
-            # obs_neg_mask[11] = -1.0 # cmd wz
-            
-            # obs_swap_idx = torch.arange(60, dtype=torch.long, device=device)
-            # for offset in [12, 28, 44]:
-            #     obs_swap_idx[offset:offset+16] = action_swap_idx + offset
-            #     obs_neg_mask[offset:offset+16] = action_neg_mask
-
-            if "policy" in obs_mirrored_all.keys():
-                p = obs_mirrored_all["policy"]
-                obs_mirrored_all["policy"] = p[..., obs_swap_idx] * obs_neg_mask
-            if "estimator" in obs_mirrored_all.keys():
-                e = obs_mirrored_all["estimator"]
-                # 历史序列是 855 维 (15帧 * 57维)
-                history_len = e.shape[-1] // 57
-                est_neg_mask = obs_neg_mask.repeat(history_len)
-                est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=device)
-                for h_i in range(history_len):
-                    est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
-                
-                obs_mirrored_all["estimator"] = e[..., est_swap_idx] * est_neg_mask
-            force_reset_dones = torch.ones(self.storage.num_envs, dtype=torch.bool, device=device)
-            if "noisy_elevation" in obs_mirrored_all.keys():
-                env_raw = obs_mirrored_all["noisy_elevation"].clone()
-                
-                # 1. 镜像高程图 (187维) -> 11(Y) x 17(X)
-                if model.use_elevation_ae:
-                    elev = env_raw[..., :model.elevation_dim]
-                    # 沿 Y 轴反转 (dim=-2)
-                    elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], model.elevation_dim)
-                    env_raw[..., :model.elevation_dim] = elev_mirrored
-                
-                # 2. 镜像多层雷达扫描 (252维) -> 12(Channel) x 21(Ray)
-                if getattr(model, "use_multilayer_scan", False):
-                    scan_start = model.elevation_dim if model.use_elevation_ae else 0
-                    scan = env_raw[..., scan_start : scan_start + model.scan_dim]
-                    # 沿 Ray 射线轴反转 (dim=-1)
-                    scan_mirrored = scan.view(*scan.shape[:-1], model.num_scan_channels, model.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], model.scan_dim)
-                    env_raw[..., scan_start : scan_start + model.scan_dim] = scan_mirrored
-                
-                obs_mirrored_all["noisy_elevation"] = env_raw
-            # 4. PASS 1 (无梯度): 真实观测下的动作基准
-            model.reset(dones=force_reset_dones)
-            target_actions = []
-            with torch.no_grad():
-                for t in range(self.storage.num_transitions_per_env):
-                    # 传入完整的 TensorDict slice，所有的 VAE/AE 特征都能正确读取！
-                    act = model.act_inference(obs_all[t])
-                    target_actions.append(act)
-            target_actions = torch.stack(target_actions)
-            target_mirrored_actions = target_actions[..., action_swap_idx] * action_neg_mask
-
-            # 5. PASS 2 (开启梯度): 镜像观测下，强迫输出镜像动作
-            model.reset(dones=force_reset_dones)
-            pred_actions = []
-            for t in range(self.storage.num_transitions_per_env):
-                act = model.act_inference(obs_mirrored_all[t])
-                pred_actions.append(act)
-            pred_actions = torch.stack(pred_actions)
-            
-            # 6. 计算 Loss 并反向传播
-            sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions.detach())
-            sym_loss_weight = 1.0 
-            
-            self.optimizer.zero_grad()
-            (sym_loss * sym_loss_weight).backward()
-            
-            if self.is_multi_gpu:
-                self.reduce_parameters()
-            if self.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
-            self.optimizer.step()
-            
-            model.reset(dones=force_reset_dones)
-            loss_dict["Loss/Actor_Symmetry_Reg"] = sym_loss.item()
-
-        # 👆 ====================================================================================== 👆
-        
         return loss_dict
 
 # ==============================================================================
 # 自定义算法：带对称性增强的蒸馏 (Sequence-Level Augmentation 双趟遍历)
+# (完全保留原始逻辑与硬编码)
 # ==============================================================================
-from rsl_rl.algorithms import Distillation
 
 class SymmetricMoEDistillation(Distillation):
-    """
-    带有序列级左右对称性增强的蒸馏算法。
-    """
-    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         device = self.device
-        
-        # 1. 动作维度的镜像映射 (16维)
-        # 交换左右腿和左右轮
-        self.action_swap_idx = torch.tensor(
-            [3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device
-        )
-        # 仅侧摆关节 (hipx) 在左右镜像时符号相反
-        self.action_neg_mask = torch.tensor(
-            [-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device
-        )
+        self.action_swap_idx = torch.tensor([3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device)
+        self.action_neg_mask = torch.tensor([-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device)
 
     def _mirror_obs(self, obs):
-        """精准镜像 TensorDict 内部的各个观测组，而不破坏 Batch 维度"""
         obs_mirrored = obs.clone()
-        
-        # 1. 镜像 policy 组 (60维，包含真实线速度)
         if "policy" in obs_mirrored.keys():
             p = obs_mirrored["policy"].clone()
             p[..., 1] *= -1.0  # base_lin_vel: y
@@ -1329,12 +1118,10 @@ class SymmetricMoEDistillation(Distillation):
             p[..., 7] *= -1.0  # projected_gravity: y
             p[..., 10] *= -1.0 # velocity_commands: vy
             p[..., 11] *= -1.0 # velocity_commands: wz
-            # 处理关节位置、关节速度、历史动作 (起始索引 12, 28, 44)
             for offset in [12, 28, 44]:
                 p[..., offset:offset+16] = p[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
             obs_mirrored["policy"] = p
 
-        # 2. 镜像 blind_student_policy / student_policy 组 (57维，无真实线速度)
         for group_name in ["blind_student_policy", "student_policy"]:
             if group_name in obs_mirrored.keys():
                 b = obs_mirrored[group_name].clone()
@@ -1343,16 +1130,12 @@ class SymmetricMoEDistillation(Distillation):
                 b[..., 4] *= -1.0  # projected_gravity: y
                 b[..., 7] *= -1.0  # velocity_commands: vy
                 b[..., 8] *= -1.0  # velocity_commands: wz
-                # 处理关节位置、关节速度、历史动作 (起始索引 9, 25, 41)
                 for offset in [9, 25, 41]:
                     b[..., offset:offset+16] = b[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
                 obs_mirrored[group_name] = b
 
-        # === 【修复 3】：蒸馏阶段同样需要镜像 estimator 序列 ===
         if "estimator" in obs_mirrored.keys():
             e = obs_mirrored["estimator"].clone()
-            
-            # 构造单帧 57 维的掩码和索引
             obs_neg_mask = torch.ones(57, dtype=torch.float32, device=self.device)
             obs_neg_mask[0], obs_neg_mask[2], obs_neg_mask[4], obs_neg_mask[7], obs_neg_mask[8] = -1.0, -1.0, -1.0, -1.0, -1.0
             obs_swap_idx = torch.arange(57, dtype=torch.long, device=self.device)
@@ -1365,23 +1148,19 @@ class SymmetricMoEDistillation(Distillation):
             est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=self.device)
             for h_i in range(history_len):
                 est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
-                
             obs_mirrored["estimator"] = e[..., est_swap_idx] * est_neg_mask
-        # =======================================================
+
         if "noisy_elevation" in obs_mirrored.keys():
             env_raw = obs_mirrored["noisy_elevation"].clone()
-            
             if self.policy.use_elevation_ae:
                 elev = env_raw[..., :self.policy.elevation_dim]
                 elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], self.policy.elevation_dim)
                 env_raw[..., :self.policy.elevation_dim] = elev_mirrored
-            
             if getattr(self.policy, "use_multilayer_scan", False):
                 scan_start = self.policy.elevation_dim if self.policy.use_elevation_ae else 0
                 scan = env_raw[..., scan_start : scan_start + self.policy.scan_dim]
                 scan_mirrored = scan.view(*scan.shape[:-1], self.policy.num_scan_channels, self.policy.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], self.policy.scan_dim)
                 env_raw[..., scan_start : scan_start + self.policy.scan_dim] = scan_mirrored
-                
             obs_mirrored["noisy_elevation"] = env_raw
         return obs_mirrored
 
@@ -1390,20 +1169,13 @@ class SymmetricMoEDistillation(Distillation):
         mean_behavior_loss = 0
         loss = 0
         cnt = 0
-
-        # 创建一个全 True 的 done 掩码，用于强制清空 RNN 状态
         force_reset_dones = torch.ones(self.storage.num_envs, dtype=torch.bool, device=self.device)
 
         for epoch in range(self.num_learning_epochs):
-            
-            # ==============================================================
-            # PASS 1: 镜像轨迹 (Sequence-Level Mirrored Pass)
-            # ==============================================================
             self.policy.reset(dones=force_reset_dones)
             self.policy.detach_hidden_states()
             
             for obs, _, privileged_actions, dones in self.storage.generator():
-                # 安全地获取镜像后的 TensorDict
                 obs_mirrored = self._mirror_obs(obs)
                 target_actions_mirrored = privileged_actions[..., self.action_swap_idx] * self.action_neg_mask
                 
@@ -1428,9 +1200,6 @@ class SymmetricMoEDistillation(Distillation):
                 self.policy.reset(dones.view(-1))
                 self.policy.detach_hidden_states(dones.view(-1))
 
-            # ==============================================================
-            # PASS 2: 标准轨迹 (Sequence-Level Standard Pass)
-            # ==============================================================
             self.policy.reset(hidden_states=self.last_hidden_states)
             self.policy.detach_hidden_states()
             
@@ -1458,7 +1227,6 @@ class SymmetricMoEDistillation(Distillation):
 
         mean_behavior_loss /= cnt
         self.storage.clear()
-        
         self.last_hidden_states = self.policy.get_hidden_states()
         self.policy.detach_hidden_states()
 
@@ -1481,19 +1249,17 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
 
-    # === AE / Vision Params ===
     blind_vision: bool = False       
     use_elevation_ae: bool = True   
     elevation_dim: int = 187      
     use_multilayer_scan: bool = False
-    num_scan_channels: int = 12  # 6前 + 6后
-    num_scan_rays: int = 21     # 每个通道的射线数
+    num_scan_channels: int = 12 
+    num_scan_rays: int = 21   
     use_cnn: bool = False           
     num_cameras: int = 2
     camera_height: int = 58
     camera_width: int = 87
 
-    # === Estimator Params ===
     estimator_output_dim: int = 3  
     estimator_hidden_dims: list = field(default_factory=lambda: [128, 64])
     estimator_target_indices: list = field(default_factory=lambda: [0, 1, 2])
@@ -1506,7 +1272,6 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     actor_hidden_dims: list = field(default_factory=lambda: [256, 128, 128])
     critic_hidden_dims: list = field(default_factory=lambda: [512, 256, 128])
 
-    # === 解耦开关 ===
     feed_estimator_to_policy: bool = True 
     feed_ae_to_policy: bool = True
     teacher_is_mlp: bool = False

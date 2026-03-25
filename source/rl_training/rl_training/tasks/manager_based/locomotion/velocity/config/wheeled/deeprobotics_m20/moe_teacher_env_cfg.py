@@ -704,26 +704,26 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
         # ground terrain
-        self.scene.terrain = TerrainImporterCfg(
-            prim_path="/World/obstacles",
-            terrain_type="generator",
-            terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG2,
-            max_init_terrain_level=0,
-            collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=1.0,
-            ),
-            visual_material=sim_utils.MdlFileCfg(
-                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-                project_uvw=True,
-                texture_scale=(0.25, 0.25),
-            ),
-            debug_vis=False,
-        )
+        # self.scene.terrain = TerrainImporterCfg(
+        #     prim_path="/World/obstacles",
+        #     terrain_type="generator",
+        #     terrain_generator=ELEMOE_ROUGH_TERRAINS_CFG2,
+        #     max_init_terrain_level=0,
+        #     collision_group=-1,
+        #     physics_material=sim_utils.RigidBodyMaterialCfg(
+        #         friction_combine_mode="multiply",
+        #         restitution_combine_mode="multiply",
+        #         static_friction=1.0,
+        #         dynamic_friction=1.0,
+        #         restitution=1.0,
+        #     ),
+        #     visual_material=sim_utils.MdlFileCfg(
+        #         mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+        #         project_uvw=True,
+        #         texture_scale=(0.25, 0.25),
+        #     ),
+        #     debug_vis=False,
+        # )
         self.scene.terrain2 = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
@@ -895,10 +895,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
-        # 保持线速度循序渐进，因为往前跑很容易学会
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.2, 1.0)
-
-        # 逼迫它尽早面对较强的转向指令
         self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.6, 1.0) 
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
@@ -910,11 +907,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)
         # override rewards
         # change terrain to flat
-        # self.scene.terrain.terrain_type = "plane"
-        # self.scene.terrain.terrain_generator = None
-        # self.scene.terrain2 = None
-        # # no terrain curriculum
-        # self.curriculum.terrain_levels = None
-        # self.rewards.lin_vel_z_l2.func = mdp.lin_vel_z_l2
-        # self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
-        # self.rewards.base_height_l2.func = mdp.base_height_l2
+        self.scene.terrain.terrain_type = "plane"
+        self.scene.terrain.terrain_generator = None
+        self.scene.terrain2 = None
+        # no terrain curriculum
+        self.curriculum.terrain_levels = None
+        self.rewards.lin_vel_z_l2.func = mdp.lin_vel_z_l2
+        self.rewards.feet_air_time.func = mdp.feet_air_time_including_ang_z
+        self.rewards.base_height_l2.func = mdp.base_height_l2
