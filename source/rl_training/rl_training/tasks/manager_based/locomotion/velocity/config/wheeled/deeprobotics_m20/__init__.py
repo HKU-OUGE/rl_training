@@ -44,26 +44,26 @@ gym.register(
     },
 )
 
-gym.register(
-    id="Rough-MoE-Server-Deeprobotics-M20-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitMoEServerPPOCfg",
-    },
-)
 
 gym.register(
     id="Rough-EleMoE-Teacher-Deeprobotics-M20-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg_EleOnly",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:EleMoEPPOCfg",
     },
 )
 
+gym.register(
+    id="Rough-ScanMoE-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg_ScanOnly",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:ScanMoEPPOCfg",
+    },
+)
 
 gym.register(
     id="Rough-MoE-Student-Deeprobotics-M20-v0",
@@ -85,26 +85,6 @@ gym.register(
     },
 )
 
-gym.register(
-    id="Rough-MoE-Spilt-Teacher-Deeprobotics-M20-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_split_cross:CrossMoEPPOCfg",
-    },
-)
-
-
-gym.register(
-    id="Rough-MoE-CMP-Teacher-Deeprobotics-M20-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DeeproboticsM20CMPPPORunnerCfg",
-    },
-)
 
 gym.register(
     id="Rough-MoE-Blind-Deeprobotics-M20-v0",
@@ -116,16 +96,6 @@ gym.register(
     },
 )
 
-gym.register(
-    id="Rough-MoE-Deeprobotics-M20-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.rough_env_cfg:DeeproboticsM20RoughEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitCMPMoEPPOCfg",
-        "cusrl_cfg_entry_point": f"{agents.__name__}.cusrl_ppo_cfg:DeeproboticsM20RoughTrainerCfg",
-    },
-)
 
 gym.register(
     id="Flat-MLP2MoE-Student-Deeprobotics-M20-v0",

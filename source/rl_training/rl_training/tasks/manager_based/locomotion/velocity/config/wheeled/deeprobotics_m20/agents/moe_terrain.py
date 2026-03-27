@@ -1965,12 +1965,12 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     )
 
 @configclass
-class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
+class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
     max_iterations = 6000
-    save_interval = 1000
-    experiment_name = "split_moe_teacher_parallel" 
+    save_interval = 100
+    experiment_name = "scan_moe_teacher_parallel" 
     empirical_normalization = False
     
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
@@ -1990,7 +1990,7 @@ class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
         aux_loss_coef=0.01,
         
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=True, 
+        use_elevation_ae=False, 
         elevation_dim=187,
         use_cnn=False, 
         
@@ -2008,7 +2008,7 @@ class SplitMoEServerPPOCfg(RslRlOnPolicyRunnerCfg):
         critic_obs_normalization=True,
 
         # 接收 AE/VAE
-        feed_estimator_to_policy=True, 
+        feed_estimator_to_policy=False, 
         feed_ae_to_policy=True,
     )
 

@@ -543,3 +543,127 @@ ELEMOE_ROUGH_TERRAINS_CFG2 = TerrainGeneratorCfg(
         ),
     },
 )
+
+
+SCAN_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_rows=30,
+    num_cols=18,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    use_cache=False,
+    curriculum=True,
+    sub_terrains={
+        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=2.0/18,  # 2/18 的概率生成此地形
+            step_height_range=(0.05, 0.23),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=3.0/18,
+            step_height_range=(0.05, 0.23),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
+            proportion=3.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.35),platform_width=2.0
+        ),
+        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
+            proportion=3.0/18, # 保持比例不变
+            # 生成一个纯平的平台，稍后我们在这个平台上用代码放圆环
+        ),
+        "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=3.0/18,      
+            pit_depth_range=(0.05, 0.8), 
+            double_pit=True,
+            platform_width=2.0,
+        ),
+        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
+            proportion=1.0/18, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
+        ),
+        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=1.0/18, noise_range=(0.02, 0.16), noise_step=0.02, border_width=0.25
+        ),
+        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
+        ),
+        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+            proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
+        ),
+    },
+)
+SCAN_ROUGH_TERRAINS_CFG2 = TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_rows=30,
+    num_cols=18,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    use_cache=False,
+    curriculum=True,
+    sub_terrains={
+        "pyramid_stairs": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=2.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "pyramid_stairs_inv": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=3.0/18,      
+            pit_depth_range=(3.0, 3.0),  
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=3.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
+            proportion=3.0/18,                         
+            ring_width_range=(0.1, 0.5),             
+            ring_height_range=(0.4, 0.75),           
+            ring_thickness=0.25,                 
+            platform_width=2.0, 
+        ),
+        "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=3.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "boxes": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=1.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "random_rough": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=1.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "hf_pyramid_slope": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=1.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "hf_pyramid_slope_inv": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=1.0/18,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+    },
+)
