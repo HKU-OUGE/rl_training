@@ -1154,7 +1154,7 @@ class SplitMoEPPO(PPO):
             # =================================================================
             # DEBUG 1: 检查隐藏状态切片是否有效 (只在 epoch 刚开始时打印)
             # =================================================================
-            if batch_cnt == 0:
+            if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
                 print("\n" + "▼"*50)
                 print("[DEBUG 1] 正在检查镜像隐藏状态 (Layer 1)")
                 if isinstance(actor_hid_batch, tuple):
@@ -1175,7 +1175,7 @@ class SplitMoEPPO(PPO):
             # =================================================================
             # DEBUG 2: 检查 _mirror_obs 的硬编码维度映射 (已修复 TensorDict)
             # =================================================================
-            if batch_cnt == 0:
+            if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
                 print("\n" + "▼"*50)
                 print("[DEBUG 2] 正在检查观测张量的镜像映射")
                 
@@ -1241,7 +1241,7 @@ class SplitMoEPPO(PPO):
             # =================================================================
             # DEBUG 3: 检查专家网络的梯度健康度 (确保没有死神经元)
             # =================================================================
-            if batch_cnt == 0:
+            if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
                 print("\n" + "▼"*50)
                 print("[DEBUG 3] MoE 专家网络梯度流动检查")
                 
