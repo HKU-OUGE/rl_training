@@ -272,7 +272,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
     joint_mirror_lr = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.0,
+        weight=-0.03,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -283,7 +283,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
     action_mirror_lr = RewTerm(
         func=mdp.action_mirror,
-        weight=-0.0,
+        weight=-0.03,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -868,16 +868,16 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -3.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.4
+        self.rewards.hipx_joint_pos_penalty.weight = -0.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.1
+        self.rewards.hipy_joint_pos_penalty.weight = -0.25
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.1
+        self.rewards.knee_joint_pos_penalty.weight = -0.15
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.0
+        self.rewards.joint_mirror.weight = -0.03
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
