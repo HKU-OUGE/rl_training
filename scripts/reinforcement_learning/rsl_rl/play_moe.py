@@ -350,6 +350,112 @@ def export_model_files(policy, log_dir, device):
     except Exception as e:
         print(f"  [Error] Unified Policy Export Failed: {e}")
 
+def export_sim2real_layout(env_cfg, policy, log_dir):
+    """
+    解析 env_cfg，提取所有的观测顺序、Scale、Action 缩放等，并生成部署文件
+    """
+    exported_dir = os.path.join(log_dir, "exported")
+    os.makedirs(exported_dir, exist_ok=True)
+    
+    txt_path = os.path.join(exported_dir, "sim2real_layout.txt")
+    json_path = os.path.join(exported_dir, "sim2real_layout.json")
+    
+    layout_dict = {
+        "observations": {},
+        "actions": {},
+        "policy_info": {}
+    }
+
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write("="*65 + "\n")
+        f.write("             SIM2REAL I/O LAYOUT REPORT             \n")
+        f.write("="*65 + "\n\n")
+
+        # ================= 1. 解析观测 (Observations) =================
+        f.write("1. OBSERVATIONS (拼接顺序自上而下)\n")
+        f.write("-" * 40 + "\n")
+        for group_name, group_cfg in env_cfg.observations.__dict__.items():
+            if group_name.startswith("__") or group_cfg is None:
+                continue
+            
+            f.write(f"\n[ Group: {group_name} ]\n")
+            history_len = getattr(group_cfg, "history_length", 0)
+            flatten = getattr(group_cfg, "flatten_history_dim", False)
+            f.write(f"  - History Length : {history_len}\n")
+            f.write(f"  - Flatten History: {flatten}\n")
+            f.write(f"  - Terms Order:\n")
+            
+            layout_dict["observations"][group_name] = {
+                "history_length": history_len,
+                "flatten": flatten,
+                "terms": []
+            }
+
+            # 提取每个 Term
+            for term_name, term_cfg in group_cfg.__dict__.items():
+                if term_name.startswith("__") or term_cfg is None:
+                    continue
+                # 判断是否是 ObservationTerm (只要包含 func 属性基本就是)
+                if hasattr(term_cfg, "func"):
+                    scale = getattr(term_cfg, "scale", 1.0)
+                    clip = getattr(term_cfg, "clip", None)
+                    # 【修复】：加了 str() 防止 None 触发排版异常
+                    f.write(f"      -> {term_name:<22} | scale: {str(scale):<6} | clip: {str(clip)}\n")
+                    
+                    layout_dict["observations"][group_name]["terms"].append({
+                        "name": term_name,
+                        "scale": scale,
+                        "clip": clip
+                    })
+
+        # ================= 2. 解析动作 (Actions) =================
+        f.write("\n\n2. ACTIONS (部署端应除以 Scale 并减去 Offset)\n")
+        f.write("-" * 40 + "\n")
+        for action_name, action_cfg in env_cfg.actions.__dict__.items():
+            if action_name.startswith("__") or action_cfg is None:
+                continue
+            if hasattr(action_cfg, "class_type"):
+                scale = getattr(action_cfg, "scale", 1.0)
+                offset = getattr(action_cfg, "offset", 0.0)
+                f.write(f"\n[ Action Group: {action_name} ]\n")
+                
+                layout_dict["actions"][action_name] = {
+                    "offset": offset,
+                    "scales": {}
+                }
+                
+                if isinstance(scale, dict):
+                    for k, v in scale.items():
+                        f.write(f"  - Regex '{k}': scale = {v}\n")
+                        layout_dict["actions"][action_name]["scales"][k] = v
+                else:
+                    f.write(f"  - All joints scale = {scale}\n")
+                    layout_dict["actions"][action_name]["scales"]["all"] = scale
+                    
+                f.write(f"  - Offset = {offset}\n")
+
+        # ================= 3. 解析网络维度 (Policy Info) =================
+        f.write("\n\n3. POLICY NETWORK INFO\n")
+        f.write("-" * 40 + "\n")
+        proprio_dim = getattr(policy, 'proprio_dim', 'Unknown')
+        estimator_dim = getattr(policy, 'estimator_dim', 'Unknown')
+        rnn_type = getattr(policy, 'rnn_type', 'Unknown')
+        
+        f.write(f"  - Proprio Dim   : {proprio_dim}\n")
+        f.write(f"  - Estimator Dim : {estimator_dim}\n")
+        f.write(f"  - RNN Type      : {rnn_type}\n")
+        
+        layout_dict["policy_info"] = {
+            "proprio_dim": proprio_dim,
+            "estimator_dim": estimator_dim,
+            "rnn_type": rnn_type
+        }
+
+    # 保存供 C++ 自动读取的 JSON
+    with open(json_path, "w", encoding="utf-8") as jf:
+        json.dump(layout_dict, jf, indent=4)
+        
+    print(f"  - [Success] Sim2Real Layout Report saved to: {txt_path}")
 # ==============================================================================
 #  Main
 # ==============================================================================
@@ -501,7 +607,7 @@ def main():
     if args.export:
         save_configs(log_dir, env_cfg, train_cfg_dict)
         export_model_files(model_instance, log_dir, device=device)
-
+        export_sim2real_layout(env_cfg, model_instance, log_dir)
     # 6. Hooks
     monitor_data = {}
     def hook_fn(name):

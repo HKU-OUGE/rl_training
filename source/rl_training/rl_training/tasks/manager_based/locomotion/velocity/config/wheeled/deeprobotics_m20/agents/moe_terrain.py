@@ -1072,7 +1072,8 @@ class SplitMoEPPO(PPO):
             # -----------------------------------------------------------------
             lb_loss = aux_outputs.get("lb_loss")
             if lb_loss is not None:
-                loss = loss + lb_loss 
+                # 暂时不参与反向传播和权重更新，但是打印出来进行参考
+                # loss = loss + lb_loss 
                 avg_lb_loss += lb_loss.item()
 
             # -----------------------------------------------------------------
