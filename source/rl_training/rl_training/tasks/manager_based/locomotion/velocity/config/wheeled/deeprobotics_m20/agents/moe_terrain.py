@@ -1151,72 +1151,72 @@ class SplitMoEPPO(PPO):
                 mirrored_h_batch = (actor_hid_batch[0][1:2], actor_hid_batch[1][1:2])
             else:
                 mirrored_h_batch = actor_hid_batch[1:2]
-            # =================================================================
-            # DEBUG 1: 检查隐藏状态切片是否有效 (只在 epoch 刚开始时打印)
-            # =================================================================
-            if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
-                print("\n" + "▼"*50)
-                print("[DEBUG 1] 正在检查镜像隐藏状态 (Layer 1)")
-                if isinstance(actor_hid_batch, tuple):
-                    print(f"-> 原始 hid_states_batch h shape: {actor_hid_batch[0].shape}")
-                    max_abs_h = mirrored_h_batch[0].abs().max().item()
-                    max_abs_c = mirrored_h_batch[1].abs().max().item()
-                    print(f"-> 切片后 mirrored_h_batch h 最大绝对值: {max_abs_h:.6f}")
-                    print(f"-> 切片后 mirrored_h_batch c 最大绝对值: {max_abs_c:.6f}")
-                    if max_abs_h == 0.0:
-                        print("!! 警告: 提取的隐藏状态 h 全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
-                else:
-                    print(f"-> 原始 hid_states_batch shape: {actor_hid_batch.shape}")
-                    max_abs = mirrored_h_batch.abs().max().item()
-                    print(f"-> 切片后 mirrored_h_batch 最大绝对值: {max_abs:.6f}")
-                    if max_abs == 0.0:
-                        print("!! 警告: 提取的隐藏状态全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
-                print("▲"*50 + "\n")
-            # =================================================================
-            # DEBUG 2: 检查 _mirror_obs 的硬编码维度映射 (已修复 TensorDict)
-            # =================================================================
-            if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
-                print("\n" + "▼"*50)
-                print("[DEBUG 2] 正在检查观测张量的镜像映射")
+            # # =================================================================
+            # # DEBUG 1: 检查隐藏状态切片是否有效 (只在 epoch 刚开始时打印)
+            # # =================================================================
+            # if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
+            #     print("\n" + "▼"*50)
+            #     print("[DEBUG 1] 正在检查镜像隐藏状态 (Layer 1)")
+            #     if isinstance(actor_hid_batch, tuple):
+            #         print(f"-> 原始 hid_states_batch h shape: {actor_hid_batch[0].shape}")
+            #         max_abs_h = mirrored_h_batch[0].abs().max().item()
+            #         max_abs_c = mirrored_h_batch[1].abs().max().item()
+            #         print(f"-> 切片后 mirrored_h_batch h 最大绝对值: {max_abs_h:.6f}")
+            #         print(f"-> 切片后 mirrored_h_batch c 最大绝对值: {max_abs_c:.6f}")
+            #         if max_abs_h == 0.0:
+            #             print("!! 警告: 提取的隐藏状态 h 全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
+            #     else:
+            #         print(f"-> 原始 hid_states_batch shape: {actor_hid_batch.shape}")
+            #         max_abs = mirrored_h_batch.abs().max().item()
+            #         print(f"-> 切片后 mirrored_h_batch 最大绝对值: {max_abs:.6f}")
+            #         if max_abs == 0.0:
+            #             print("!! 警告: 提取的隐藏状态全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
+            #     print("▲"*50 + "\n")
+            # # =================================================================
+            # # DEBUG 2: 检查 _mirror_obs 的硬编码维度映射 (已修复 TensorDict)
+            # # =================================================================
+            # if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
+            #     print("\n" + "▼"*50)
+            #     print("[DEBUG 2] 正在检查观测张量的镜像映射")
                 
-                # 安全解包 TensorDict，获取纯粹的张量
-                if hasattr(obs_batch, "keys"):
-                    # 兼容 PPO generator 返回的可能形状: [seq_len, batch_size, dim] 或 [batch_size, dim]
-                    p_orig = obs_batch["policy"][0, 0] if obs_batch["policy"].ndim == 3 else obs_batch["policy"][0]
-                    p_mirr = obs_mirrored_batch["policy"][0, 0] if obs_mirrored_batch["policy"].ndim == 3 else obs_mirrored_batch["policy"][0]
-                else:
-                    p_orig = obs_batch[0, 0] if obs_batch.ndim == 3 else obs_batch[0]
-                    p_mirr = obs_mirrored_batch[0, 0] if obs_mirrored_batch.ndim == 3 else obs_mirrored_batch[0]
+            #     # 安全解包 TensorDict，获取纯粹的张量
+            #     if hasattr(obs_batch, "keys"):
+            #         # 兼容 PPO generator 返回的可能形状: [seq_len, batch_size, dim] 或 [batch_size, dim]
+            #         p_orig = obs_batch["policy"][0, 0] if obs_batch["policy"].ndim == 3 else obs_batch["policy"][0]
+            #         p_mirr = obs_mirrored_batch["policy"][0, 0] if obs_mirrored_batch["policy"].ndim == 3 else obs_mirrored_batch["policy"][0]
+            #     else:
+            #         p_orig = obs_batch[0, 0] if obs_batch.ndim == 3 else obs_batch[0]
+            #         p_mirr = obs_mirrored_batch[0, 0] if obs_mirrored_batch.ndim == 3 else obs_mirrored_batch[0]
                 
-                print(f"-> Policy 观测总维度: {p_orig.shape[-1]}")
+            #     print(f"-> Policy 观测总维度: {p_orig.shape[-1]}")
                 
-                # 推断 offset 
-                has_lin_vel = p_orig.shape[-1] > 57
-                print(f"-> 代码推断包含线速度 (has_lin_vel): {has_lin_vel}")
+            #     # 推断 offset 
+            #     has_lin_vel = p_orig.shape[-1] > 57
+            #     print(f"-> 代码推断包含线速度 (has_lin_vel): {has_lin_vel}")
                 
-                if has_lin_vel:
-                    print(f"  [测试线速度 Y] 原值: {p_orig[1].item():.4f} -> 镜像值: {p_mirr[1].item():.4f} (应互为相反数)")
-                    print(f"  [测试角速度 X] 原值: {p_orig[3].item():.4f} -> 镜像值: {p_mirr[3].item():.4f} (应互为相反数)")
-                    offset = 12
-                else:
-                    print(f"  [测试角速度 X] 原值: {p_orig[0].item():.4f} -> 镜像值: {p_mirr[0].item():.4f} (应互为相反数)")
-                    offset = 9
+            #     if has_lin_vel:
+            #         print(f"  [测试线速度 Y] 原值: {p_orig[1].item():.4f} -> 镜像值: {p_mirr[1].item():.4f} (应互为相反数)")
+            #         print(f"  [测试角速度 X] 原值: {p_orig[3].item():.4f} -> 镜像值: {p_mirr[3].item():.4f} (应互为相反数)")
+            #         offset = 12
+            #     else:
+            #         print(f"  [测试角速度 X] 原值: {p_orig[0].item():.4f} -> 镜像值: {p_mirr[0].item():.4f} (应互为相反数)")
+            #         offset = 9
                 
-                if p_orig.shape[-1] > offset + 3:
-                    orig_lf_hip = p_orig[offset + 0].item()
-                    orig_rf_hip = p_orig[offset + 3].item()
-                    mirr_lf_hip = p_mirr[offset + 0].item()
-                    print(f"  [测试关节位移] 原 LF_hip (idx {offset}): {orig_lf_hip:.4f}")
-                    print(f"  [测试关节位移] 原 RF_hip (idx {offset+3}): {orig_rf_hip:.4f}")
-                    print(f"  [测试关节位移] 镜像后的 LF_hip 应该是原 RF_hip 的相反数 (-{orig_rf_hip:.4f})")
-                    print(f"  [测试关节位移] 实际镜像后 LF_hip 值为: {mirr_lf_hip:.4f}")
+            #     if p_orig.shape[-1] > offset + 3:
+            #         orig_lf_hip = p_orig[offset + 0].item()
+            #         orig_rf_hip = p_orig[offset + 3].item()
+            #         mirr_lf_hip = p_mirr[offset + 0].item()
+            #         print(f"  [测试关节位移] 原 LF_hip (idx {offset}): {orig_lf_hip:.4f}")
+            #         print(f"  [测试关节位移] 原 RF_hip (idx {offset+3}): {orig_rf_hip:.4f}")
+            #         print(f"  [测试关节位移] 镜像后的 LF_hip 应该是原 RF_hip 的相反数 (-{orig_rf_hip:.4f})")
+            #         print(f"  [测试关节位移] 实际镜像后 LF_hip 值为: {mirr_lf_hip:.4f}")
                     
-                    if abs(mirr_lf_hip - (-orig_rf_hip)) > 1e-4:
-                        print("!! 警告: 镜像映射数值对不上，硬编码 offset 或 action_swap_idx 写错了 !!")
-                    else:
-                        print(">> 测试通过: 镜像映射的 offset 和索引完全正确！")
-                print("▲"*50 + "\n")
-            # =================================================================
+            #         if abs(mirr_lf_hip - (-orig_rf_hip)) > 1e-4:
+            #             print("!! 警告: 镜像映射数值对不上，硬编码 offset 或 action_swap_idx 写错了 !!")
+            #         else:
+            #             print(">> 测试通过: 镜像映射的 offset 和索引完全正确！")
+            #     print("▲"*50 + "\n")
+            # # =================================================================
             pred_actions = model.act_inference(
                 obs_mirrored_batch, 
                 masks=masks_batch, 
@@ -1238,32 +1238,32 @@ class SplitMoEPPO(PPO):
                 nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
             
             self.optimizer.step()
-            # =================================================================
-            # DEBUG 3: 检查专家网络的梯度健康度 (确保没有死神经元)
-            # =================================================================
-            if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
-                print("\n" + "▼"*50)
-                print("[DEBUG 3] MoE 专家网络梯度流动检查")
+            # # =================================================================
+            # # DEBUG 3: 检查专家网络的梯度健康度 (确保没有死神经元)
+            # # =================================================================
+            # if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
+            #     print("\n" + "▼"*50)
+            #     print("[DEBUG 3] MoE 专家网络梯度流动检查")
                 
-                leg_grads = []
-                for i, expert in enumerate(model.actor_leg_experts):
-                    grad_norm = sum(p.grad.norm().item() for p in expert.parameters() if p.grad is not None)
-                    leg_grads.append(grad_norm)
+            #     leg_grads = []
+            #     for i, expert in enumerate(model.actor_leg_experts):
+            #         grad_norm = sum(p.grad.norm().item() for p in expert.parameters() if p.grad is not None)
+            #         leg_grads.append(grad_norm)
                     
-                wheel_grads = []
-                for i, expert in enumerate(model.actor_wheel_experts):
-                    grad_norm = sum(p.grad.norm().item() for p in expert.parameters() if p.grad is not None)
-                    wheel_grads.append(grad_norm)
+            #     wheel_grads = []
+            #     for i, expert in enumerate(model.actor_wheel_experts):
+            #         grad_norm = sum(p.grad.norm().item() for p in expert.parameters() if p.grad is not None)
+            #         wheel_grads.append(grad_norm)
                 
-                print(f"-> 腿部专家 (Leg) 各自梯度范数: {[round(g, 4) for g in leg_grads]}")
-                print(f"-> 轮部专家 (Wheel) 各自梯度范数: {[round(g, 4) for g in wheel_grads]}")
+            #     print(f"-> 腿部专家 (Leg) 各自梯度范数: {[round(g, 4) for g in leg_grads]}")
+            #     print(f"-> 轮部专家 (Wheel) 各自梯度范数: {[round(g, 4) for g in wheel_grads]}")
                 
-                if any(g == 0.0 for g in leg_grads + wheel_grads):
-                    print("!! 警告: 发现梯度为 0 的死专家 (Dead Expert) !!")
-                else:
-                    print(">> 测试通过: 所有专家都在积极学习！")
-                print("▲"*50 + "\n")
-            # =================================================================
+            #     if any(g == 0.0 for g in leg_grads + wheel_grads):
+            #         print("!! 警告: 发现梯度为 0 的死专家 (Dead Expert) !!")
+            #     else:
+            #         print(">> 测试通过: 所有专家都在积极学习！")
+            #     print("▲"*50 + "\n")
+            # # =================================================================
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
