@@ -1151,7 +1151,72 @@ class SplitMoEPPO(PPO):
                 mirrored_h_batch = (actor_hid_batch[0][1:2], actor_hid_batch[1][1:2])
             else:
                 mirrored_h_batch = actor_hid_batch[1:2]
-
+            # =================================================================
+            # DEBUG 1: 检查隐藏状态切片是否有效 (只在 epoch 刚开始时打印)
+            # =================================================================
+            if batch_cnt == 0:
+                print("\n" + "▼"*50)
+                print("[DEBUG 1] 正在检查镜像隐藏状态 (Layer 1)")
+                if isinstance(actor_hid_batch, tuple):
+                    print(f"-> 原始 hid_states_batch h shape: {actor_hid_batch[0].shape}")
+                    max_abs_h = mirrored_h_batch[0].abs().max().item()
+                    max_abs_c = mirrored_h_batch[1].abs().max().item()
+                    print(f"-> 切片后 mirrored_h_batch h 最大绝对值: {max_abs_h:.6f}")
+                    print(f"-> 切片后 mirrored_h_batch c 最大绝对值: {max_abs_c:.6f}")
+                    if max_abs_h == 0.0:
+                        print("!! 警告: 提取的隐藏状态 h 全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
+                else:
+                    print(f"-> 原始 hid_states_batch shape: {actor_hid_batch.shape}")
+                    max_abs = mirrored_h_batch.abs().max().item()
+                    print(f"-> 切片后 mirrored_h_batch 最大绝对值: {max_abs:.6f}")
+                    if max_abs == 0.0:
+                        print("!! 警告: 提取的隐藏状态全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
+                print("▲"*50 + "\n")
+            # =================================================================
+            # DEBUG 2: 检查 _mirror_obs 的硬编码维度映射 (已修复 TensorDict)
+            # =================================================================
+            if batch_cnt == 0:
+                print("\n" + "▼"*50)
+                print("[DEBUG 2] 正在检查观测张量的镜像映射")
+                
+                # 安全解包 TensorDict，获取纯粹的张量
+                if hasattr(obs_batch, "keys"):
+                    # 兼容 PPO generator 返回的可能形状: [seq_len, batch_size, dim] 或 [batch_size, dim]
+                    p_orig = obs_batch["policy"][0, 0] if obs_batch["policy"].ndim == 3 else obs_batch["policy"][0]
+                    p_mirr = obs_mirrored_batch["policy"][0, 0] if obs_mirrored_batch["policy"].ndim == 3 else obs_mirrored_batch["policy"][0]
+                else:
+                    p_orig = obs_batch[0, 0] if obs_batch.ndim == 3 else obs_batch[0]
+                    p_mirr = obs_mirrored_batch[0, 0] if obs_mirrored_batch.ndim == 3 else obs_mirrored_batch[0]
+                
+                print(f"-> Policy 观测总维度: {p_orig.shape[-1]}")
+                
+                # 推断 offset 
+                has_lin_vel = p_orig.shape[-1] > 57
+                print(f"-> 代码推断包含线速度 (has_lin_vel): {has_lin_vel}")
+                
+                if has_lin_vel:
+                    print(f"  [测试线速度 Y] 原值: {p_orig[1].item():.4f} -> 镜像值: {p_mirr[1].item():.4f} (应互为相反数)")
+                    print(f"  [测试角速度 X] 原值: {p_orig[3].item():.4f} -> 镜像值: {p_mirr[3].item():.4f} (应互为相反数)")
+                    offset = 12
+                else:
+                    print(f"  [测试角速度 X] 原值: {p_orig[0].item():.4f} -> 镜像值: {p_mirr[0].item():.4f} (应互为相反数)")
+                    offset = 9
+                
+                if p_orig.shape[-1] > offset + 3:
+                    orig_lf_hip = p_orig[offset + 0].item()
+                    orig_rf_hip = p_orig[offset + 3].item()
+                    mirr_lf_hip = p_mirr[offset + 0].item()
+                    print(f"  [测试关节位移] 原 LF_hip (idx {offset}): {orig_lf_hip:.4f}")
+                    print(f"  [测试关节位移] 原 RF_hip (idx {offset+3}): {orig_rf_hip:.4f}")
+                    print(f"  [测试关节位移] 镜像后的 LF_hip 应该是原 RF_hip 的相反数 (-{orig_rf_hip:.4f})")
+                    print(f"  [测试关节位移] 实际镜像后 LF_hip 值为: {mirr_lf_hip:.4f}")
+                    
+                    if abs(mirr_lf_hip - (-orig_rf_hip)) > 1e-4:
+                        print("!! 警告: 镜像映射数值对不上，硬编码 offset 或 action_swap_idx 写错了 !!")
+                    else:
+                        print(">> 测试通过: 镜像映射的 offset 和索引完全正确！")
+                print("▲"*50 + "\n")
+            # =================================================================
             pred_actions = model.act_inference(
                 obs_mirrored_batch, 
                 masks=masks_batch, 
@@ -1173,7 +1238,32 @@ class SplitMoEPPO(PPO):
                 nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
             
             self.optimizer.step()
-            
+            # =================================================================
+            # DEBUG 3: 检查专家网络的梯度健康度 (确保没有死神经元)
+            # =================================================================
+            if batch_cnt == 0:
+                print("\n" + "▼"*50)
+                print("[DEBUG 3] MoE 专家网络梯度流动检查")
+                
+                leg_grads = []
+                for i, expert in enumerate(model.actor_leg_experts):
+                    grad_norm = sum(p.grad.norm().item() for p in expert.parameters() if p.grad is not None)
+                    leg_grads.append(grad_norm)
+                    
+                wheel_grads = []
+                for i, expert in enumerate(model.actor_wheel_experts):
+                    grad_norm = sum(p.grad.norm().item() for p in expert.parameters() if p.grad is not None)
+                    wheel_grads.append(grad_norm)
+                
+                print(f"-> 腿部专家 (Leg) 各自梯度范数: {[round(g, 4) for g in leg_grads]}")
+                print(f"-> 轮部专家 (Wheel) 各自梯度范数: {[round(g, 4) for g in wheel_grads]}")
+                
+                if any(g == 0.0 for g in leg_grads + wheel_grads):
+                    print("!! 警告: 发现梯度为 0 的死专家 (Dead Expert) !!")
+                else:
+                    print(">> 测试通过: 所有专家都在积极学习！")
+                print("▲"*50 + "\n")
+            # =================================================================
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
@@ -1235,77 +1325,60 @@ class SplitMoEPPO(PPO):
                     loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
 
         return loss_dict
+    
     def _mirror_obs(self, obs):
+        device = self.device
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
-        device = obs["policy"].device if isinstance(obs, dict) else obs.device
         
-        # 定义动作映射 (依赖于模型配置或硬编码)
         action_swap_idx = torch.tensor([3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device)
         action_neg_mask = torch.tensor([-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device)
+        
+        obs_swap_idx = torch.arange(57, dtype=torch.long, device=device)
+        obs_neg_mask = torch.ones(57, dtype=torch.float32, device=device)
+        obs_neg_mask[0], obs_neg_mask[2], obs_neg_mask[4], obs_neg_mask[7], obs_neg_mask[8] = -1.0, -1.0, -1.0, -1.0, -1.0
+        for offset in [9, 25, 41]: 
+            obs_swap_idx[offset:offset+16] = action_swap_idx + offset
+            obs_neg_mask[offset:offset+16] = action_neg_mask
 
-        obs_mirrored = obs.clone() if hasattr(obs, "clone") else obs
-        if isinstance(obs, dict):
-            obs_mirrored = {k: v.clone() for k, v in obs.items()}
-            
-        # PPO 阶段 policy 字典中直接取
-        if isinstance(obs_mirrored, dict) and "policy" in obs_mirrored.keys():
-            p = obs_mirrored["policy"].clone()
-            # 注意：PPO 的 teacher/policy 维度可能是 60 维 (带基座线速度)
-            # 需要根据你的观测空间对齐，这里参考原逻辑适配 60 或 57
-            has_lin_vel = p.shape[-1] > 57  # 简单推断
-            
-            if has_lin_vel:
-                p[..., 1] *= -1.0  # lin_vel y
-                p[..., 3] *= -1.0  # ang_vel roll
-                p[..., 5] *= -1.0  # ang_vel yaw
-                p[..., 7] *= -1.0  # gravity y
-                p[..., 10] *= -1.0 # cmd vy
-                p[..., 11] *= -1.0 # cmd wz
-                for offset in [12, 28, 44]:
-                    p[..., offset:offset+16] = p[..., offset:offset+16][..., action_swap_idx] * action_neg_mask
-            else:
-                p[..., 0] *= -1.0  # ang_vel roll
-                p[..., 2] *= -1.0  # ang_vel yaw
-                p[..., 4] *= -1.0  # gravity y
-                p[..., 7] *= -1.0  # cmd vy
-                p[..., 8] *= -1.0  # cmd wz
-                for offset in [9, 25, 41]:
-                    p[..., offset:offset+16] = p[..., offset:offset+16][..., action_swap_idx] * action_neg_mask
-            obs_mirrored["policy"] = p
-
-        # 同样需要镜像 Estimator (同你写过的逻辑)
-        if isinstance(obs_mirrored, dict) and "estimator" in obs_mirrored.keys():
-            e = obs_mirrored["estimator"].clone()
-            obs_neg_mask = torch.ones(57, dtype=torch.float32, device=device)
-            obs_neg_mask[0], obs_neg_mask[2], obs_neg_mask[4], obs_neg_mask[7], obs_neg_mask[8] = -1.0, -1.0, -1.0, -1.0, -1.0
-            obs_swap_idx = torch.arange(57, dtype=torch.long, device=device)
-            for offset in [9, 25, 41]:
-                obs_swap_idx[offset:offset+16] = action_swap_idx + offset
-                obs_neg_mask[offset:offset+16] = action_neg_mask
+        # 使用深拷贝或新建字典，对 Tensor 显式 .clone()
+        if isinstance(obs, dict) or hasattr(obs, "keys"):
+            obs_mirrored = {}
+            for k, v in obs.items():
+                obs_mirrored[k] = v.clone()
+        else:
+            obs_mirrored = obs.clone()
+        
+        if isinstance(obs_mirrored, dict):
+            if "policy" in obs_mirrored:
+                # 关键修复：不在原地修改，而是新建张量并赋值
+                p = obs_mirrored["policy"]
+                obs_mirrored["policy"] = (p[..., obs_swap_idx] * obs_neg_mask).clone()
                 
-            history_len = e.shape[-1] // 57
-            est_neg_mask = obs_neg_mask.repeat(history_len)
-            est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=device)
-            for h_i in range(history_len):
-                est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
-            obs_mirrored["estimator"] = e[..., est_swap_idx] * est_neg_mask
+            if "estimator" in obs_mirrored:
+                e = obs_mirrored["estimator"]
+                history_len = e.shape[-1] // 57
+                est_neg_mask = obs_neg_mask.repeat(history_len)
+                est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=device)
+                for h_i in range(history_len):
+                    est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
+                obs_mirrored["estimator"] = (e[..., est_swap_idx] * est_neg_mask).clone()
+                
+            if "noisy_elevation" in obs_mirrored:
+                env_raw = obs_mirrored["noisy_elevation"].clone() # 不污染原图
+                if getattr(model, "use_elevation_ae", False):
+                    elev = env_raw[..., :model.elevation_dim]
+                    elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], model.elevation_dim)
+                    env_raw[..., :model.elevation_dim] = elev_mirrored
+                if getattr(model, "use_multilayer_scan", False):
+                    scan_start = model.elevation_dim if getattr(model, "use_elevation_ae", False) else 0
+                    scan = env_raw[..., scan_start : scan_start + model.scan_dim]
+                    scan_mirrored = scan.view(*scan.shape[:-1], model.num_scan_channels, model.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], model.scan_dim)
+                    env_raw[..., scan_start : scan_start + model.scan_dim] = scan_mirrored
+                obs_mirrored["noisy_elevation"] = env_raw
+        else:
+            obs_mirrored = (obs_mirrored[..., obs_swap_idx] * obs_neg_mask).clone()
             
-        # 同样需要镜像 elevation 和 scan
-        if isinstance(obs_mirrored, dict) and "noisy_elevation" in obs_mirrored.keys():
-            env_raw = obs_mirrored["noisy_elevation"].clone()
-            if getattr(model, "use_elevation_ae", False):
-                elev = env_raw[..., :model.elevation_dim]
-                elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], model.elevation_dim)
-                env_raw[..., :model.elevation_dim] = elev_mirrored
-            if getattr(model, "use_multilayer_scan", False):
-                scan_start = model.elevation_dim if getattr(model, "use_elevation_ae", False) else 0
-                scan = env_raw[..., scan_start : scan_start + model.scan_dim]
-                scan_mirrored = scan.view(*scan.shape[:-1], model.num_scan_channels, model.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], model.scan_dim)
-                env_raw[..., scan_start : scan_start + model.scan_dim] = scan_mirrored
-            obs_mirrored["noisy_elevation"] = env_raw
-
         return obs_mirrored
-
     def act(self, obs, **kwargs):
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
         
