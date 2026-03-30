@@ -1072,8 +1072,7 @@ class SplitMoEPPO(PPO):
             # -----------------------------------------------------------------
             lb_loss = aux_outputs.get("lb_loss")
             if lb_loss is not None:
-                # 暂时不参与反向传播和权重更新，但是打印出来进行参考
-                # loss = loss + lb_loss 
+                loss = loss + lb_loss 
                 avg_lb_loss += lb_loss.item()
 
             # -----------------------------------------------------------------
@@ -2082,7 +2081,7 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         critic_obs_normalization=True,
 
         # 接收 AE/VAE
-        feed_estimator_to_policy=False, 
+        feed_estimator_to_policy=True, 
         feed_ae_to_policy=True,
     )
 

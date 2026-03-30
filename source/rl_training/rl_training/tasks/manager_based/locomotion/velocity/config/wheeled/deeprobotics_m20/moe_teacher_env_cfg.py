@@ -840,11 +840,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # Rewards
         self.rewards.is_terminated.weight = 0
-        self.rewards.lin_vel_z_l2.weight = -0.5
+        self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.02
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_height_l2.weight = -0.5
-        self.rewards.base_height_l2.params["target_height"] = 0.5
+        self.rewards.base_height_l2.params["target_height"] = 0.4
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
         self.rewards.body_lin_acc_l2.params["asset_cfg"].body_names = [self.base_link_name]
@@ -868,11 +868,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -3.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.2
+        self.rewards.hipx_joint_pos_penalty.weight = -0.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.1
+        self.rewards.hipy_joint_pos_penalty.weight = -0.25
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.1
+        self.rewards.knee_joint_pos_penalty.weight = -0.25
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
@@ -882,7 +882,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_mirror.weight = -0.0
+        self.rewards.action_mirror.weight = -0.05
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -899,7 +899,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.rewards.track_lin_vel_xy_pre_exp.weight = 1.0
         # self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
-        self.rewards.feet_air_time.weight = 0.5
+        self.rewards.feet_air_time.weight = 1.0
         self.rewards.feet_air_time.params["threshold"] = 0.5
         # self.rewards.feet_air_time_long.weight = 1.5
         # self.rewards.feet_air_time_long.params["threshold"] = 0.5
@@ -922,7 +922,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        # self.rewards.upward.weight = 0.08
+        self.rewards.upward.weight = 0.08
 
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()
