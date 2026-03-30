@@ -90,29 +90,83 @@ class MLP(nn.Module):
 # ==============================================================================
 
 class ElevationAE(nn.Module):
-    def __init__(self, input_dim=187, output_dim=64, hidden_dims=[128, 64]):
+    def __init__(self, input_dim=187, output_dim=64, grid_shape=(11, 17)):
         super().__init__()
-        self.encoder = MLP(input_dim, output_dim, hidden_dims, activation="elu")
-        self.decoder = MLP(output_dim, input_dim, hidden_dims[::-1], activation="elu")
+        self.grid_shape = grid_shape
+        self.input_dim = input_dim
+
+        # ---------------------------------------------------------
+        # Encoder: 2D CNN 提取空间特征
+        # 输入尺寸: (Batch, 1, 11, 17)
+        # ---------------------------------------------------------
+        self.encoder_conv = nn.Sequential(
+            # 输出: (16, 6, 9) -> 计算方式: floor((size + 2*pad - kernel)/stride) + 1
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1), nn.ELU(),
+            # 输出: (32, 3, 5)
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
+        )
+        # 32 channels * 3 height * 5 width = 480
+        self.encoder_fc = nn.Linear(32 * 3 * 5, output_dim)
+
+        # ---------------------------------------------------------
+        # Decoder: 2D CNN 还原地形
+        # ---------------------------------------------------------
+        self.decoder_fc = nn.Linear(output_dim, 32 * 3 * 5)
+        
+        # 使用 Nearest Upsample + 保持尺寸的 Conv2d 替代反卷积 (减少棋盘效应)
+        self.decoder_conv = nn.Sequential(
+            nn.Upsample(size=(6, 9), mode='nearest'),
+            nn.Conv2d(32, 16, kernel_size=3, padding=1), nn.ELU(),
+            
+            nn.Upsample(size=grid_shape, mode='nearest'),
+            nn.Conv2d(16, 1, kernel_size=3, padding=1)  # 最后一层直接输出高度值
+        )
 
     def forward(self, x):
-        latent = self.encoder(x) 
-        recon = self.decoder(latent) if self.training else None
+        # 记录原始输入的 batch 维度形状 (兼容 [B, 187] 或 [Seq, B, 187])
+        original_shape = x.shape[:-1]
+        
+        # 1. 展平批次维度并 Reshape 成 2D 图像格式: (B_total, C, H, W)
+        x_img = x.reshape(-1, 1, *self.grid_shape)
+
+        # 2. Encoder 前向传播
+        conv_features = self.encoder_conv(x_img)
+        conv_flat = conv_features.reshape(conv_features.size(0), -1)
+        latent_flat = self.encoder_fc(conv_flat)
+
+        # 3. Decoder 前向传播 (仅在训练时重建)
+        recon = None
+        if self.training:
+            dec_in = self.decoder_fc(latent_flat)
+            dec_in = dec_in.reshape(-1, 32, 3, 5)
+            recon_img = self.decoder_conv(dec_in)
+            
+            # 将重建的图像重新展平成 187 维，并恢复原始 Batch 维度
+            recon = recon_img.reshape(*original_shape, self.input_dim)
+        # 4. 恢复 latent 的原始批次形状
+        latent = latent_flat.reshape(*original_shape, -1)
+
         return latent, recon
 
 class MultiLayerScanAE(nn.Module):
-    def __init__(self, num_channels=6, num_rays=61, output_dim=64, hidden_dims=[128, 64]):
+    def __init__(self, num_channels=12, num_rays=21, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
+        # 外部输入的总维度 (12 个通道 = 6前 + 6后)
         self.num_channels = num_channels
         self.num_rays = num_rays
         self.flat_dim = num_channels * num_rays
         
+        # 内部处理的真实物理维度
+        self.actual_channels = num_channels // 2  # 6 个物理高度层
+        self.spatial_rays = num_rays * 2          # 拼接后：前21 + 后21 = 42 根射线
+        
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(num_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
+            nn.Conv1d(self.actual_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
             nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
         )
         
-        conv_out_len = (num_rays + 1) // 2
+        # 动态计算卷积输出长度
+        conv_out_len = (self.spatial_rays + 1) // 2
         conv_out_len = (conv_out_len + 1) // 2
         linear_in_dim = 32 * conv_out_len 
         
@@ -125,11 +179,26 @@ class MultiLayerScanAE(nn.Module):
 
     def forward(self, x):
         original_shape = x.shape[:-1] 
-        x_reshaped = x.reshape(-1, self.num_channels, self.num_rays)
-        conv_features = self.encoder_conv(x_reshaped).reshape(x_reshaped.shape[0], -1)
+        # 解析为 (Batch, 12, 21)
+        x_reshaped = x.reshape(-1, self.num_channels, self.num_rays) 
+        
+        # --- 空间特征拼接处理 ---
+        fwd = x_reshaped[:, :self.actual_channels, :] # 前方 6 层: (Batch, 6, 21)
+        bwd = x_reshaped[:, self.actual_channels:, :] # 后方 6 层: (Batch, 6, 21)
+        
+        # 将后向雷达在射线维度翻转，使其空间语义（左到右）与前向完全对齐
+        bwd = torch.flip(bwd, dims=[-1])
+        
+        # 沿射线维度(dim=-1)拼接成一个全景特征
+        x_spatial = torch.cat([fwd, bwd], dim=-1) # (Batch, 6, 42)
+        
+        # 送入 CNN
+        conv_features = self.encoder_conv(x_spatial).reshape(x_spatial.shape[0], -1)
         latent_flat = self.encoder_linear(conv_features)
+        
         latent = latent_flat.reshape(*original_shape, -1)
         recon = self.decoder(latent) if self.training else None
+        
         return latent, recon
 
 class DepthAE(nn.Module):

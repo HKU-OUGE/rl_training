@@ -95,25 +95,21 @@ def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """处理多层雷达扫描，输出归一化的距离数组 (严格区分安全区与盲区)"""
     sensor = env.scene.sensors[sensor_cfg.name]
     
-    # 1. 计算射线击中点与传感器位置的相对向量，并求模长得到物理距离
-    # ray_hits_w 形状: (num_envs, num_rays, 3)
     rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
     depths = torch.norm(rel_vec, dim=-1)
     
-    # 2. 填补无穷远和 NaN (未击中任何障碍物，视为前方绝对安全，赋最大量程 3.0m)
-    depths = torch.nan_to_num(depths, posinf=3.0, neginf=3.0, nan=3.0)
+    # 将 NaN 和 inf 视为安全距离 (5.0m)
+    depths = torch.nan_to_num(depths, posinf=5.0, neginf=5.0, nan=5.0)
     
-    # 3. 基础归一化：将 [0, 3.0] 的距离线性映射到 [0.0, 1.0]
-    normalized_depths = torch.clip(depths / 3.0, 0.0, 1.0)
+    # 归一化：[0, 5.0] 映射到 [0.0, 1.0]
+    normalized_depths = torch.clip(depths / 5.0, 0.0, 1.0)
     
-    # 4. 盲区覆写：物理距离 < 0.2m 的点，强制标记为 -1.0
-    # 这一步直接教导网络：-1.0 是极度危险的信号，决不能把它当成普通的安全距离
+    # 盲区覆写：物理距离 < 0.2m 强制标记为 -1.0
     normalized_depths = torch.where(
         depths < 0.2, 
         torch.full_like(normalized_depths, -1.0), 
         normalized_depths
     )
-    
     return normalized_depths
 
 def height_scan_sim2real(
@@ -248,6 +244,7 @@ def height_scan_sim2real(
     delayed_depths = env._sim2real_height_buffer[batch_indices, read_indices, :]
 
     return delayed_depths
+
 @configclass
 class DeeproboticsM20ActionsCfg(ActionsCfg):
     """Action specifications for the MDP."""
@@ -272,7 +269,7 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
     joint_mirror_lr = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.00,
+        weight=-0.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -323,15 +320,6 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
         },
     )
-    feet_air_time_long = RewTerm(
-        func=mdp.feet_air_time_curriculum,
-        weight=0.0,
-        params={
-            "command_name": "base_velocity",
-            "threshold": 0.5,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
-        },
-    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
@@ -348,7 +336,7 @@ class DeeproboticsM20ObservationsCfg:
         """纯粹的 Teacher 本体感知组 (含真实线速度, 无高程图)"""
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
-            noise=Unoise(n_min=-0.1, n_max=0.1),
+            noise=Unoise(n_min=-0.0, n_max=0.0),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
@@ -401,18 +389,9 @@ class DeeproboticsM20ObservationsCfg:
     class NoisyElevationCfg(ObsGroup):
         """专门用于训练 AE 以及提供给所有策略 (Teacher/Student) 使用的带噪声高程组"""
         height_scan = ObsTerm(
-            func=height_scan_sim2real,
-            params={
-                "sensor_cfg": SceneEntityCfg("height_scanner"),
-                "offset": 0.5,
-                "mask_prob": 0.15,          
-                "min_latency": 1,
-                "max_latency": 4,
-                "smooth_kernel_size": 3,    
-                "max_drift_pixels": 2,      
-                "grid_length": 17,
-            },
-            noise=Unoise(n_min=-0.0, n_max=0.0),
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            noise=Unoise(n_min=-0.05, n_max=0.05),
             clip=(-1.0, 1.0),
             scale=1.0,
         )
@@ -677,7 +656,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.robot = DEEPROBOTICS_M20_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-
+        if self.scene.height_scanner is not None:
+            self.scene.height_scanner.update_period = 0.1
         obs_groups_to_process = [
             self.observations.policy,
             self.observations.blind_student_policy,
@@ -707,7 +687,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.pretraincfg.joint_vel.scale = 0.05
         self.observations.pretraincfg.base_lin_vel = None
         self.observations.pretraincfg.height_scan = None
-        self.actions.joint_pos.scale = {".*_hipx_joint": 0.25, "^(?!.*_hipx_joint).*": 0.25}
+        self.actions.joint_pos.scale = {".*_hipx_joint": 0.125, "^(?!.*_hipx_joint).*": 0.25}
         self.actions.joint_vel.scale = 5.0
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_vel.clip = {".*": (-100.0, 100.0)}
@@ -716,8 +696,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         self.events.randomize_reset_base.params = {
             "pose_range": {
-                "x": (-1.0, 1.0),
-                "y": (-1.0, 1.0),
+                "x": (-0.5, 0.5),
+                "y": (-0.2, 0.2),
                 "z": (0.0, 0.0),
                 "roll": (-0.3, 0.3),
                 "pitch": (-0.3, 0.3),
@@ -742,7 +722,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.terrain = TerrainImporterCfg(
             prim_path="/World/obstacles",
             terrain_type="generator",
-            terrain_generator=SCAN_ROUGH_TERRAINS_CFG2,
+            terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
             max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -762,7 +742,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.terrain2 = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
-            terrain_generator=SCAN_ROUGH_TERRAINS_CFG,
+            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
             max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -779,72 +759,82 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
-        self.scene.terrain2.terrain_generator = SCAN_ROUGH_TERRAINS_CFG
-        if(self.scene.terrain2.terrain_generator == SCAN_ROUGH_TERRAINS_CFG):
+        self.scene.terrain2.terrain_generator = MOE_ROUGH_TERRAINS_CFG
+        if(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain2.terrain_generator == SCAN_ROUGH_TERRAINS_CFG2):
+        elif(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
             self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
         else:
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.35, 1.5]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.35, 1.5]
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
         # self.events.randomize_rigid_body_material.params["static_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
-        # ==============================================================
-        # 多层 2D 扫描：宽度降低到 1.0m，前后各 6 层，均匀分布在 -0.2 ~ 0.2
-        # ==============================================================
-        FORWARD_ROT = (0.7071068, 0.0, -0.7071068, 0.0) 
-        BACKWARD_ROT = (0.7071068, 0.0, 0.7071068, 0.0) 
         
-        # 视野配置：Y方向 1.0m (产生 21 条射线)
+        FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
+        REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
+        
+
+        down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 25.0]
+
         SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
         SCAN_MESHES = ["/World/ground", "/World/obstacles"]
 
-        # 均匀分布的 Z 高度
-        z_heights = [-0.20, -0.12, -0.04, 0.04, 0.12, 0.20]
-
-        # 动态创建前向 6 层与后向 6 层
-        for i, z in enumerate(z_heights):
-            # 前向
+        for i, angle_deg in enumerate(down_angles_deg):
+            
+            # 前向雷达
+            fwd_pitch_deg = -(90.0 - angle_deg)
+            fwd_half_rad = math.radians(fwd_pitch_deg) / 2.0
+            fwd_rot = (math.cos(fwd_half_rad), 0.0, math.sin(fwd_half_rad), 0.0)
+            
             fwd_sensor = MultiMeshRayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.3, 0.0, z), rot=FORWARD_ROT),
+                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
                 ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+                pattern_cfg=SCAN_PATTERN, 
+                max_distance=5.0, # 修改为 5.0m
+                debug_vis=True, 
+                reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
             )
             fwd_sensor.update_period = 0.1
             setattr(self.scene, f"forward_scanner_layer{i}", fwd_sensor)
 
-            # 后向
+            # 后向雷达
+            bwd_pitch_deg = (90.0 - angle_deg)
+            bwd_half_rad = math.radians(bwd_pitch_deg) / 2.0
+            bwd_rot = (math.cos(bwd_half_rad), 0.0, math.sin(bwd_half_rad), 0.0)
+            
             bwd_sensor = MultiMeshRayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(-0.3, 0.0, z), rot=BACKWARD_ROT),
+                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
                 ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, max_distance=3.0, debug_vis=False, reference_meshes=True,
+                pattern_cfg=SCAN_PATTERN, 
+                max_distance=5.0, # 修改为 5.0m
+                debug_vis=True, 
+                reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
             )
             bwd_sensor.update_period = 0.1
             setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
-
         # Rewards
         self.rewards.is_terminated.weight = 0
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.02
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_height_l2.weight = -0.5
-        self.rewards.base_height_l2.params["target_height"] = 0.4
+        self.rewards.base_height_l2.params["target_height"] = 0.40
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
         self.rewards.body_lin_acc_l2.params["asset_cfg"].body_names = [self.base_link_name]
@@ -866,7 +856,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_vel_limits.params["asset_cfg"].joint_names = self.wheel_joint_names
         self.rewards.joint_power.weight = -2e-5
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.stand_still.weight = -3.0
+        self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.hipx_joint_pos_penalty.weight = -0.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
@@ -894,15 +884,13 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 3.5 # 1.8
-        self.rewards.track_ang_vel_z_exp.weight = 3.0 # 1.2
-        # self.rewards.track_lin_vel_xy_pre_exp.weight = 1.0
-        # self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
+        self.rewards.track_lin_vel_xy_exp.weight = 2.5 # 1.8
+        self.rewards.track_ang_vel_z_exp.weight = 1.5 # 1.2
+        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.5
+        self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
         self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params["threshold"] = 0.5
-        # self.rewards.feet_air_time_long.weight = 1.5
-        # self.rewards.feet_air_time_long.params["threshold"] = 0.5
+        self.rewards.feet_air_time.params["threshold"] = 0.25
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_air_time_long.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
@@ -914,10 +902,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.weight = 0
         self.rewards.feet_slide.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_slide.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_height.weight = 0.0
+        self.rewards.feet_height.weight = 0
         self.rewards.feet_height.params["target_height"] = 0.3
         self.rewards.feet_height.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_height_body.weight = 0.0
+        self.rewards.feet_height_body.weight = 0
         self.rewards.feet_height_body.params["target_height"] = -0.4
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
@@ -933,9 +921,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.2, 1.0)
         self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.6, 1.0) 
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
