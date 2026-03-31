@@ -801,7 +801,7 @@ def lin_vel_z_l2_curriculum(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = 
     # 在 Level 0，因子为 1.0 (全额惩罚)
     # 在 Level 15+，因子逐渐降低到 0.1 或更低
     # 这里的 20.0 是一个软上限，你可以根据 num_rows 调整
-    scale = torch.clamp(1.0 - (curr_levels / 20.0), min=0.1, max=1.0)
+    scale = torch.clamp(1.0 - (curr_levels / 20.0), min=0.5, max=1.0)
     
     return raw_penalty * scale
 
