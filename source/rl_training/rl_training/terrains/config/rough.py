@@ -25,7 +25,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     sub_terrains={
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=1.0/18,  # 2/18 的概率生成此地形
-            step_height_range=(0.05, 0.23),
+            step_height_range=(0.05, 0.25),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
@@ -33,7 +33,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
             proportion=3.0/18,
-            step_height_range=(0.05, 0.23),
+            step_height_range=(0.05, 0.25),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
@@ -43,12 +43,12 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=3.0/18,
             stone_height_max=0.01,         
             stone_width_range=(1.5, 1.5), 
-            stone_distance_range=(0.1, 0.5), 
+            stone_distance_range=(0.1, 0.8), 
             holes_depth=-0.5,
             platform_width=2.0,
         ),
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
-            proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.35),platform_width=2.0
+            proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.4),platform_width=2.0
         ),
         "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
             proportion=3.0/18, # 保持比例不变
