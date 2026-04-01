@@ -858,11 +858,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -1.0
+        self.rewards.hipx_joint_pos_penalty.weight = -0.6
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.4
+        self.rewards.hipy_joint_pos_penalty.weight = -0.3
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.4
+        self.rewards.knee_joint_pos_penalty.weight = -0.3
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
@@ -915,7 +915,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()
         self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name]
-        self.terminations.illegal_contact = None
+        # self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.2, 1.0)
