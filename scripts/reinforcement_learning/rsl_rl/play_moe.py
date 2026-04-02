@@ -663,7 +663,8 @@ def main():
         nonlocal last_printed_lines, status_message, status_timer
         
         lines = []
-        lines.append("="*30 + " H-MoE Dashboard " + "="*30)
+        # 1. 缩短首行分隔符长度
+        lines.append("="*18 + " H-MoE Dashboard " + "="*18)
         
         if args.joystick or args.keyboard:
             ctrl_type = "Gamepad" if args.joystick else "Keyboard"
@@ -677,7 +678,8 @@ def main():
             lines.append(f"Terrain Status:")
             lines.append(f"  Level : {draw_progress_bar(cur_lvl, num_rows)}")
             lines.append(f"  Type  : {draw_progress_bar(cur_type, num_cols)}")
-            lines.append("-" * 65)
+            # 缩短中部分隔符
+            lines.append("-" * 53)
 
         for name in ["Wheel", "Leg"]:
             if name in monitor_data:
@@ -692,7 +694,8 @@ def main():
             lines.append("State Estimator:")
             lines.extend(print_estimator_diff(est_state[obs_idx], gt_state[obs_idx]))
             
-        lines.append("="*75)
+        # 缩短底部分隔符
+        lines.append("="*53)
 
         if status_timer > 0:
             lines.append(f"\033[93m[EVENT] {status_message}\033[0m")
@@ -701,7 +704,9 @@ def main():
             lines.append("") 
 
         if last_printed_lines > 0:
-            sys.stdout.write(f"\033[{last_printed_lines}A\033[J")
+            # 2. 加入 \r 确保光标严格回到最左侧行首，并清空缓冲区
+            sys.stdout.write(f"\r\033[{last_printed_lines}A\033[J")
+            sys.stdout.flush()
         
         print("\n".join(lines))
         last_printed_lines = len(lines)

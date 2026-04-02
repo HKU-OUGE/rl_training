@@ -804,7 +804,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
                 ray_alignment="base", 
                 pattern_cfg=SCAN_PATTERN, 
                 max_distance=5.0, # 修改为 5.0m
-                debug_vis=True, 
+                debug_vis=False, 
                 reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
             )
@@ -822,7 +822,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
                 ray_alignment="base", 
                 pattern_cfg=SCAN_PATTERN, 
                 max_distance=5.0, # 修改为 5.0m
-                debug_vis=True, 
+                debug_vis=False, 
                 reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
             )

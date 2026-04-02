@@ -158,17 +158,15 @@ class MultiLayerScanAE(nn.Module):
         
         # 内部处理的真实物理维度
         self.actual_channels = num_channels // 2  # 6 个物理高度层
-        self.spatial_rays = num_rays * 2          # 拼接后：前21 + 后21 = 42 根射线
         
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(self.actual_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
+            nn.Conv1d(self.num_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
             nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
         )
-        
         # 动态计算卷积输出长度
-        conv_out_len = (self.spatial_rays + 1) // 2
-        conv_out_len = (conv_out_len + 1) // 2
-        linear_in_dim = 32 * conv_out_len 
+        conv_out_len = (self.num_rays + 1) // 2  # 第一次 stride=2 后长度
+        conv_out_len = (conv_out_len + 1) // 2   # 第二次 stride=2 后长度
+        linear_in_dim = 32 * conv_out_len
         
         self.encoder_linear = nn.Sequential(
             nn.Linear(linear_in_dim, hidden_dims[0]), nn.ELU(),
@@ -182,15 +180,14 @@ class MultiLayerScanAE(nn.Module):
         # 解析为 (Batch, 12, 21)
         x_reshaped = x.reshape(-1, self.num_channels, self.num_rays) 
         
-        # --- 空间特征拼接处理 ---
-        fwd = x_reshaped[:, :self.actual_channels, :] # 前方 6 层: (Batch, 6, 21)
-        bwd = x_reshaped[:, self.actual_channels:, :] # 后方 6 层: (Batch, 6, 21)
-        
-        # 将后向雷达在射线维度翻转，使其空间语义（左到右）与前向完全对齐
+        fwd = x_reshaped[:, :self.actual_channels, :] # 前方 6 层 (Batch, 6, 21)
+        bwd = x_reshaped[:, self.actual_channels:, :] # 后方 6 层 (Batch, 6, 21)
+
+        # 后向雷达 flip，保证前后的“左”和“右”在空间索引上是对齐的
         bwd = torch.flip(bwd, dims=[-1])
-        
-        # 沿射线维度(dim=-1)拼接成一个全景特征
-        x_spatial = torch.cat([fwd, bwd], dim=-1) # (Batch, 6, 42)
+
+        # 在通道维度(dim=1)拼接
+        x_spatial = torch.cat([fwd, bwd], dim=1) # 正确：(Batch, 12, 21)
         
         # 送入 CNN
         conv_features = self.encoder_conv(x_spatial).reshape(x_spatial.shape[0], -1)
