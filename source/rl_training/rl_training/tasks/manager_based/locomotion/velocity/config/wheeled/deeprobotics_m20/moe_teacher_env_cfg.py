@@ -879,7 +879,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
         self.rewards.action_rate_l2.weight = -0.01
 
-        self.rewards.undesired_contacts.weight = -1.5
+        self.rewards.undesired_contacts.weight = -0.1
         self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [f"^(?!.*{self.foot_link_name}).*"]
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
