@@ -151,22 +151,17 @@ class ElevationAE(nn.Module):
 class MultiLayerScanAE(nn.Module):
     def __init__(self, num_channels=12, num_rays=21, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
-        # 外部输入的总维度 (12 个通道 = 6前 + 6后)
         self.num_channels = num_channels
         self.num_rays = num_rays
         self.flat_dim = num_channels * num_rays
-        
-        # 内部处理的真实物理维度
-        self.actual_channels = num_channels // 2  # 6 个物理高度层
-        self.spatial_rays = num_rays * 2          # 拼接后：前21 + 后21 = 42 根射线
+        self.actual_channels = num_channels // 2  
         
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(self.actual_channels, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
+            nn.Conv1d(self.actual_channels * 2, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
             nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
         )
         
-        # 动态计算卷积输出长度
-        conv_out_len = (self.spatial_rays + 1) // 2
+        conv_out_len = (self.num_rays + 1) // 2
         conv_out_len = (conv_out_len + 1) // 2
         linear_in_dim = 32 * conv_out_len 
         
@@ -174,25 +169,18 @@ class MultiLayerScanAE(nn.Module):
             nn.Linear(linear_in_dim, hidden_dims[0]), nn.ELU(),
             nn.Linear(hidden_dims[0], output_dim)
         )
-        
         self.decoder = MLP(output_dim, self.flat_dim, hidden_dims[::-1], activation="elu")
 
     def forward(self, x):
         original_shape = x.shape[:-1] 
-        # 解析为 (Batch, 12, 21)
         x_reshaped = x.reshape(-1, self.num_channels, self.num_rays) 
         
-        # --- 空间特征拼接处理 ---
-        fwd = x_reshaped[:, :self.actual_channels, :] # 前方 6 层: (Batch, 6, 21)
-        bwd = x_reshaped[:, self.actual_channels:, :] # 后方 6 层: (Batch, 6, 21)
-        
-        # 将后向雷达在射线维度翻转，使其空间语义（左到右）与前向完全对齐
+        fwd = x_reshaped[:, :self.actual_channels, :] 
+        bwd = x_reshaped[:, self.actual_channels:, :] 
         bwd = torch.flip(bwd, dims=[-1])
         
-        # 沿射线维度(dim=-1)拼接成一个全景特征
-        x_spatial = torch.cat([fwd, bwd], dim=-1) # (Batch, 6, 42)
+        x_spatial = torch.cat([fwd, bwd], dim=1) 
         
-        # 送入 CNN
         conv_features = self.encoder_conv(x_spatial).reshape(x_spatial.shape[0], -1)
         latent_flat = self.encoder_linear(conv_features)
         
