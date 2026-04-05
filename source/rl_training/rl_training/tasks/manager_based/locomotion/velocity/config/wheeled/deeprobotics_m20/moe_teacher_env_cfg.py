@@ -918,13 +918,15 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
-        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.2, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.6, 1.0) 
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.5, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.0, 1.0) 
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         
+        self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
+        self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat
         # self.curriculum.command_levels.params["range_multiplier"] = (1.0, 1.0)

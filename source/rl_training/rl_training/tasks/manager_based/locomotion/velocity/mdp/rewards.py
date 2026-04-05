@@ -952,3 +952,42 @@ def wheel_lateral_slip_penalty(env, asset_cfg: SceneEntityCfg, sensor_cfg: Scene
     
     # 6. 只有触地时的侧滑才会导致惩罚
     return torch.sum(lateral_vel_sq * contacts, dim=1)
+
+def track_lin_vel_xy_exp_curriculum(
+    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """带地形课程的线速度跟踪奖励：地形越难，对速度误差的容忍度越高"""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    lin_vel_error = torch.sum(
+        torch.square(env.command_manager.get_command(command_name)[:, :2] - asset.data.root_lin_vel_b[:, :2]),
+        dim=1,
+    )
+    raw_reward = torch.exp(-lin_vel_error / std**2)
+    
+    # 核心：根据地形难度松弛奖励
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_levels"):
+        curr_levels = env.scene.terrain.terrain_levels.float()
+        # 假设你的最高地形难度大约在 30 级左右
+        # Level 0 (平地): tracking_weight = 1.0 (满分要求)
+        # Level 30 (极难): tracking_weight = 0.2 (大幅放宽要求，鼓励生存和跨越)
+        tracking_weight = torch.clamp(1.0 - (curr_levels / 30.0), min=0.2, max=1.0)
+    else:
+        tracking_weight = 1.0
+        
+    return raw_reward * tracking_weight
+
+def track_ang_vel_z_exp_curriculum(
+    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """带地形课程的角速度跟踪奖励"""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_b[:, 2])
+    raw_reward = torch.exp(-ang_vel_error / std**2)
+    
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_levels"):
+        curr_levels = env.scene.terrain.terrain_levels.float()
+        tracking_weight = torch.clamp(1.0 - (curr_levels / 30.0), min=0.2, max=1.0)
+    else:
+        tracking_weight = 1.0
+        
+    return raw_reward * tracking_weight
