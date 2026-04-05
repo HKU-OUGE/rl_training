@@ -654,12 +654,25 @@ def main():
             bar = '▒' * min(int(diff * 40), 30)
             lines.append(f"  {labels[i]}: Est={e:6.3f} | GT={g:6.3f} | Err={err_color}{diff:6.3f} {bar}\033[0m")
         return lines
-
+    
+    def print_tracking_diff(cmd_vec, gt_vec):
+        lines = []
+        labels = ["Vx", "Vy", "Wz"]
+        dim = min(len(cmd_vec), len(gt_vec), 3)
+        for i in range(dim):
+            c, g = cmd_vec[i].item(), gt_vec[i].item()
+            diff = abs(c - g)
+            # 误差越小越绿，越大越红
+            err_color = "\033[92m" if diff < 0.2 else "\033[91m"
+            bar = '▒' * min(int(diff * 20), 30)
+            lines.append(f"  {labels[i]}: Cmd={c:6.3f} | Act={g:6.3f} | Err={err_color}{diff:6.3f} {bar}\033[0m")
+        return lines
+    
     last_printed_lines = 0
     status_message = ""
     status_timer = 0
 
-    def visualize(obs_idx=0, est_state=None, gt_state=None, cur_terrain_info=None, controller_debug=None, connected=True):
+    def visualize(obs_idx=0, est_state=None, gt_state=None, cmd_state=None, cur_terrain_info=None, controller_debug=None, connected=True):
         nonlocal last_printed_lines, status_message, status_timer
         
         lines = []
@@ -678,7 +691,8 @@ def main():
             lines.append(f"Terrain Status:")
             lines.append(f"  Level : {draw_progress_bar(cur_lvl, num_rows)}")
             lines.append(f"  Type  : {draw_progress_bar(cur_type, num_cols)}")
-            # 缩短中部分隔符
+            tracking_weight = max(0.2, 1.0 - (cur_lvl / 30.0))
+            lines.append(f"  Tolerance: \033[93m{tracking_weight:.2f}\033[0m (Reward Weight)")
             lines.append("-" * 53)
 
         for name in ["Wheel", "Leg"]:
@@ -693,7 +707,12 @@ def main():
         if est_state is not None and gt_state is not None:
             lines.append("State Estimator:")
             lines.extend(print_estimator_diff(est_state[obs_idx], gt_state[obs_idx]))
-            
+
+        if cmd_state is not None and gt_state is not None:
+            lines.append("-" * 30)
+            lines.append("Velocity Tracking (Cmd vs Actual):")
+            lines.extend(print_tracking_diff(cmd_state[obs_idx], gt_state[obs_idx]))
+
         # 缩短底部分隔符
         lines.append("="*53)
 
