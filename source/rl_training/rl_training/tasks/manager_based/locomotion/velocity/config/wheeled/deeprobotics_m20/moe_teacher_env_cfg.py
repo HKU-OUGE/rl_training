@@ -884,10 +884,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 2.5 # 1.8
-        self.rewards.track_ang_vel_z_exp.weight = 1.5 # 1.2
-        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.5
-        self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
+        self.rewards.track_lin_vel_xy_exp.weight = 3.0 # 1.8
+        self.rewards.track_ang_vel_z_exp.weight = 2.0 # 1.2
+        self.rewards.track_lin_vel_xy_pre_exp.weight = 0
+        self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
         self.rewards.feet_air_time.weight = 1.0
         self.rewards.feet_air_time.params["threshold"] = 0.25
