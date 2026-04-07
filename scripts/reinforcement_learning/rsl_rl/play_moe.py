@@ -857,7 +857,7 @@ def main():
                 gt_lin = robot_entity.data.root_lin_vel_b
                 gt_ang = robot_entity.data.root_ang_vel_b
                 gt_state = torch.cat([gt_lin[:, :2], gt_ang[:, 2:3]], dim=-1)
-
+            actual_cmd = obs_dict["policy"][:, 6:9]
             obs, _, _, _ = env_wrapped.step(actions)
             step += 1
             
@@ -865,7 +865,8 @@ def main():
                 visualize(
                     obs_idx=0, 
                     est_state=est_state, 
-                    gt_state=gt_state, 
+                    gt_state=gt_state,
+                    cmd_state=actual_cmd, 
                     cur_terrain_info=(cur_difficulty, cur_subterrain),
                     controller_debug=ctrl_debug if args.joystick else None,
                     connected=is_connected

@@ -991,3 +991,16 @@ def track_ang_vel_z_exp_curriculum(
         
     dynamic_std = std * std_mult
     return torch.exp(-ang_vel_error / (dynamic_std**2))
+
+def base_roll_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize ONLY the base roll angle using L2 squared kernel.
+    
+    Computed by penalizing the y-component of the projected gravity vector.
+    This prevents lateral tilting without penalizing pitching on slopes.
+    """
+    # extract the used quantities
+    asset: RigidObject = env.scene[asset_cfg.name]
+    
+    reward = torch.square(asset.data.projected_gravity_b[:, 1])
+    
+    return reward
