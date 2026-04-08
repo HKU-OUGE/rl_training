@@ -31,6 +31,7 @@ parser.add_argument("--keyboard", action="store_true", default=False, help="Whet
 # Export
 parser.add_argument("--export", action="store_true", default=True, help="Whether to export ONNX/TorchScript and Configs.")
 parser.add_argument("--joystick", action="store_true", default=False, help="Whether to use joystick/gamepad.")
+parser.add_argument("--logbag", type=str, default="", help="Path to save offline test logbag (e.g. logbag.jsonl)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app_launcher = AppLauncher(args)
@@ -751,6 +752,53 @@ def main():
     with torch.inference_mode():
         while simulation_app.is_running():
             obs_dict = base_env.obs_buf
+            log_dict = None
+            if args.logbag and step > 0: # step 0 的 last_action 是空的，跳过
+                robot = base_env.scene["robot"]
+                # 1. 基础本体 (Raw)
+                omega = robot.data.root_ang_vel_b[0].cpu().tolist()
+                proj_g = robot.data.projected_gravity_b[0].cpu().tolist()
+                cmd = base_env.command_manager.get_command("base_velocity")[0].cpu().tolist()
+                jp = robot.data.joint_pos[0].cpu().tolist()
+                jv = robot.data.joint_vel[0].cpu().tolist()
+                last_act = prev_actions[0].cpu().tolist()
+
+                # 2. 高程图 (Python已经处理好了187维，直接取这187个值，规避C++重构ROS GridMap的麻烦)
+                noisy_ele = obs_dict["noisy_elevation"][0].cpu().tolist()
+                processed_heights = noisy_ele[:187]
+
+                # 3. 雷达扫描距离 (完全 Raw，包含 NaN/Inf)
+                raw_fwd = []
+                raw_bwd = []
+                for i in range(6):
+                    # 前向
+                    f_sens = base_env.scene.sensors[f"forward_scanner_layer{i}"]
+                    f_dist = torch.norm(f_sens.data.ray_hits_w[0] - f_sens.data.pos_w[0], dim=-1)
+                    f_dist = torch.nan_to_num(f_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
+                    raw_fwd.extend(f_dist)
+                    # 后向
+                    b_sens = base_env.scene.sensors[f"backward_scanner_layer{i}"]
+                    b_dist = torch.norm(b_sens.data.ray_hits_w[0] - b_sens.data.pos_w[0], dim=-1)
+                    b_dist = torch.nan_to_num(b_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
+                    raw_bwd.extend(b_dist)
+
+                log_dict = {
+                    "omega": omega, "proj_g": proj_g, "cmd": cmd,
+                    "jp": jp, "jv": jv, "last_action": last_act,
+                    "processed_heights": processed_heights,
+                    "raw_fwd": raw_fwd, "raw_bwd": raw_bwd
+                }
+
+
+            actions = policy(obs_dict)
+            
+
+            if log_dict is not None:
+                log_dict["gt_action"] = actions[0].cpu().tolist()
+                with open(args.logbag, "a") as f:
+                    f.write(json.dumps(log_dict) + "\n")
+            prev_actions = actions.clone()
+
             actions = policy(obs_dict)
             
             reset_terrain_needed = False
