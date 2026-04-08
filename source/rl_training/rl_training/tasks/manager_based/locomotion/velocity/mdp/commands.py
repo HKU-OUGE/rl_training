@@ -16,7 +16,8 @@ import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
-
+import math
+import isaaclab.utils.math as math_utils
 
 class UniformThresholdVelocityCommand(mdp.UniformVelocityCommand):
     """Command generator that generates a velocity command in SE(2) from uniform distribution with threshold."""
@@ -128,3 +129,83 @@ class DiscreteCommandControllerCfg(CommandTermCfg):
     List of available discrete commands, where each element is an integer.
     Example: [10, 20, 30, 40, 50]
     """
+
+class TerrainAwareVelocityCommand(UniformThresholdVelocityCommand):
+    """感知地形难度的速度指令生成器：根据地形等级分配不同的速度指令范围"""
+
+    cfg: "TerrainAwareVelocityCommandCfg"
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        # 1. 先调用父类方法进行基础采样 (处理 heading, defaults 等)
+        super()._resample_command(env_ids)
+
+        # 2. 提取当前地形等级
+        if hasattr(self._env.scene, "terrain") and hasattr(self._env.scene.terrain, "terrain_levels"):
+            levels = self._env.scene.terrain.terrain_levels[env_ids]
+        else:
+            levels = torch.zeros(len(env_ids), dtype=torch.long, device=self.device)
+
+        # 确保 id 是 tensor 以便进行并行索引
+        env_ids_tensor = torch.tensor(env_ids, dtype=torch.long, device=self.device)
+        
+        # 3. 划分地形等级掩码
+        easy_mask = levels < self.cfg.terrain_level_threshold
+        hard_mask = ~easy_mask
+
+        easy_ids = env_ids_tensor[easy_mask]
+        hard_ids = env_ids_tensor[hard_mask]
+
+        # 4. 对 Easy 地形 (< 10) 应用第一套采样规则
+        if len(easy_ids) > 0:
+            self.vel_command_b[easy_ids, 0] = math_utils.sample_uniform(
+                self.cfg.easy_ranges.lin_vel_x[0], self.cfg.easy_ranges.lin_vel_x[1], (len(easy_ids),), device=self.device
+            )
+            self.vel_command_b[easy_ids, 1] = math_utils.sample_uniform(
+                self.cfg.easy_ranges.lin_vel_y[0], self.cfg.easy_ranges.lin_vel_y[1], (len(easy_ids),), device=self.device
+            )
+            self.vel_command_b[easy_ids, 2] = math_utils.sample_uniform(
+                self.cfg.easy_ranges.ang_vel_z[0], self.cfg.easy_ranges.ang_vel_z[1], (len(easy_ids),), device=self.device
+            )
+
+        # 5. 对 Hard 地形 (>= 10) 应用第二套采样规则
+        if len(hard_ids) > 0:
+            self.vel_command_b[hard_ids, 0] = math_utils.sample_uniform(
+                self.cfg.hard_ranges.lin_vel_x[0], self.cfg.hard_ranges.lin_vel_x[1], (len(hard_ids),), device=self.device
+            )
+            self.vel_command_b[hard_ids, 1] = math_utils.sample_uniform(
+                self.cfg.hard_ranges.lin_vel_y[0], self.cfg.hard_ranges.lin_vel_y[1], (len(hard_ids),), device=self.device
+            )
+            self.vel_command_b[hard_ids, 2] = math_utils.sample_uniform(
+                self.cfg.hard_ranges.ang_vel_z[0], self.cfg.hard_ranges.ang_vel_z[1], (len(hard_ids),), device=self.device
+            )
+
+        # 6. 重新应用指令阈值死区逻辑（将过小的速度归零，保持和原先的行为一致）
+        self.vel_command_b[env_ids, :2] *= (torch.norm(self.vel_command_b[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        # ====== 添加以下 Debug 代码 ======
+        # 检查当前重采样的环境列表中是否包含环境 0
+        if 0 in env_ids_tensor:
+            # 找到环境 0 在这次重采样列表中的索引
+            idx = (env_ids_tensor == 0).nonzero(as_tuple=True)[0][0]
+            lvl = levels[idx].item()
+            cmd_x = self.vel_command_b[0, 0].item()
+            cmd_y = self.vel_command_b[0, 1].item()
+            cmd_yaw = self.vel_command_b[0, 2].item()
+            
+            print(f"👉 [Command Debug] Env 0 | 地形等级: {lvl} | 指令 -> X: {cmd_x:.2f}, Y: {cmd_y:.2f}, Yaw: {cmd_yaw:.2f}")
+
+
+@configclass
+class TerrainAwareVelocityCommandCfg(UniformThresholdVelocityCommandCfg):
+    """感知地形难度的配置类"""
+    class_type: type = TerrainAwareVelocityCommand
+    
+    terrain_level_threshold: int = 10
+    
+    # 简单地形的指令范围 (< threshold)
+    easy_ranges: UniformThresholdVelocityCommandCfg.Ranges = UniformThresholdVelocityCommandCfg.Ranges(
+        lin_vel_x=(-2.0, 2.0), lin_vel_y=(-1.5, 1.5), ang_vel_z=(-1.5, 1.5), heading=(-math.pi, math.pi)
+    )
+    # 困难地形的指令范围 (>= threshold)
+    hard_ranges: UniformThresholdVelocityCommandCfg.Ranges = UniformThresholdVelocityCommandCfg.Ranges(
+        lin_vel_x=(-1.5, 1.5), lin_vel_y=(0.0, 0.0), ang_vel_z=(-0.5, 0.5), heading=(-math.pi, math.pi)
+    )

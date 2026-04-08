@@ -29,7 +29,7 @@ from isaaclab.sensors import MultiMeshRayCasterCfg
 ##
 from rl_training.assets.deeprobotics import DEEPROBOTICS_M20_CFG  # isort: skip
 from rl_training.terrains.config.rough import *
-
+from rl_training.tasks.manager_based.locomotion.velocity.mdp.commands import TerrainAwareVelocityCommandCfg
 # ==============================================================================
 # Helper Functions (Modified for Sim2Real & CNN)
 # ==============================================================================
@@ -728,7 +728,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             prim_path="/World/obstacles",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
-            max_init_terrain_level=0,
+            max_init_terrain_level=1,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
@@ -748,7 +748,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG,
-            max_init_terrain_level=0,
+            max_init_terrain_level=1,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
@@ -927,10 +927,41 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.5, 1.0)
         self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.5, 1.0) 
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
-        
+        # self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+        # self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
+        # self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+        # ------------------------------Commands------------------------------
+        # 课程指令采样策略
+        self.commands.base_velocity = TerrainAwareVelocityCommandCfg(
+            asset_name="robot",
+            resampling_time_range=(6.0, 14.0),
+            rel_standing_envs=0.02,
+            rel_heading_envs=0.9,
+            heading_command=True,
+            heading_control_stiffness=0.5,
+            debug_vis=False,
+            
+            ranges=TerrainAwareVelocityCommandCfg.Ranges(
+                lin_vel_x=(-2.0, 2.0),
+                lin_vel_y=(-1.5, 1.5),
+                ang_vel_z=(-1.5, 1.5),
+                heading=(-math.pi, math.pi)
+            ),
+            
+            terrain_level_threshold=10,
+            easy_ranges=TerrainAwareVelocityCommandCfg.Ranges(
+                lin_vel_x=(-2.0, 2.0),
+                lin_vel_y=(-1.5, 1.5),
+                ang_vel_z=(-1.5, 1.5),
+                heading=(-math.pi, math.pi)
+            ),
+            hard_ranges=TerrainAwareVelocityCommandCfg.Ranges(
+                lin_vel_x=(-1.5, 1.5),
+                lin_vel_y=(0.0, 0.0),
+                ang_vel_z=(-1.5, 1.5),
+                heading=(-math.pi, math.pi)
+            )
+        )
         self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
         self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
