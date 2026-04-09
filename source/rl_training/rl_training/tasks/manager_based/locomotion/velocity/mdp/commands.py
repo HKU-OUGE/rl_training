@@ -136,62 +136,41 @@ class TerrainAwareVelocityCommand(UniformThresholdVelocityCommand):
     cfg: "TerrainAwareVelocityCommandCfg"
 
     def _resample_command(self, env_ids: Sequence[int]):
-        # 1. 先调用父类方法进行基础采样 (处理 heading, defaults 等)
+        # 1. 执行基类的基础准备工作 (这会基于 cfg.ranges 采样，受课程学习控制)
         super()._resample_command(env_ids)
 
-        # 2. 提取当前地形等级
+        # 2. 获取当前环境的地形等级
         if hasattr(self._env.scene, "terrain") and hasattr(self._env.scene.terrain, "terrain_levels"):
             levels = self._env.scene.terrain.terrain_levels[env_ids]
         else:
             levels = torch.zeros(len(env_ids), dtype=torch.long, device=self.device)
 
-        # 确保 id 是 tensor 以便进行并行索引
+        # 3. 准备索引掩码
         env_ids_tensor = torch.tensor(env_ids, dtype=torch.long, device=self.device)
-        
-        # 3. 划分地形等级掩码
-        easy_mask = levels < self.cfg.terrain_level_threshold
-        hard_mask = ~easy_mask
-
-        easy_ids = env_ids_tensor[easy_mask]
+        hard_mask = levels >= self.cfg.terrain_level_threshold
         hard_ids = env_ids_tensor[hard_mask]
 
-        # 4. 对 Easy 地形 (< 10) 应用第一套采样规则
-        if len(easy_ids) > 0:
-            self.vel_command_b[easy_ids, 0] = math_utils.sample_uniform(
-                self.cfg.easy_ranges.lin_vel_x[0], self.cfg.easy_ranges.lin_vel_x[1], (len(easy_ids),), device=self.device
-            )
-            self.vel_command_b[easy_ids, 1] = math_utils.sample_uniform(
-                self.cfg.easy_ranges.lin_vel_y[0], self.cfg.easy_ranges.lin_vel_y[1], (len(easy_ids),), device=self.device
-            )
-            self.vel_command_b[easy_ids, 2] = math_utils.sample_uniform(
-                self.cfg.easy_ranges.ang_vel_z[0], self.cfg.easy_ranges.ang_vel_z[1], (len(easy_ids),), device=self.device
-            )
-
-        # 5. 对 Hard 地形 (>= 10) 应用第二套采样规则
+        # 4. 针对困难地形 (Hard) 进行特殊采样覆盖 (读取 Config 里的 hard_ranges)
         if len(hard_ids) > 0:
             self.vel_command_b[hard_ids, 0] = math_utils.sample_uniform(
                 self.cfg.hard_ranges.lin_vel_x[0], self.cfg.hard_ranges.lin_vel_x[1], (len(hard_ids),), device=self.device
             )
+            
             self.vel_command_b[hard_ids, 1] = math_utils.sample_uniform(
                 self.cfg.hard_ranges.lin_vel_y[0], self.cfg.hard_ranges.lin_vel_y[1], (len(hard_ids),), device=self.device
             )
+            
             self.vel_command_b[hard_ids, 2] = math_utils.sample_uniform(
                 self.cfg.hard_ranges.ang_vel_z[0], self.cfg.hard_ranges.ang_vel_z[1], (len(hard_ids),), device=self.device
             )
 
-        # 6. 重新应用指令阈值死区逻辑（将过小的速度归零，保持和原先的行为一致）
+        # 5. 重新应用死区逻辑 (保持一致性)
         self.vel_command_b[env_ids, :2] *= (torch.norm(self.vel_command_b[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
-        # ====== 添加以下 Debug 代码 ======
-        # 检查当前重采样的环境列表中是否包含环境 0
-        if 0 in env_ids_tensor:
-            # 找到环境 0 在这次重采样列表中的索引
-            idx = (env_ids_tensor == 0).nonzero(as_tuple=True)[0][0]
-            lvl = levels[idx].item()
-            cmd_x = self.vel_command_b[0, 0].item()
-            cmd_y = self.vel_command_b[0, 1].item()
-            cmd_yaw = self.vel_command_b[0, 2].item()
-            
-            print(f"👉 [Command Debug] Env 0 | 地形等级: {lvl} | 指令 -> X: {cmd_x:.2f}, Y: {cmd_y:.2f}, Yaw: {cmd_yaw:.2f}")
+        
+        # if 0 in env_ids_tensor:
+        #     idx = (env_ids_tensor == 0).nonzero(as_tuple=True)[0][0]
+        #     lvl = levels[idx].item()
+        #     print(f"👉 [Command Debug] Env 0 | 地形等级: {lvl} | 指令 -> X: {self.vel_command_b[0, 0].item():.2f}, Y: {self.vel_command_b[0, 1].item():.2f}, Yaw: {self.vel_command_b[0, 2].item():.2f}")
 
 
 @configclass

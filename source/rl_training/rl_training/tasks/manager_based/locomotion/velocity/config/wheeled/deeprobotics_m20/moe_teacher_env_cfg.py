@@ -508,6 +508,10 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=0.05, 
         )
+        terrain_level = ObsTerm(
+            func=mdp.terrain_level_normalized,
+            scale=1.0,
+        )
         def __post_init__(self):
             self.enable_corruption = False
             self.concatenate_terms = True
@@ -725,26 +729,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
         # ground terrain
         self.scene.terrain = TerrainImporterCfg(
-            prim_path="/World/obstacles",
-            terrain_type="generator",
-            terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
-            max_init_terrain_level=1,
-            collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=1.0,
-            ),
-            visual_material=sim_utils.MdlFileCfg(
-                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-                project_uvw=True,
-                texture_scale=(0.25, 0.25),
-            ),
-            debug_vis=False,
-        )
-        self.scene.terrain2 = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG,
@@ -764,18 +748,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
-        self.scene.terrain2.terrain_generator = MOE_ROUGH_TERRAINS_CFG
-        if(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
-            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
+        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG
+        if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
-            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
+        elif(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
@@ -794,7 +772,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 25.0]
 
         SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
-        SCAN_MESHES = ["/World/ground", "/World/obstacles"]
+        SCAN_MESHES = ["/World/ground"]
 
         for i, angle_deg in enumerate(down_angles_deg):
             
@@ -934,9 +912,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # 课程指令采样策略
         self.commands.base_velocity = TerrainAwareVelocityCommandCfg(
             asset_name="robot",
-            resampling_time_range=(6.0, 14.0),
-            rel_standing_envs=0.02,
-            rel_heading_envs=0.9,
+            resampling_time_range=(8.0, 12.0),
+            rel_standing_envs=0.05,
+            rel_heading_envs=1.0,
             heading_command=True,
             heading_control_stiffness=0.5,
             debug_vis=False,
@@ -950,15 +928,16 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             
             terrain_level_threshold=10,
             easy_ranges=TerrainAwareVelocityCommandCfg.Ranges(
+                # easy_ranges 其实成了备用字段，实际简单地形用的是受课程控制的 ranges
                 lin_vel_x=(-2.0, 2.0),
                 lin_vel_y=(-1.5, 1.5),
                 ang_vel_z=(-1.5, 1.5),
                 heading=(-math.pi, math.pi)
             ),
             hard_ranges=TerrainAwareVelocityCommandCfg.Ranges(
-                lin_vel_x=(-1.5, 1.5),
-                lin_vel_y=(0.0, 0.0),
-                ang_vel_z=(-1.5, 1.5),
+                lin_vel_x=(-1.5, 1.5),   # 困难地形上限锁定 1.5
+                lin_vel_y=(0.0, 0.0),    # 困难地形不侧移
+                ang_vel_z=(-0.5, 0.5),   # 困难地形角速度收窄到 0.5 (对齐你之前源码里硬编码的想法)
                 heading=(-math.pi, math.pi)
             )
         )
