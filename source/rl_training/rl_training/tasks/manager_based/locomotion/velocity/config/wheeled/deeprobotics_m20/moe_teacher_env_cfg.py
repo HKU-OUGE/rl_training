@@ -902,45 +902,45 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
-        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.5, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.5, 1.0) 
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.1, 1.0) 
 
-        # self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        # self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
-        # self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         # ------------------------------Commands------------------------------
         # 课程指令采样策略
-        self.commands.base_velocity = TerrainAwareVelocityCommandCfg(
-            asset_name="robot",
-            resampling_time_range=(8.0, 12.0),
-            rel_standing_envs=0.05,
-            rel_heading_envs=1.0,
-            heading_command=True,
-            heading_control_stiffness=0.5,
-            debug_vis=False,
+        # self.commands.base_velocity = TerrainAwareVelocityCommandCfg(
+        #     asset_name="robot",
+        #     resampling_time_range=(8.0, 12.0),
+        #     rel_standing_envs=0.05,
+        #     rel_heading_envs=1.0,
+        #     heading_command=True,
+        #     heading_control_stiffness=0.5,
+        #     debug_vis=False,
             
-            ranges=TerrainAwareVelocityCommandCfg.Ranges(
-                lin_vel_x=(-2.0, 2.0),
-                lin_vel_y=(-1.5, 1.5),
-                ang_vel_z=(-1.5, 1.5),
-                heading=(-math.pi, math.pi)
-            ),
+        #     ranges=TerrainAwareVelocityCommandCfg.Ranges(
+        #         lin_vel_x=(-2.0, 2.0),
+        #         lin_vel_y=(-1.5, 1.5),
+        #         ang_vel_z=(-1.5, 1.5),
+        #         heading=(-math.pi, math.pi)
+        #     ),
             
-            terrain_level_threshold=10,
-            easy_ranges=TerrainAwareVelocityCommandCfg.Ranges(
-                # easy_ranges 其实成了备用字段，实际简单地形用的是受课程控制的 ranges
-                lin_vel_x=(-2.0, 2.0),
-                lin_vel_y=(-1.5, 1.5),
-                ang_vel_z=(-1.5, 1.5),
-                heading=(-math.pi, math.pi)
-            ),
-            hard_ranges=TerrainAwareVelocityCommandCfg.Ranges(
-                lin_vel_x=(-1.5, 1.5),   # 困难地形上限锁定 1.5
-                lin_vel_y=(0.0, 0.0),    # 困难地形不侧移
-                ang_vel_z=(-0.5, 0.5),   # 困难地形角速度收窄到 0.5 (对齐你之前源码里硬编码的想法)
-                heading=(-math.pi, math.pi)
-            )
-        )
+        #     terrain_level_threshold=10,
+        #     easy_ranges=TerrainAwareVelocityCommandCfg.Ranges(
+        #         # easy_ranges 其实成了备用字段，实际简单地形用的是受课程控制的 ranges
+        #         lin_vel_x=(-2.0, 2.0),
+        #         lin_vel_y=(-1.5, 1.5),
+        #         ang_vel_z=(-1.5, 1.5),
+        #         heading=(-math.pi, math.pi)
+        #     ),
+        #     hard_ranges=TerrainAwareVelocityCommandCfg.Ranges(
+        #         lin_vel_x=(-1.5, 1.5),   # 困难地形上限锁定 1.5
+        #         lin_vel_y=(0.0, 0.0),    # 困难地形不侧移
+        #         ang_vel_z=(-0.5, 0.5),   # 困难地形角速度收窄到 0.5 (对齐你之前源码里硬编码的想法)
+        #         heading=(-math.pi, math.pi)
+        #     )
+        # )
         self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
         self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
