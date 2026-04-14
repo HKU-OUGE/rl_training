@@ -747,7 +747,10 @@ def main():
     HEIGHT_TOP = 5.0
     OFFSET_BACKWARD = [ 2.5, 0.0, 1.5 ]
     camera_history = []
-    
+    if hasattr(base_env.scene.terrain, "terrain_levels"):
+        cur_difficulty = base_env.scene.terrain.terrain_levels[0].item()
+    if hasattr(base_env.scene.terrain, "terrain_types"):
+        cur_subterrain = base_env.scene.terrain.terrain_types[0].item()
     step = 0
     with torch.inference_mode():
         while simulation_app.is_running():
@@ -875,22 +878,35 @@ def main():
             rb_prev, lb_prev = rb_curr, lb_curr
 
             if reset_terrain_needed:
+                # 首先执行重置 (让 IsaacLab 内部逻辑跑完，它可能会在这里偷偷改 level)
+                obs, _ = env_wrapped.reset()
+
+                # 然后：强制覆盖回用户指定的 Difficulty 和 Type
                 if hasattr(base_env.scene.terrain, "terrain_levels"):
                     levels_vec = torch.full((env_wrapped.num_envs,), cur_difficulty, device=env_wrapped.device, dtype=torch.long)
                     base_env.scene.terrain.terrain_levels[:] = levels_vec
                 
-                obs, _ = env_wrapped.reset()
+                if hasattr(base_env.scene.terrain, "terrain_types"):
+                    types_vec = torch.full((env_wrapped.num_envs,), cur_subterrain, device=env_wrapped.device, dtype=torch.long)
+                    base_env.scene.terrain.terrain_types[:] = types_vec
+                
+                # 重新计算出生点
+                base_env.scene.terrain.update_env_origins(
+                    env_ids=torch.arange(env_wrapped.num_envs, device=env_wrapped.device, dtype=torch.long),
+                    move_up=torch.zeros(env_wrapped.num_envs, device=env_wrapped.device, dtype=torch.long),
+                    move_down=torch.zeros(env_wrapped.num_envs, device=env_wrapped.device, dtype=torch.long)
+                )
 
-                if terrain_origins is not None and robot_entity is not None:
-                    r_idx = max(0, min(cur_difficulty, num_rows - 1))
-                    c_idx = max(0, min(cur_subterrain, num_cols - 1))
-                    target_origin = terrain_origins[r_idx, c_idx].clone()
-                    target_origin[2] += 0.55 
+                # 5. 使用原生场景属性 base_env.scene.env_origins 进行传送
+                if robot_entity is not None:
+                    # 直接获取 update_env_origins 计算出的坐标
+                    target_pos = base_env.scene.env_origins.clone()
+                    target_pos[:, 2] += 0.55  # 抬高一点防止穿模
                     
                     default_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env_wrapped.device).repeat(env_wrapped.num_envs, 1)
-                    target_pos = target_origin.unsqueeze(0).repeat(env_wrapped.num_envs, 1).to(env_wrapped.device)
-                    
                     root_pose = torch.cat([target_pos, default_quat], dim=-1)
+                    
+                    # 写入仿真
                     robot_entity.write_root_pose_to_sim(root_pose)
                     
                     root_vel = torch.zeros_like(robot_entity.data.root_link_vel_w)
