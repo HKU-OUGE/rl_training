@@ -103,7 +103,11 @@ PRECISION_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "rails": rails_cfg.replace(proportion=0.3),             
+        "rails": terrain_gen.MeshBoxTerrainCfg(
+            proportion=0.3,
+            platform_width=8.0, # 稍微大于 TERRAIN_SIZE，确保铺满整个地块
+            box_height_range=(0.02, 0.02), # 核心：精确垫高 2cm
+        ),      
         "rings": floating_ring_cfg.replace(proportion=0.1),
         "rings2": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
         "rings3": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
@@ -111,6 +115,48 @@ SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         "random_rough": random_rough_cfg.replace(proportion=0.1),
     }
 )
+
+SCAN_TEACHER_TERRAINS_CFG2 = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE,
+    border_width=0.0,
+    num_rows=NUM_ROWS,
+    num_cols=10,
+    curriculum=True,
+    sub_terrains={
+        "rails": rails_cfg.replace(proportion=0.3),
+        "rings": pit_cfg.replace(
+            proportion=0.1,      
+            pit_depth_range=(3.0, 3.0),  
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "rings2": pit_cfg.replace(
+            proportion=0.1,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "rings3": pit_cfg.replace(
+            proportion=0.1,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "pit": pit_cfg.replace(
+            proportion=0.3,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+        "random_rough": pit_cfg.replace(
+            proportion=0.1,      
+            pit_depth_range=(3.0, 3.0), 
+            double_pit=False,
+            platform_width=8.0,
+        ),
+    }
+)
+
 
 # [Teacher 4] 极限落足专家 (Precision Placement - 代替原来的 Wave)
 # 适用地形：带孔网格、随机障碍物

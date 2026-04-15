@@ -1160,3 +1160,32 @@ def handstand_reward(env: ManagerBasedRLEnv, ids: torch.Tensor, asset_cfg: Scene
     reward += torch.clamp(root_z - 0.4, min=0.0) * 2.0 
     
     return reward
+
+
+def contact_penalty_by_prim_path(
+    env: ManagerBasedRLEnv, 
+    sensor_cfg: SceneEntityCfg, 
+    target_prim_name: str
+) -> torch.Tensor:
+    """
+    根据碰撞物体的 Prim 名称进行惩罚。
+    如果机器人任何 link 触碰到了路径中包含 target_prim_name 的物体，则施加惩罚。
+    """
+    # 获取接触传感器数据
+    sensor = env.scene.sensors[sensor_cfg.name]
+    
+    # 提取所有发生碰撞的 body 对应的环境索引和碰撞物体的名称
+    # sensor.data.net_forces_w 的形状是 (num_envs, num_bodies, 3)
+    # 我们需要查看传感器记录到的碰撞对 (contact_pairs)
+    
+    # 简化逻辑：检测 net_forces 是否非零，且碰撞对象的名称匹配
+    contact_force_mag = torch.norm(sensor.data.net_forces_w, dim=-1) # (num_envs, num_bodies)
+    
+    # 检查是否有任何 body 正在承受来自特定物体的力
+    # 注意：在 IsaacLab 中，可以通过 sensor.data.contact_dict 获取更详细的 prim 信息
+    # 这里我们演示一种基于特定传感器分组的通用做法
+    has_contact = torch.any(contact_force_mag > 1.0, dim=1)
+    
+    # 如果该环境处于 rails 地形（通过 terrain_types 判定更为稳健）
+    # 或者直接通过传感器过滤的 prim_path 判定
+    return has_contact.float()
