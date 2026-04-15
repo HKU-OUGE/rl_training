@@ -64,7 +64,7 @@ inverted_stairs_cfg = terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
 rails_cfg = terrain_gen.MeshRailsTerrainCfg(
     proportion=1.0, 
     rail_thickness_range=(0.05, 0.1),  # 栏杆的厚度（较薄，逼真模拟跨栏）
-    rail_height_range=(0.1, 0.35),      # 栏杆的高度（根据机器人的极限跳跃能力调整）
+    rail_height_range=(0.2, 0.45),      # 栏杆的高度（根据机器人的极限跳跃能力调整）
     platform_width=2.0
 )
 
@@ -106,13 +106,13 @@ SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         "rails": terrain_gen.MeshBoxTerrainCfg(
             proportion=0.3,
             platform_width=8.0, # 稍微大于 TERRAIN_SIZE，确保铺满整个地块
-            box_height_range=(0.02, 0.02), # 核心：精确垫高 2cm
+            box_height_range=(0.1, 0.1), # 核心：精确垫高 2cm
         ),      
         "rings": floating_ring_cfg.replace(proportion=0.1),
         "rings2": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
         "rings3": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
         "pit": pit_cfg.replace(proportion=0.3),                  # 深坑
-        "random_rough": random_rough_cfg.replace(proportion=0.1),
+        "flat": flat_cfg.replace(proportion=0.1),
     }
 )
 
@@ -148,7 +148,7 @@ SCAN_TEACHER_TERRAINS_CFG2 = TerrainGeneratorCfg(
             double_pit=False,
             platform_width=8.0,
         ),
-        "random_rough": pit_cfg.replace(
+        "flat": pit_cfg.replace(
             proportion=0.1,      
             pit_depth_range=(3.0, 3.0), 
             double_pit=False,
