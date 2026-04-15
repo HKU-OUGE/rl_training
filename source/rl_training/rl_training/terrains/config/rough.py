@@ -63,7 +63,7 @@ inverted_stairs_cfg = terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
 
 rails_cfg = terrain_gen.MeshRailsTerrainCfg(
     proportion=1.0, 
-    rail_thickness_range=(0.05, 0.15),  # 栏杆的厚度（较薄，逼真模拟跨栏）
+    rail_thickness_range=(0.05, 0.1),  # 栏杆的厚度（较薄，逼真模拟跨栏）
     rail_height_range=(0.1, 0.35),      # 栏杆的高度（根据机器人的极限跳跃能力调整）
     platform_width=2.0
 )
@@ -99,15 +99,16 @@ PRECISION_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     }
 )
 
-# [Teacher 3] 空间扫描专家 (Extreme Scan)
-# 适用地形：跨栏、深坑、钻圈、倒金字塔
+# [Teacher 3] 空间扫描老师 (Extreme Scan)
 SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
-    size=TERRAIN_SIZE, num_rows=NUM_ROWS, num_cols=NUM_COLS, curriculum=True,
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "rails": rails_cfg.replace(proportion=0.3),              # <--- 新增：跨栏
-        "rings": floating_ring_cfg.replace(proportion=0.3),      # 钻圈
-        "pit": pit_cfg.replace(proportion=0.2),                  # 深坑
-        "inverted_stairs": inverted_stairs_cfg.replace(proportion=0.2), # 倒金字塔
+        "rails": rails_cfg.replace(proportion=0.3),             
+        "rings": floating_ring_cfg.replace(proportion=0.1),
+        "rings2": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
+        "rings3": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
+        "pit": pit_cfg.replace(proportion=0.3),                  # 深坑
+        "random_rough": random_rough_cfg.replace(proportion=0.1),
     }
 )
 
