@@ -845,8 +845,10 @@ class LocomotionVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
         for attr in dir(self.rewards):
             if not attr.startswith("__"):
                 reward_attr = getattr(self.rewards, attr)
-                if not callable(reward_attr) and reward_attr.weight == 0:
-                    setattr(self.rewards, attr, None)
+                # [核心修复] 增加健壮性检查：确保它不是 None，且真的有 weight 属性
+                if reward_attr is not None and hasattr(reward_attr, "weight"):
+                    if reward_attr.weight == 0:
+                        setattr(self.rewards, attr, None)
 
 
 def create_obsgroup_class(class_name, terms, enable_corruption=False, concatenate_terms=True):

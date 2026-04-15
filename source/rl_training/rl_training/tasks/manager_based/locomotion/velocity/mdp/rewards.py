@@ -1004,3 +1004,159 @@ def base_roll_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
     reward = torch.square(asset.data.projected_gravity_b[:, 1])
     
     return reward
+
+# ==============================================================================
+# Acrobatic Stage-Wise Rewards (后空翻、侧翻、侧滚、双手行走)
+# ==============================================================================
+
+def acrobatic_router_reward(
+    env: ManagerBasedRLEnv, 
+    command_name: str, 
+    skill_weights: dict[str, float], 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """
+    路由函数：根据当前的杂技指令 (0:站立, 1:后空翻, 2:侧翻, 3:侧滚, 4:双轮直立) 分发奖励。
+    """
+    cmd = env.command_manager.get_command(command_name)[:, 0].long()
+    rewards = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    
+    # 获取有效索引
+    idx_backflip = (cmd == 1).nonzero(as_tuple=False).flatten()
+    idx_sideflip = (cmd == 2).nonzero(as_tuple=False).flatten()
+    idx_sideroll = (cmd == 3).nonzero(as_tuple=False).flatten()
+    idx_handstand = (cmd == 4).nonzero(as_tuple=False).flatten()
+    
+    if len(idx_backflip) > 0:
+        rewards[idx_backflip] += backflip_stage_reward(env, idx_backflip, asset_cfg) * skill_weights["backflip"]
+        
+    if len(idx_sideflip) > 0:
+        rewards[idx_sideflip] += sideflip_stage_reward(env, idx_sideflip, asset_cfg) * skill_weights["sideflip"]
+        
+    if len(idx_sideroll) > 0:
+        rewards[idx_sideroll] += sideroll_stage_reward(env, idx_sideroll, asset_cfg) * skill_weights["sideroll"]
+        
+    if len(idx_handstand) > 0:
+        rewards[idx_handstand] += handstand_reward(env, idx_handstand, asset_cfg) * skill_weights["handstand"]
+        
+    return rewards
+
+def backflip_stage_reward(env: ManagerBasedRLEnv, ids: torch.Tensor, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """后空翻分阶段奖励"""
+    asset = env.scene[asset_cfg.name]
+    time = env.episode_length_buf[ids] * env.step_dt
+    reward = torch.zeros_like(ids, dtype=torch.float32)
+    
+    pitch_vel = asset.data.root_ang_vel_b[ids, 1]
+    root_z_vel = asset.data.root_lin_vel_w[ids, 2]
+    root_z = asset.data.root_pos_w[ids, 2]
+    proj_g = asset.data.projected_gravity_b[ids]
+    
+    # 阶段 1: 深蹲蓄力 (0.0s - 0.4s)
+    s1 = (time <= 0.4)
+    if s1.any():
+        reward[s1] += torch.clamp(0.25 - root_z[s1], min=0.0) * 10.0 # 鼓励降低质心
+        
+    # 阶段 2: 爆发起跳 (0.4s - 0.8s)
+    s2 = (time > 0.4) & (time <= 0.8)
+    if s2.any():
+        reward[s2] += torch.clamp(root_z_vel[s2], min=0.0, max=3.0) * 2.0 # 鼓励向上速度
+        reward[s2] += torch.clamp(-pitch_vel[s2], min=0.0, max=10.0) * 1.5 # 鼓励向后仰的角速度
+        # 利用轮子动量：奖励起跳时轮子高速旋转
+        wheel_vel = asset.data.joint_vel[ids[s2], -4:] 
+        reward[s2] += torch.mean(torch.abs(wheel_vel), dim=-1) * 0.05
+        
+    # 阶段 3: 空中翻转 (0.8s - 1.2s)
+    s3 = (time > 0.8) & (time <= 1.2)
+    if s3.any():
+        reward[s3] += torch.clamp(-pitch_vel[s3], min=0.0, max=15.0) * 2.0 # 保持空中向后旋转
+        
+    # 阶段 4: 落地缓冲 (1.2s+)
+    s4 = (time > 1.2)
+    if s4.any():
+        # 鼓励姿态恢复水平 (重力投影回归 [0, 0, -1])
+        target_g = torch.tensor([0.0, 0.0, -1.0], device=env.device).repeat(s4.sum().item(), 1)
+        reward[s4] += torch.exp(-torch.norm(proj_g[s4] - target_g, dim=-1)) * 5.0
+        
+    return reward
+
+def sideflip_stage_reward(env: ManagerBasedRLEnv, ids: torch.Tensor, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """侧翻分阶段奖励"""
+    asset = env.scene[asset_cfg.name]
+    time = env.episode_length_buf[ids] * env.step_dt
+    reward = torch.zeros_like(ids, dtype=torch.float32)
+    
+    roll_vel = asset.data.root_ang_vel_b[ids, 0] # 侧翻依赖 Roll
+    root_z_vel = asset.data.root_lin_vel_w[ids, 2]
+    proj_g = asset.data.projected_gravity_b[ids]
+    
+    # 阶段 1: 深蹲蓄力 (0.0s - 0.4s)
+    s1 = (time <= 0.4)
+    if s1.any():
+        reward[s1] += torch.clamp(0.25 - asset.data.root_pos_w[ids[s1], 2], min=0.0) * 10.0
+        
+    # 阶段 2: 侧向爆发起跳 (0.4s - 0.8s)
+    s2 = (time > 0.4) & (time <= 0.8)
+    if s2.any():
+        reward[s2] += torch.clamp(root_z_vel[s2], min=0.0, max=3.0) * 2.0 
+        reward[s2] += torch.clamp(torch.abs(roll_vel[s2]), min=0.0, max=10.0) * 1.5 
+        
+    # 阶段 3: 空中翻转 (0.8s - 1.2s)
+    s3 = (time > 0.8) & (time <= 1.2)
+    if s3.any():
+        reward[s3] += torch.clamp(torch.abs(roll_vel[s3]), min=0.0, max=15.0) * 2.0 
+        
+    # 阶段 4: 落地缓冲 (1.2s+)
+    s4 = (time > 1.2)
+    if s4.any():
+        target_g = torch.tensor([0.0, 0.0, -1.0], device=env.device).repeat(s4.sum().item(), 1)
+        reward[s4] += torch.exp(-torch.norm(proj_g[s4] - target_g, dim=-1)) * 5.0
+        
+    return reward
+
+def sideroll_stage_reward(env: ManagerBasedRLEnv, ids: torch.Tensor, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """地面侧滚分阶段奖励"""
+    asset = env.scene[asset_cfg.name]
+    time = env.episode_length_buf[ids] * env.step_dt
+    reward = torch.zeros_like(ids, dtype=torch.float32)
+    
+    roll_vel = asset.data.root_ang_vel_b[ids, 0]
+    proj_g = asset.data.projected_gravity_b[ids]
+    
+    # 阶段 1: 侧向倾倒 (0.0s - 0.5s)
+    s1 = (time <= 0.5)
+    if s1.any():
+        reward[s1] += torch.clamp(torch.abs(roll_vel[s1]), min=0.0, max=5.0) * 2.0
+        
+    # 阶段 2: 地面连续翻滚 (0.5s - 1.5s)
+    s2 = (time > 0.5) & (time <= 1.5)
+    if s2.any():
+        reward[s2] += torch.clamp(torch.abs(roll_vel[s2]), min=2.0, max=8.0) * 3.0
+        
+    # 阶段 3: 重新站立 (1.5s+)
+    s3 = (time > 1.5)
+    if s3.any():
+        target_g = torch.tensor([0.0, 0.0, -1.0], device=env.device).repeat(s3.sum().item(), 1)
+        reward[s3] += torch.exp(-torch.norm(proj_g[s3] - target_g, dim=-1)) * 5.0
+        
+    return reward
+
+def handstand_reward(env: ManagerBasedRLEnv, ids: torch.Tensor, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """双后轮直立行走奖励 (连续保持)"""
+    asset = env.scene[asset_cfg.name]
+    reward = torch.zeros_like(ids, dtype=torch.float32)
+    
+    # 直立时，机器人的机头(X轴)应该指向正上方。
+    # 假设默认站立时重力投影是 [0, 0, -1]，机头朝上时重力投影在局部系下应为 [-1, 0, 0]
+    target_g = torch.tensor([-1.0, 0.0, 0.0], device=env.device).repeat(len(ids), 1)
+    proj_g = asset.data.projected_gravity_b[ids]
+    
+    # 姿态保持奖励
+    posture_error = torch.norm(proj_g - target_g, dim=-1)
+    reward += torch.exp(-posture_error / 0.5) * 5.0
+    
+    # 高度奖励 (直立后质心会变高)
+    root_z = asset.data.root_pos_w[ids, 2]
+    reward += torch.clamp(root_z - 0.4, min=0.0) * 2.0 
+    
+    return reward

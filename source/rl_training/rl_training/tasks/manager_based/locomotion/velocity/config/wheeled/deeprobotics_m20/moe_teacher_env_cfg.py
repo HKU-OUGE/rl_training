@@ -748,12 +748,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
-        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG2
         if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
+        elif(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG2):
             self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
             self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
