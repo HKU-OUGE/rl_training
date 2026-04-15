@@ -127,3 +127,13 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:ScanMoEPPOCfg",
     },
 )
+
+gym.register(
+    id="MoE-Elevation-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.teacher_elevation_env_cfg:DeeproboticsM20TeacherElevationEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:EleMoEPPOCfg",
+    },
+)

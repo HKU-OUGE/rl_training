@@ -2046,13 +2046,13 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     
     policy = SplitMoEActorCriticCfg(
         init_noise_std=1.0, 
-        init_noise_legs=0.8,
-        init_noise_wheels=0.5, 
+        init_noise_legs=0.2,
+        init_noise_wheels=1.5, 
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
-        num_leg_experts=6,
+        num_leg_experts=3,
         num_leg_actions=12,
         latent_dim=256,
         rnn_type="gru",
