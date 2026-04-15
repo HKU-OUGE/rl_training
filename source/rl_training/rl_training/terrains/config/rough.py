@@ -90,12 +90,14 @@ BASE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 
 # [Teacher 2] 精准高程专家 (Precision Elevation)
 # 适用地形：楼梯、大缝隙、方块
-PRECISION_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
-    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=NUM_COLS, curriculum=True,
+ELEVATION_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "stairs": pyramid_stairs_cfg.replace(proportion=0.4),
+        "stairs": pyramid_stairs_cfg.replace(proportion=0.2),
+        "inv_stairs": inverted_stairs_cfg.replace(proportion=0.2),
         "gaps": gap_cfg.replace(proportion=0.4),
-        "boxes": boxes_cfg.replace(proportion=0.2),
+        "flat": flat_cfg.replace(proportion=0.1),
+        "random_rough": random_rough_cfg.replace(proportion=0.1),
     }
 )
 

@@ -39,7 +39,7 @@ class ScanRewardsCfg(DeeproboticsM20RewardsCfg):
     # 碰到了 terrain2 (即跨栏)，就给予严厉惩罚！
     rails_contact_penalty = RewTerm(
             func=mdp.horizontal_obstacle_penalty,
-            weight=-10.0,
+            weight=-2.0,
             params={
                 "sensor_cfg": SceneEntityCfg("obstacle_sensor", body_names=".*"), 
                 # 阈值设为 40N。机器人的常规摩擦力不会达到这么高，只有撞击实体才会超过
@@ -55,7 +55,7 @@ class ScanRewardsCfg(DeeproboticsM20RewardsCfg):
     # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.01) 
     
     # 基础生存惩罚
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-10.0)
 
 
 @configclass
