@@ -172,7 +172,7 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         # ---------------------------------------------------------
         # 强制向前跑，否则机器人会停在栏杆前不敢动
         if self.commands.base_velocity is not None:
-            self.commands.base_velocity.ranges.lin_vel_x = (1.5, 3.0) 
+            self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5) 
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
             self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
 
