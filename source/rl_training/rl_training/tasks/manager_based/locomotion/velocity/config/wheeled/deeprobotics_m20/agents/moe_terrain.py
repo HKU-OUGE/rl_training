@@ -1280,7 +1280,10 @@ class SplitMoEPPO(PPO):
                 hidden_states=mirrored_h_batch
             )
 
-            sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions)
+            sym_loss = torch.nn.functional.mse_loss(
+                pred_actions[..., :12], 
+                target_mirrored_actions[..., :12]
+            )
             loss = loss + sym_loss
             avg_sym_loss += sym_loss.item()
 
