@@ -1,4 +1,4 @@
-from .moe_teacher_env_cfg import DeeproboticsM20MoETeacherEnvCfg, DeeproboticsM20RewardsCfg
+from .moe_teacher_env_cfg import DeeproboticsM20MoETeacherEnvCfg, DeeproboticsM20RewardsCfg, DeeproboticsM20MoETeacherEnvCfg_ScanOnly
 from rl_training.terrains.config.rough import SCAN_TEACHER_TERRAINS_CFG, SCAN_TEACHER_TERRAINS_CFG2
 import math
 import torch # Added torch for depth calculation
@@ -30,36 +30,11 @@ from rl_training.tasks.manager_based.locomotion.velocity.mdp.commands import Ter
 from isaaclab.sensors import ContactSensorCfg
 @configclass
 class ScanRewardsCfg(DeeproboticsM20RewardsCfg):
-    """空间扫描老师的奖励函数"""
-    
-    # =========================================================
-    # 1. 核心机制：跨栏专属碰撞惩罚
-    # =========================================================
-    # 监听 obstacle_sensor。只要机器人的任何 link (包含轮子) 
-    # 碰到了 terrain2 (即跨栏)，就给予严厉惩罚！
-    rails_contact_penalty = RewTerm(
-            func=mdp.horizontal_obstacle_penalty,
-            weight=-0.0,
-            params={
-                "sensor_cfg": SceneEntityCfg("obstacle_sensor", body_names=".*"), 
-                # 阈值设为 40N。机器人的常规摩擦力不会达到这么高，只有撞击实体才会超过
-                "force_threshold": 40.0 
-            }
-        )
-    
-    # =========================================================
-    # 2. 释放部分平稳性限制 (为了越野和跳跃)
-    # =========================================================
-    # 为了鼓励腾空跨栏，放宽 Z轴速度和 Pitch 角速度的惩罚
-    # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.05) 
-    # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.01) 
-    
-    # 基础生存惩罚
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-0.0)
+    test = None
 
 
 @configclass
-class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
+class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg_ScanOnly):
     """[Teacher 3] 空间扫描专家环境配置"""
     
     def __post_init__(self):
@@ -156,14 +131,13 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
             self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
 
-        # 替换奖励
-        self.rewards = ScanRewardsCfg()
+        # Rewards
         self.rewards.is_terminated.weight = 0
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.05
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_roll_l2.weight = -10.0
-        self.rewards.base_height_l2.weight = -0.0
+        self.rewards.base_height_l2.weight = -0.5
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
@@ -188,9 +162,9 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.5
+        self.rewards.hipx_joint_pos_penalty.weight = -0.6
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.25
+        self.rewards.hipy_joint_pos_penalty.weight = -0.3
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
         self.rewards.knee_joint_pos_penalty.weight = -0.1
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
@@ -219,7 +193,7 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
-        self.rewards.feet_air_time.weight = 0.0
+        self.rewards.feet_air_time.weight = 1.0
         self.rewards.feet_air_time.params["threshold"] = 0.25
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_air_time_long.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -241,9 +215,19 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
         self.rewards.upward.weight = 0.08
-        # self.rewards.rails_contact_penalty.params["sensor_cfg"].body_names = [self.foot_link_name]
+        self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
+        self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
+        self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name]
+        # self.terminations.illegal_contact = None
+        self.terminations.bad_orientation_2 = None
+
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.1, 1.0) 
+
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+        # ------------------------------Commands------------------------------
+
         if hasattr(self, "disable_zero_weight_rewards"):
             self.disable_zero_weight_rewards()
-            
-        # 设置更长的单局时间让它跑完场地
-        self.episode_length_s = 20.0
