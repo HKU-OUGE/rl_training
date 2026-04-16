@@ -39,7 +39,7 @@ class ScanRewardsCfg(DeeproboticsM20RewardsCfg):
     # 碰到了 terrain2 (即跨栏)，就给予严厉惩罚！
     rails_contact_penalty = RewTerm(
             func=mdp.horizontal_obstacle_penalty,
-            weight=-2.0,
+            weight=-0.0,
             params={
                 "sensor_cfg": SceneEntityCfg("obstacle_sensor", body_names=".*"), 
                 # 阈值设为 40N。机器人的常规摩擦力不会达到这么高，只有撞击实体才会超过
@@ -55,7 +55,7 @@ class ScanRewardsCfg(DeeproboticsM20RewardsCfg):
     # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.01) 
     
     # 基础生存惩罚
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-10.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-0.0)
 
 
 @configclass
@@ -69,30 +69,10 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         # 1. 双地形叠加配置
         # ---------------------------------------------------------
         # 主地形 (Pit, Rings 等)
-        self.scene.terrain2 = TerrainImporterCfg(
+        self.scene.terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=SCAN_TEACHER_TERRAINS_CFG,
-            max_init_terrain_level=1,
-            collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=1.0,
-            ),
-            visual_material=sim_utils.MdlFileCfg(
-                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-                project_uvw=True,
-                texture_scale=(0.25, 0.25),
-            ),
-            debug_vis=False,
-        )
-        self.scene.terrain = TerrainImporterCfg(
-            prim_path="/World/obstacles",
-            terrain_type="generator",
-            terrain_generator=SCAN_TEACHER_TERRAINS_CFG2,
             max_init_terrain_level=1,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -117,7 +97,7 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 25.0]
 
         SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
-        SCAN_MESHES = ["/World/ground", "/World/obstacles"]  # 扫描地形1和地形2，捕捉跨栏和坑洞信息
+        SCAN_MESHES = ["/World/ground"]  # 扫描地形1和地形2，捕捉跨栏和坑洞信息
 
         for i, angle_deg in enumerate(down_angles_deg):
             

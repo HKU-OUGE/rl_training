@@ -105,11 +105,7 @@ ELEVATION_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "rails": terrain_gen.MeshBoxTerrainCfg(
-            proportion=0.3,
-            platform_width=8.0, # 稍微大于 TERRAIN_SIZE，确保铺满整个地块
-            box_height_range=(0.1, 0.1), # 核心：精确垫高 2cm
-        ),      
+        "rails": rails_cfg.replace(proportion=0.3),   
         "rings": floating_ring_cfg.replace(proportion=0.1),
         "rings2": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
         "rings3": floating_ring_cfg.replace(proportion=0.1, ring_thickness=0.1),
