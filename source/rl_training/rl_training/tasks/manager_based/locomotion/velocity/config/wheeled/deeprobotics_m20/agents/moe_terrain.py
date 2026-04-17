@@ -1280,10 +1280,7 @@ class SplitMoEPPO(PPO):
                 hidden_states=mirrored_h_batch
             )
 
-            sym_loss = torch.nn.functional.mse_loss(
-                pred_actions[..., :12], 
-                target_mirrored_actions[..., :12]
-            )
+            sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions)
             loss = loss + sym_loss
             avg_sym_loss += sym_loss.item()
 
@@ -2110,20 +2107,20 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     
     policy = SplitMoEActorCriticCfg(
         init_noise_std=1.0, 
-        init_noise_legs=0.2,
+        init_noise_legs=0.4,
         init_noise_wheels=1.5, 
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
-        num_leg_experts=3,
+        num_leg_experts=4,
         num_leg_actions=12,
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
         
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=False, 
+        use_elevation_ae=True, 
         elevation_dim=187,
         use_cnn=False, 
         

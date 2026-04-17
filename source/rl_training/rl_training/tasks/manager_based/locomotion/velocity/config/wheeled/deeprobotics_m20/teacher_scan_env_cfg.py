@@ -34,7 +34,7 @@ class ScanRewardsCfg(DeeproboticsM20RewardsCfg):
 
 
 @configclass
-class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg_ScanOnly):
+class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     """[Teacher 3] 空间扫描专家环境配置"""
     
     def __post_init__(self):
