@@ -20,7 +20,6 @@ from rl_training.tasks.manager_based.locomotion.velocity.velocity_env_cfg import
 from isaaclab.terrains import TerrainImporterCfg
 import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
-from isaaclab.sensors import MultiMeshRayCasterCfg
 ##
 # Pre-defined configs
 ##
@@ -81,14 +80,13 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             fwd_half_rad = math.radians(fwd_pitch_deg) / 2.0
             fwd_rot = (math.cos(fwd_half_rad), 0.0, math.sin(fwd_half_rad), 0.0)
             
-            fwd_sensor = MultiMeshRayCasterCfg(
+            fwd_sensor = RayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, 
-                max_distance=5.0, # 修改为 5.0m
-                debug_vis=False, 
-                reference_meshes=True,
+                offset=RayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
+                ray_alignment="base",
+                pattern_cfg=SCAN_PATTERN,
+                max_distance=5.0,
+                debug_vis=False,
                 mesh_prim_paths=SCAN_MESHES,
             )
             fwd_sensor.update_period = 0.1
@@ -99,14 +97,13 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             bwd_half_rad = math.radians(bwd_pitch_deg) / 2.0
             bwd_rot = (math.cos(bwd_half_rad), 0.0, math.sin(bwd_half_rad), 0.0)
             
-            bwd_sensor = MultiMeshRayCasterCfg(
+            bwd_sensor = RayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, 
-                max_distance=5.0, # 修改为 5.0m
-                debug_vis=False, 
-                reference_meshes=True,
+                offset=RayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
+                ray_alignment="base",
+                pattern_cfg=SCAN_PATTERN,
+                max_distance=5.0,
+                debug_vis=False,
                 mesh_prim_paths=SCAN_MESHES,
             )
             bwd_sensor.update_period = 0.1

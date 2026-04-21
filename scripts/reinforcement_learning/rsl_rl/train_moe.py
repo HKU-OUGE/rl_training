@@ -75,7 +75,7 @@ except ImportError:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.benchmark = True
 
 # ==============================================================================
 # [New] 动态视角巡视 Wrapper (修正 KeyError Bug)

@@ -1440,73 +1440,118 @@ class SplitMoEPPO(PPO):
         return obs_mirrored
     def act(self, obs, **kwargs):
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
-        
-        # 辅助切片函数 (兼容 GRU 和 LSTM)
-        def _slice_h(h, start, end):
+
+        # 辅助函数 (兼容 GRU 和 LSTM hidden state)
+        def _slice_layer(h, start, end):
             if isinstance(h, tuple): return (h[0][start:end], h[1][start:end])
             return h[start:end]
-            
-        def _cat_h(h1, h2):
+
+        def _cat_layer(h1, h2):
             if isinstance(h1, tuple): return (torch.cat([h1[0], h2[0]], dim=0), torch.cat([h1[1], h2[1]], dim=0))
             return torch.cat([h1, h2], dim=0)
 
+        def _cat_batch(h1, h2):
+            if isinstance(h1, tuple): return (torch.cat([h1[0], h2[0]], dim=1), torch.cat([h1[1], h2[1]], dim=1))
+            return torch.cat([h1, h2], dim=1)
+
+        def _split_batch(h, B):
+            if isinstance(h, tuple): return (h[0][:, :B], h[1][:, :B]), (h[0][:, B:], h[1][:, B:])
+            return h[:, :B], h[:, B:]
+
         # =====================================================================
-        # 1. 备份当前时刻的完整隐状态 (真实状态 h_t + 镜像状态 m_t)
+        # 1. 保存隐状态到 Transition (供 Rollout Storage 使用)
         # =====================================================================
+        if model.is_recurrent:
+            self.transition.hidden_states = model.get_hidden_states()
+
         dev = obs["policy"].device if isinstance(obs, dict) else obs.device
-        current_h_backup = model._prepare_hidden_state(model.active_hidden_states, dev)
-        current_c_backup = model._prepare_hidden_state(model.active_critic_hidden_states, dev)
+        B = obs["policy"].shape[0] if isinstance(obs, dict) else obs.shape[0]
 
         # =====================================================================
-        # 2. 调用原生 act
-        # 这会将包含 (h_t, m_t) 的元组正确无误地存入 Rollout Storage，
-        # 并通过底层的 policy.act() 将真实状态推进到 h_{t+1}，此时 m_t 原封不动
+        # 2. 准备镜像观测，沿 batch 维拼接 [real, mirror]
         # =====================================================================
-        action = super().act(obs, **kwargs)
+        obs_mirrored = self._mirror_obs(obs)
+        batched_obs = {}
+        if isinstance(obs, dict) or hasattr(obs, "keys"):
+            for k in obs.keys():
+                batched_obs[k] = torch.cat([obs[k], obs_mirrored[k]], dim=0)
+        else:
+            batched_obs = torch.cat([obs, obs_mirrored], dim=0)
 
         # =====================================================================
-        # 3. 在无梯度环境下，使用备份的 m_t 推进镜像 RNN 状态到 m_{t+1}
+        # 3. 拆解 piggybacked 隐状态 → 沿 batch 维合并用于单次 forward
+        #    piggybacked: (2, B, H) → h_real=(1,B,H), h_mirror=(1,B,H)
+        #    batched:     (1, 2B, H)
         # =====================================================================
-        obs_mirrored = self._mirror_obs(obs) 
-        
+        current_h = model._prepare_hidden_state(model.active_hidden_states, dev)
+        h_real = _slice_layer(current_h, 0, 1)
+        h_mirror = _slice_layer(current_h, 1, 2)
+        h_batched = _cat_batch(h_real, h_mirror)
+
+        current_c = model._prepare_hidden_state(model.active_critic_hidden_states, dev)
+        has_critic = current_c is not None
+        if has_critic:
+            c_real = _slice_layer(current_c, 0, 1)
+            c_mirror = _slice_layer(current_c, 1, 2)
+            c_batched = _cat_batch(c_real, c_mirror)
+
         was_training = model.training
-        model.eval() # 临时切为 eval，防止 AE 重构缓存被意外覆盖
-        
+        model.eval()
+
         with torch.no_grad():
-            # ------ A. 推进 Actor 镜像状态 ------
-            x_raw_mirrored = model._extract_raw_obs(obs_mirrored, model.input_keys)
-            x_in_mirrored = model._process_obs(x_raw_mirrored, obs_dict=obs_mirrored)
-            
-            # 提取备份的 m_t (即 Layer 1)
-            mirrored_h = _slice_h(current_h_backup, 1, 2)
-            _, next_mirrored_h = model._run_rnn(model.rnn, x_in_mirrored, mirrored_h, masks=None)
-            
-            # ------ B. 推进 Critic 镜像状态 ------
-            if current_c_backup is not None:
-                x_raw_critic_mirrored = model._extract_raw_obs(obs_mirrored, getattr(model, "critic_keys", model.input_keys))
-                normalizer_c = model.critic_obs_normalizer if model.critic_obs_normalization else None
-                x_in_critic_mirrored = model._process_obs(
-                    x_raw_critic_mirrored, obs_dict=obs_mirrored, 
-                    normalizer=normalizer_c, proprio_dim=model.critic_proprio_dim
-                )
-                mirrored_c = _slice_h(current_c_backup, 1, 2)
-                _, next_mirrored_c = model._run_rnn(model.critic_rnn, x_in_critic_mirrored, mirrored_c, masks=None)
+            # =============================================================
+            # 4. 单次 batched Actor 前向 (real + mirror 合并)
+            # =============================================================
+            x_raw_a = model._extract_raw_obs(batched_obs, model.input_keys)
+            normalizer_a = model.actor_obs_normalizer if model.actor_obs_normalization else None
+            x_in_a = model._process_obs(x_raw_a, obs_dict=batched_obs, normalizer=normalizer_a)
+
+            rnn_out_a, next_h_batched = model.rnn(x_in_a.unsqueeze(0), h_batched)
+            latent_all = rnn_out_a[0]
+
+            latent_real = latent_all[:B]
+            next_h_real, next_h_mirror = _split_batch(next_h_batched, B)
+            model.active_hidden_states = _cat_layer(next_h_real, next_h_mirror)
+
+            mean = model._compute_actor_output(latent_real, obs_dict=obs)
+            safe_std = torch.clamp(model.std, min=1e-4)
+            model.distribution = torch.distributions.Normal(mean, safe_std)
+
+            # =============================================================
+            # 5. 单次 batched Critic 前向 (real + mirror 合并)
+            # =============================================================
+            critic_keys = getattr(model, "critic_keys", model.input_keys)
+            x_raw_c = model._extract_raw_obs(batched_obs, critic_keys)
+            normalizer_c = model.critic_obs_normalizer if model.critic_obs_normalization else None
+            x_in_c = model._process_obs(
+                x_raw_c, obs_dict=batched_obs,
+                normalizer=normalizer_c, proprio_dim=model.critic_proprio_dim
+            )
+
+            if has_critic:
+                rnn_out_c, next_c_batched = model.critic_rnn(x_in_c.unsqueeze(0), c_batched)
+                critic_latent_real = rnn_out_c[0][:B]
+                next_c_real, next_c_mirror = _split_batch(next_c_batched, B)
+                model.active_critic_hidden_states = _cat_layer(next_c_real, next_c_mirror)
             else:
-                next_mirrored_c = None
-                
+                rnn_out_c, _ = model.critic_rnn(x_in_c.unsqueeze(0), None)
+                critic_latent_real = rnn_out_c[0][:B]
+
+            value = model.critic_mlp(critic_latent_real)
+
         model.train(was_training)
 
         # =====================================================================
-        # 4. 缝合：真实的 h_{t+1} 与 镜像的 m_{t+1}
+        # 6. 保存 Transition 数据
         # =====================================================================
-        real_next_h = _slice_h(model.active_hidden_states, 0, 1)
-        model.active_hidden_states = _cat_h(real_next_h, next_mirrored_h)
+        self.transition.actions = model.distribution.sample().detach()
+        self.transition.values = value.detach()
+        self.transition.actions_log_prob = model.get_actions_log_prob(self.transition.actions).detach()
+        self.transition.action_mean = model.action_mean.detach()
+        self.transition.action_sigma = model.action_std.detach()
+        self.transition.observations = obs
 
-        if next_mirrored_c is not None:
-            real_next_c = _slice_h(model.active_critic_hidden_states, 0, 1)
-            model.active_critic_hidden_states = _cat_h(real_next_c, next_mirrored_c)
-
-        return action
+        return self.transition.actions
 # ==============================================================================
 # 自定义算法：带对称性增强的蒸馏 (Sequence-Level Augmentation 双趟遍历)
 # (完全保留原始逻辑与硬编码)
