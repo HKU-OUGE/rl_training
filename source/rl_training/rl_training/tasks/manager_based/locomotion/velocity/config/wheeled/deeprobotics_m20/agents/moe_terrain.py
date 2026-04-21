@@ -2108,7 +2108,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
-        num_leg_experts=3,
+        num_leg_experts=4,
         num_leg_actions=12,
         latent_dim=256,
         rnn_type="gru",
