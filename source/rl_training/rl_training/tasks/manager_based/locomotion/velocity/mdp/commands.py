@@ -29,7 +29,7 @@ class UniformThresholdVelocityCommand(mdp.UniformVelocityCommand):
 
         super()._resample_command(env_ids)
         
-        env_ids_tensor = torch.tensor(env_ids, dtype=torch.long, device=self.device)
+        env_ids_tensor = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
         
         # 1. 找出速度模长(绝对值) < 0.5 的“不合格”环境
         vel_norm = torch.norm(self.vel_command_b[env_ids_tensor, :2], dim=1)
@@ -165,7 +165,7 @@ class TerrainAwareVelocityCommand(UniformThresholdVelocityCommand):
         else:
             levels = torch.zeros(len(env_ids), dtype=torch.long, device=self.device)
 
-        env_ids_tensor = torch.tensor(env_ids, dtype=torch.long, device=self.device)
+        env_ids_tensor = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
         hard_mask = levels >= self.cfg.terrain_level_threshold
         hard_ids = env_ids_tensor[hard_mask]
 
