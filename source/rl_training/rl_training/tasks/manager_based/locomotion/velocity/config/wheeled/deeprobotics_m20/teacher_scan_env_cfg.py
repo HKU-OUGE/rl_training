@@ -275,8 +275,8 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         # self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
-        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.1, 1.0) 
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (1.0, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (1.0, 1.0)
 
         # ------------------------------Commands------------------------------
 
