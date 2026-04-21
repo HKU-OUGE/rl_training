@@ -122,16 +122,42 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             force_threshold=2.0,  # 只要接触力大于 1N 就触发惩罚
         )
 
+        self.commands.base_velocity = mdp.UniformThresholdVelocityCommandCfg(
+            asset_name="robot",
+            resampling_time_range=(10.0, 10.0),
+            rel_standing_envs=0.05,
+            rel_heading_envs=1.0,
+            heading_command=True,
+            heading_control_stiffness=0.5,
+            debug_vis=False,
+            ranges=mdp.UniformThresholdVelocityCommandCfg.Ranges(
+                lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
+            ),
+        )
+
         # ---------------------------------------------------------
-        # 3. 强制向前速度与参数替换
+        # 3. 强制 2.5D 运动模式 (基于 Heading 的闭环纠偏)
         # ---------------------------------------------------------
-        # 强制向前跑，否则机器人会停在栏杆前不敢动
         if self.commands.base_velocity is not None:
-            self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5) 
+            # 1. 开启 100% 的 Heading 控制
+            self.commands.base_velocity.rel_heading_envs = 1.0 
+            self.commands.base_velocity.heading_command = True
+            
+            # P控制器的刚度，0.5是一个很好的默认值。
+            # 如果发现机器人纠偏太慢，可以稍微调大到 1.0
+            self.commands.base_velocity.heading_control_stiffness = 0.5 
+
+            # 2. 锁定目标参数
+            # 目标航向角永远是 0 (面朝正前方跑道)
+            self.commands.base_velocity.ranges.heading = (0.0, 0.0) 
+            # 依然不允许侧向平移
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-            self.commands.base_velocity.ranges.ang_vel_z = (-0.0, 0.0)
-            if hasattr(self.commands.base_velocity.ranges, "heading"):
-                self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+            # 只有这里有范围，Heading控制器算出的纠偏角速度才能下发给机器人
+            self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5) 
+            
+            # 正常的前向速度训练范围
+            self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+
 
         self.events.randomize_reset_base.params = {
             "pose_range": {
@@ -159,7 +185,7 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
 
         # Rewards
-        self.rewards.is_terminated.weight = 0
+        self.rewards.is_terminated.weight = -100
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.05
         self.rewards.flat_orientation_l2.weight = 0

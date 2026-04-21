@@ -26,9 +26,29 @@ class UniformThresholdVelocityCommand(mdp.UniformVelocityCommand):
     """The configuration of the command generator."""
 
     def _resample_command(self, env_ids: Sequence[int]):
+
         super()._resample_command(env_ids)
-        # set small commands to zero
-        self.vel_command_b[env_ids, :2] *= (torch.norm(self.vel_command_b[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        
+        env_ids_tensor = torch.tensor(env_ids, dtype=torch.long, device=self.device)
+        
+        # 1. 找出速度模长(绝对值) < 0.5 的“不合格”环境
+        vel_norm = torch.norm(self.vel_command_b[env_ids_tensor, :2], dim=1)
+        invalid_mask = (vel_norm < 0.5) & (vel_norm > 1e-4)
+        
+        # 2. 如果存在不合格的环境，直接使用张量运算为它们分配新的合法速度
+        if invalid_mask.any():
+            invalid_ids = env_ids_tensor[invalid_mask]
+            num_invalid = len(invalid_ids)
+            
+            # 随机决定方向：生成 1 (向前) 或 -1 (向后)
+            directions = torch.randint(0, 2, (num_invalid,), device=self.device) * 2 - 1
+            
+            # 随机生成幅度：在 0.5 到 1.5 之间均匀采样
+            magnitudes = math_utils.sample_uniform(0.5, 1.5, (num_invalid,), device=self.device)
+            
+            # 赋予新的合法速度，并强制 Y 轴为 0 (2.5D 运动)
+            self.vel_command_b[invalid_ids, 0] = directions * magnitudes
+            self.vel_command_b[invalid_ids, 1] = 0.0
 
 
 @configclass
@@ -136,36 +156,44 @@ class TerrainAwareVelocityCommand(UniformThresholdVelocityCommand):
     cfg: "TerrainAwareVelocityCommandCfg"
 
     def _resample_command(self, env_ids: Sequence[int]):
-        # 1. 执行基类的基础准备工作 (这会基于 cfg.ranges 采样，受课程学习控制)
+        # 1. 执行基类采样
         super()._resample_command(env_ids)
 
-        # 2. 获取当前环境的地形等级
+        # 2. 获取地形等级
         if hasattr(self._env.scene, "terrain") and hasattr(self._env.scene.terrain, "terrain_levels"):
             levels = self._env.scene.terrain.terrain_levels[env_ids]
         else:
             levels = torch.zeros(len(env_ids), dtype=torch.long, device=self.device)
 
-        # 3. 准备索引掩码
         env_ids_tensor = torch.tensor(env_ids, dtype=torch.long, device=self.device)
         hard_mask = levels >= self.cfg.terrain_level_threshold
         hard_ids = env_ids_tensor[hard_mask]
 
-        # 4. 针对困难地形 (Hard) 进行特殊采样覆盖 (读取 Config 里的 hard_ranges)
+        # 3. 针对困难地形进行覆盖采样
         if len(hard_ids) > 0:
             self.vel_command_b[hard_ids, 0] = math_utils.sample_uniform(
                 self.cfg.hard_ranges.lin_vel_x[0], self.cfg.hard_ranges.lin_vel_x[1], (len(hard_ids),), device=self.device
             )
-            
             self.vel_command_b[hard_ids, 1] = math_utils.sample_uniform(
                 self.cfg.hard_ranges.lin_vel_y[0], self.cfg.hard_ranges.lin_vel_y[1], (len(hard_ids),), device=self.device
             )
-            
             self.vel_command_b[hard_ids, 2] = math_utils.sample_uniform(
                 self.cfg.hard_ranges.ang_vel_z[0], self.cfg.hard_ranges.ang_vel_z[1], (len(hard_ids),), device=self.device
             )
 
-        # 5. 重新应用死区逻辑 (保持一致性)
-        self.vel_command_b[env_ids, :2] *= (torch.norm(self.vel_command_b[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        # 4. 彻底消除 0.5 以下的速度
+        vel_norm = torch.norm(self.vel_command_b[env_ids_tensor, :2], dim=1)
+        invalid_mask = (vel_norm < 0.5) & (vel_norm > 1e-4)
+        
+        if invalid_mask.any():
+            invalid_ids = env_ids_tensor[invalid_mask]
+            
+            # 幅度限制在 [0.5, 1.5]
+            directions = torch.randint(0, 2, (len(invalid_ids),), device=self.device) * 2 - 1
+            magnitudes = math_utils.sample_uniform(0.5, 1.5, (len(invalid_ids),), device=self.device)
+            
+            self.vel_command_b[invalid_ids, 0] = directions * magnitudes
+            self.vel_command_b[invalid_ids, 1] = 0.0
         
         # if 0 in env_ids_tensor:
         #     idx = (env_ids_tensor == 0).nonzero(as_tuple=True)[0][0]
