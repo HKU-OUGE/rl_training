@@ -1,4 +1,4 @@
-from .moe_teacher_env_cfg import DeeproboticsM20MoETeacherEnvCfg_EleOnly, DeeproboticsM20RewardsCfg
+from .moe_teacher_env_cfg import DeeproboticsM20MoETeacherEnvCfg, DeeproboticsM20RewardsCfg
 from rl_training.terrains.config.rough import ELEVATION_TEACHER_TERRAINS_CFG
 from isaaclab.utils import configclass
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -47,7 +47,7 @@ class ElevationRewardsCfg(DeeproboticsM20RewardsCfg):
 
 
 @configclass
-class DeeproboticsM20TeacherElevationEnvCfg(DeeproboticsM20MoETeacherEnvCfg_EleOnly):
+class DeeproboticsM20TeacherElevationEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     """[Teacher 2] 精准高程专家环境配置"""
     
     def __post_init__(self):
