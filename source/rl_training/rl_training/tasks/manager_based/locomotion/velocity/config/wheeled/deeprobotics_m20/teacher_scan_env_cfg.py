@@ -129,7 +129,34 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         if self.commands.base_velocity is not None:
             self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5) 
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-            self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+            self.commands.base_velocity.ranges.ang_vel_z = (-0.0, 0.0)
+            if hasattr(self.commands.base_velocity.ranges, "heading"):
+                self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+
+        self.events.randomize_reset_base.params = {
+            "pose_range": {
+                "x": (-0.5, 0.5),
+                "y": (-0.2, 0.2),
+                "z": (0.0, 0.0),
+                "roll": (-0.3, 0.3),
+                "pitch": (-0.3, 0.3),
+                "yaw": (0.0, 0.0),
+            },
+            "velocity_range": {
+                "x": (-0.2, 0.2),
+                "y": (-0.2, 0.2),
+                "z": (-0.0, 0.2),
+                "roll": (-0.05, 0.05),
+                "pitch": (-0.05, 0.05),
+                "yaw": (-0.0, 0.0),
+            },
+        }
+        self.events.randomize_rigid_body_mass_base.params["asset_cfg"].body_names = [self.base_link_name]
+        self.events.randomize_rigid_body_mass.params["asset_cfg"].body_names = [
+            f"^(?!.*{self.base_link_name}).*"
+        ]
+        self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
+        self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
 
         # Rewards
         self.rewards.is_terminated.weight = 0
@@ -224,9 +251,6 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
         self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.1, 1.0) 
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         # ------------------------------Commands------------------------------
 
         if hasattr(self, "disable_zero_weight_rewards"):
