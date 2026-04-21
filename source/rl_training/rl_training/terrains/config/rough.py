@@ -103,10 +103,9 @@ BASE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 ELEVATION_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "stairs": pyramid_stairs_cfg.replace(proportion=0.2),
-        "inv_stairs": inverted_stairs_cfg.replace(proportion=0.2),
+        "stairs": pyramid_stairs_cfg.replace(proportion=0.25),
+        "inv_stairs": inverted_stairs_cfg.replace(proportion=0.25),
         "gaps": gap_cfg.replace(proportion=0.4),
-        "flat": flat_cfg.replace(proportion=0.1),
         "random_rough": random_rough_cfg.replace(proportion=0.1),
     }
 )

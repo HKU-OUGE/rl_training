@@ -2102,7 +2102,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     
     policy = SplitMoEActorCriticCfg(
         init_noise_std=1.0, 
-        init_noise_legs=0.2,
+        init_noise_legs=0.6,
         init_noise_wheels=1.5, 
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
@@ -2125,7 +2125,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
 
-        use_multilayer_scan=False,
+        use_multilayer_scan=True,
         num_scan_channels=12,  # 6前 + 6后
         num_scan_rays=21,     # 每个通道的射线数
 
@@ -2133,7 +2133,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         critic_obs_normalization=True,
 
         # 接收 AE/VAE
-        feed_estimator_to_policy=False, 
+        feed_estimator_to_policy=True, 
         feed_ae_to_policy=True,
     )
 
@@ -2166,7 +2166,7 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     
     policy = SplitMoEActorCriticCfg(
         init_noise_std=1.0, 
-        init_noise_legs=0.4,
+        init_noise_legs=0.6,
         init_noise_wheels=1.5, 
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],

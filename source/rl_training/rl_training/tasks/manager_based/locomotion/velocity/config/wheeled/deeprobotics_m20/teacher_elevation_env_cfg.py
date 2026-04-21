@@ -3,6 +3,7 @@ from rl_training.terrains.config.rough import ELEVATION_TEACHER_TERRAINS_CFG
 from isaaclab.utils import configclass
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+import math
 import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
 
 @configclass
@@ -58,12 +59,14 @@ class DeeproboticsM20TeacherElevationEnvCfg(DeeproboticsM20MoETeacherEnvCfg_EleO
         self.scene.terrain.terrain_generator = ELEVATION_TEACHER_TERRAINS_CFG
 
         # ---------------------------------------------------------
-        # 2. 速度指令调整
+        # 2. 速度指令调整 (2.5D 闭环纠偏, 对齐 scan 环境)
         # ---------------------------------------------------------
-        # 高程专家不需要像平地那样狂奔，它的核心是稳定跨越离散障碍。
-        # 给它一个稳定的向前期望速度，并允许一定程度的偏航去对齐楼梯边缘。
         if self.commands.base_velocity is not None:
-            self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5) 
+            self.commands.base_velocity.rel_heading_envs = 1.0
+            self.commands.base_velocity.heading_command = True
+            self.commands.base_velocity.heading_control_stiffness = 0.5
+            self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+            self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
             self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
 
@@ -146,6 +149,49 @@ class DeeproboticsM20TeacherElevationEnvCfg(DeeproboticsM20MoETeacherEnvCfg_EleO
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
         self.rewards.upward.weight = 0.08
+        self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
+        self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
+        self.rewards.joint_mirror_lr.weight = -0.015
+
+        # ---------------------------------------------------------
+        # 4. 终止条件对齐
+        # ---------------------------------------------------------
+        self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name]
+        self.terminations.bad_orientation_2 = None
+
+        # ---------------------------------------------------------
+        # 5. 课程学习：取消命令课程
+        # ---------------------------------------------------------
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (1.0, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (1.0, 1.0)
+
+        # ---------------------------------------------------------
+        # 6. 随机化对齐
+        # ---------------------------------------------------------
+        self.events.randomize_reset_base.params = {
+            "pose_range": {
+                "x": (-0.5, 0.5),
+                "y": (-0.2, 0.2),
+                "z": (0.0, 0.0),
+                "roll": (-0.3, 0.3),
+                "pitch": (-0.3, 0.3),
+                "yaw": (0.0, 0.0),
+            },
+            "velocity_range": {
+                "x": (-0.2, 0.2),
+                "y": (-0.2, 0.2),
+                "z": (-0.0, 0.2),
+                "roll": (-0.05, 0.05),
+                "pitch": (-0.05, 0.05),
+                "yaw": (-0.0, 0.0),
+            },
+        }
+        self.events.randomize_rigid_body_mass_base.params["asset_cfg"].body_names = [self.base_link_name]
+        self.events.randomize_rigid_body_mass.params["asset_cfg"].body_names = [
+            f"^(?!.*{self.base_link_name}).*"
+        ]
+        self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
+        self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
         self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
         self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
