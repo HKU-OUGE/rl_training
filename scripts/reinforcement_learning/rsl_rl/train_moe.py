@@ -23,6 +23,8 @@ parser.add_argument("--seed", type=int, default=None, help="Random seed")
 parser.add_argument("--num_wheel_experts", type=int, default=None)
 parser.add_argument("--num_leg_experts", type=int, default=None)
 
+parser.add_argument("--distributed", action="store_true", default=False, help="Run training with multiple GPUs.")
+
 # 分布式参数
 parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training")
 
@@ -40,6 +42,10 @@ args, _ = parser.parse_known_args()
 
 local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 is_master = (local_rank == 0)
+
+# 检测 torchrun 环境，自动启用 distributed
+if os.environ.get("WORLD_SIZE", None) is not None and int(os.environ["WORLD_SIZE"]) > 1:
+    args.distributed = True
 
 if args.video and is_master:
     args.enable_cameras = True

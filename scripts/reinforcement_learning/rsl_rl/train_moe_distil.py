@@ -25,9 +25,15 @@ parser.add_argument("--teacher_ckpt", type=str, default=None, help="Path to teac
 
 # [New] 添加分布式参数支持 (AppLauncher 需要)
 parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training")
+parser.add_argument("--distributed", action="store_true", default=False, help="Run training with multiple GPUs.")
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+
+# 检测 torchrun 环境，自动启用 distributed
+if os.environ.get("WORLD_SIZE", None) is not None and int(os.environ["WORLD_SIZE"]) > 1:
+    args.distributed = True
+
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
