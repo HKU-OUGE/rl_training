@@ -286,7 +286,8 @@ class SplitMoEActorCritic(ActorCritic):
             "use_elevation_ae", "elevation_dim", "blind_vision", "is_student_mode",
             "feed_estimator_to_policy", "feed_ae_to_policy",
             "use_multilayer_scan", "num_scan_channels", "num_scan_rays", "teacher_is_mlp",
-            "use_cnn", "num_cameras", "camera_height", "camera_width"
+            "use_cnn", "num_cameras", "camera_height", "camera_width",
+            "sym_loss_coef"
         ]}
 
         super().__init__(obs, obs_groups, num_actions, actor_hidden_dims=actor_hidden_dims, 
@@ -461,6 +462,7 @@ class SplitMoEActorCritic(ActorCritic):
         self.latent_dim = latent_dim
         self.rnn_type = rnn_type.lower()
         self.aux_loss_coef = aux_loss_coef
+        self.sym_loss_coef = kwargs.get("sym_loss_coef", 1.0)
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
 
@@ -1007,7 +1009,7 @@ class SplitMoEStudentTeacher(nn.Module):
             print("[Distillation] Initializing Student's VAE/AE from Teacher...")
             student_dict = self.student.state_dict()
             for k, v in teacher_state_dict.items():
-                if k.startswith("estimator") or k.startswith("elevation_encoder") or k.startswith("depth_encoder"):
+                if k.startswith("estimator") or k.startswith("elevation_encoder") or k.startswith("depth_encoder") or k.startswith("scan_encoder"):
                     if k in student_dict and student_dict[k].shape == v.shape:
                         student_dict[k].copy_(v)
             self.student.load_state_dict(student_dict, strict=False)
@@ -1281,7 +1283,7 @@ class SplitMoEPPO(PPO):
             )
 
             sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions)
-            loss = loss + sym_loss
+            loss = loss + getattr(model, 'sym_loss_coef', 1.0) * sym_loss
             avg_sym_loss += sym_loss.item()
 
             # -----------------------------------------------------------------
@@ -1521,14 +1523,25 @@ class SymmetricMoEDistillation(Distillation):
         obs_mirrored = obs.clone()
         if "policy" in obs_mirrored.keys():
             p = obs_mirrored["policy"].clone()
-            p[..., 1] *= -1.0  # base_lin_vel: y
-            p[..., 3] *= -1.0  # base_ang_vel: roll (x)
-            p[..., 5] *= -1.0  # base_ang_vel: yaw (z)
-            p[..., 7] *= -1.0  # projected_gravity: y
-            p[..., 10] *= -1.0 # velocity_commands: vy
-            p[..., 11] *= -1.0 # velocity_commands: wz
-            for offset in [12, 28, 44]:
-                p[..., offset:offset+16] = p[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
+            if p.shape[-1] > 57:
+                # 60-dim layout: [base_lin_vel(3), base_ang_vel(3), gravity(3), vel_cmd(3), joints...]
+                p[..., 1] *= -1.0  # base_lin_vel: y
+                p[..., 3] *= -1.0  # base_ang_vel: roll (x)
+                p[..., 5] *= -1.0  # base_ang_vel: yaw (z)
+                p[..., 7] *= -1.0  # projected_gravity: y
+                p[..., 10] *= -1.0 # velocity_commands: vy
+                p[..., 11] *= -1.0 # velocity_commands: wz
+                for offset in [12, 28, 44]:
+                    p[..., offset:offset+16] = p[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
+            else:
+                # 57-dim layout: [base_ang_vel(3), gravity(3), vel_cmd(3), joints...]
+                p[..., 0] *= -1.0  # base_ang_vel: roll (x)
+                p[..., 2] *= -1.0  # base_ang_vel: yaw (z)
+                p[..., 4] *= -1.0  # projected_gravity: y
+                p[..., 7] *= -1.0  # velocity_commands: vy
+                p[..., 8] *= -1.0  # velocity_commands: wz
+                for offset in [9, 25, 41]:
+                    p[..., offset:offset+16] = p[..., offset:offset+16][..., self.action_swap_idx] * self.action_neg_mask
             obs_mirrored["policy"] = p
 
         for group_name in ["blind_student_policy", "student_policy"]:
@@ -1657,6 +1670,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     latent_dim: int = 256
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
+    sym_loss_coef: float = 0.1
 
     blind_vision: bool = False       
     use_elevation_ae: bool = True   
