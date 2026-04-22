@@ -137,3 +137,24 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:EleMoEPPOCfg",
     },
 )
+
+# New Teacher Environments (T1, T4)
+gym.register(
+    id="MoE-Base-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.teacher_base_env_cfg:DeeproboticsM20TeacherBaseEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:BaseMoEPPOCfg",
+    },
+)
+
+gym.register(
+    id="MoE-Placement-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.teacher_placement_env_cfg:DeeproboticsM20TeacherPlacementEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:PlacementMoEPPOCfg",
+    },
+)

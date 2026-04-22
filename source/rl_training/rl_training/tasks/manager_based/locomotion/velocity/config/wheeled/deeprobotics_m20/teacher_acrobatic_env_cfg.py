@@ -9,7 +9,13 @@ from isaaclab.envs.mdp.commands.commands_cfg import UniformVelocityCommandCfg
 import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
 from .moe_teacher_env_cfg import DeeproboticsM20MoETeacherEnvCfg
 from rl_training.tasks.manager_based.locomotion.velocity.velocity_env_cfg import RewardsCfg
-from rl_training.terrains.config.rough import ACROBATIC_TEACHER_TERRAINS_CFG
+from rl_training.terrains.config.rough import (
+    ACROBATIC_TEACHER_TERRAINS_CFG,
+    BASE_TEACHER_TERRAINS_CFG,
+    ELEVATION_TEACHER_TERRAINS_CFG,
+    SCAN_TEACHER_TERRAINS_CFG,
+    PLACEMENT_TEACHER_TERRAINS_CFG,
+)
 
 
 @configclass
