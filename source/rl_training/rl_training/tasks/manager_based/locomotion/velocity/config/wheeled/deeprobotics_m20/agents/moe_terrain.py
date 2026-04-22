@@ -2288,16 +2288,16 @@ class PlacementMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 36
     max_iterations = 6000
     save_interval = 100
-    experiment_name = "placement_moe_teacher_parallel" 
+    experiment_name = "placement_moe_teacher_parallel"
     empirical_normalization = False
-    
+
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
-    
+
     policy = SplitMoEActorCriticCfg(
-        init_noise_std=1.0, 
+        init_noise_std=1.0,
         init_noise_legs=0.6,
-        init_noise_wheels=1.5, 
-        actor_hidden_dims=[256, 128, 128], 
+        init_noise_wheels=1.5,
+        actor_hidden_dims=[256, 128, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=2,  # 轮专家数：2（中等难度）
@@ -2306,24 +2306,24 @@ class PlacementMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        
-        blind_vision=False, 
+
+        blind_vision=False,
         use_elevation_ae=True,  # 使用高程估计器
         elevation_dim=187,
-        use_cnn=False, 
-        
+        use_cnn=False,
+
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
-        estimator_target_indices=[0, 1, 2], 
+        estimator_target_indices=[0, 1, 2],
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
 
         use_multilayer_scan=False,
 
-        actor_obs_normalization=True, 
+        actor_obs_normalization=True,
         critic_obs_normalization=True,
 
-        feed_estimator_to_policy=True, 
+        feed_estimator_to_policy=True,
         feed_ae_to_policy=True,
     )
 
@@ -2335,7 +2335,196 @@ class PlacementMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3, 
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+@configclass
+class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
+    """T6 高台攀爬专家配置 - Scan AE + Elevation AE + Estimator 全开"""
+    num_steps_per_env = 36
+    max_iterations = 6000
+    save_interval = 100
+    experiment_name = "platform_moe_teacher_parallel"
+    empirical_normalization = False
+
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
+
+    policy = SplitMoEActorCriticCfg(
+        init_noise_std=1.0,
+        init_noise_legs=0.6,
+        init_noise_wheels=1.5,
+        actor_hidden_dims=[256, 128, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=4,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+
+        blind_vision=False,
+        use_elevation_ae=True,
+        elevation_dim=187,
+        use_cnn=False,
+
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+
+        use_multilayer_scan=True,
+        num_scan_channels=12,
+        num_scan_rays=21,
+
+        actor_obs_normalization=True,
+        critic_obs_normalization=True,
+
+        feed_estimator_to_policy=True,
+        feed_ae_to_policy=True,
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        class_name="SplitMoEPPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+@configclass
+class GapMoEPPOCfg(RslRlOnPolicyRunnerCfg):
+    """T7 跨越沟壑专家配置 - Scan AE + Elevation AE + Estimator 全开"""
+    num_steps_per_env = 36
+    max_iterations = 6000
+    save_interval = 100
+    experiment_name = "gap_moe_teacher_parallel"
+    empirical_normalization = False
+
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
+
+    policy = SplitMoEActorCriticCfg(
+        init_noise_std=1.0,
+        init_noise_legs=0.6,
+        init_noise_wheels=1.5,
+        actor_hidden_dims=[256, 128, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=4,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+
+        blind_vision=False,
+        use_elevation_ae=True,
+        elevation_dim=187,
+        use_cnn=False,
+
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+
+        use_multilayer_scan=True,
+        num_scan_channels=12,
+        num_scan_rays=21,
+
+        actor_obs_normalization=True,
+        critic_obs_normalization=True,
+
+        feed_estimator_to_policy=True,
+        feed_ae_to_policy=True,
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        class_name="SplitMoEPPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+@configclass
+class RailMoEPPOCfg(RslRlOnPolicyRunnerCfg):
+    """T8 跨栏跳跃专家配置 - Scan AE + Elevation AE + Estimator 全开"""
+    num_steps_per_env = 36
+    max_iterations = 6000
+    save_interval = 100
+    experiment_name = "rail_moe_teacher_parallel"
+    empirical_normalization = False
+
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
+
+    policy = SplitMoEActorCriticCfg(
+        init_noise_std=1.0,
+        init_noise_legs=0.6,
+        init_noise_wheels=1.5,
+        actor_hidden_dims=[256, 128, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=4,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+
+        blind_vision=False,
+        use_elevation_ae=True,
+        elevation_dim=187,
+        use_cnn=False,
+
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+
+        use_multilayer_scan=True,
+        num_scan_channels=12,
+        num_scan_rays=21,
+
+        actor_obs_normalization=True,
+        critic_obs_normalization=True,
+
+        feed_estimator_to_policy=True,
+        feed_ae_to_policy=True,
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        class_name="SplitMoEPPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,

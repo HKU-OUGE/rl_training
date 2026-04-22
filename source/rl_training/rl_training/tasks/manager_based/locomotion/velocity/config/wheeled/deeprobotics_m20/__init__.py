@@ -158,3 +158,33 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:PlacementMoEPPOCfg",
     },
 )
+
+gym.register(
+    id="MoE-Platform-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.teacher_platform_env_cfg:DeeproboticsM20TeacherPlatformEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:PlatformMoEPPOCfg",
+    },
+)
+
+gym.register(
+    id="MoE-Gap-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.teacher_gap_env_cfg:DeeproboticsM20TeacherGapEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:GapMoEPPOCfg",
+    },
+)
+
+gym.register(
+    id="MoE-Rail-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.teacher_rail_env_cfg:DeeproboticsM20TeacherRailEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:RailMoEPPOCfg",
+    },
+)

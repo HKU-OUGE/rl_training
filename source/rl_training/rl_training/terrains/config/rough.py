@@ -57,10 +57,14 @@ inverted_stairs_cfg = terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
 )
 
 rails_cfg = terrain_gen.MeshRailsTerrainCfg(
-    proportion=1.0, 
+    proportion=1.0,
     rail_thickness_range=(0.05, 0.1),  # 栏杆的厚度（较薄，逼真模拟跨栏）
     rail_height_range=(0.2, 0.45),      # 栏杆的高度（根据机器人的极限跳跃能力调整）
     platform_width=4.0
+)
+
+box_cfg = terrain_gen.trimesh.mesh_terrains_cfg.MeshBoxTerrainCfg(
+    proportion=1.0, box_height_range=(0.1, 0.4), platform_width=4.0, double_box=True
 )
 
 # 假设你在地形配置文件中定义所有的子地形配置
@@ -332,6 +336,121 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             proportion=1.0/18, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=4.0
         ),
     },
+)
+
+# [Teacher 6] 高台攀爬专家 (Platform Climbing)
+# 运动模态：大落差攀爬和降落
+# Pit 地形：机器人从底部出生，学习向上攀爬 (训练上高台)
+# Box 地形：机器人从顶部出生，学习向下降落 (训练下高台)
+PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "pit_shallow": pit_cfg.replace(
+            proportion=0.2,
+            pit_depth_range=(0.1, 0.4),
+            double_pit=True,
+        ),
+        "pit_deep": pit_cfg.replace(
+            proportion=0.15,
+            pit_depth_range=(0.2, 0.6),
+            double_pit=True,
+        ),
+        "pit_single": pit_cfg.replace(
+            proportion=0.15,
+            pit_depth_range=(0.1, 0.5),
+            double_pit=False,
+        ),
+        "box_low": box_cfg.replace(
+            proportion=0.15,
+            box_height_range=(0.1, 0.3),
+            double_box=False,
+        ),
+        "box_high": box_cfg.replace(
+            proportion=0.15,
+            box_height_range=(0.15, 0.4),
+            double_box=True,
+        ),
+        "box_tall": box_cfg.replace(
+            proportion=0.2,
+            box_height_range=(0.2, 0.6),
+            double_box=True,
+        ),
+    }
+)
+
+# [Teacher 7] 跨越沟壑专家 (Gap Crossing)
+# 运动模态：跨越宽沟 (需要高程+扫描感知)
+# 使用 SteppingStones 地形，holes_depth 参数确保沟底有实际地面 (非虚空)
+# stone_distance_range 控制沟壑宽度，难度越高沟越宽
+GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "gap_wide_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=0.25,
+            stone_height_max=0.05,
+            stone_width_range=(1.0, 1.5),
+            stone_distance_range=(0.3, 0.8),
+            holes_depth=-0.3,
+            platform_width=4.0,
+        ),
+        "gap_wide_deep": terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=0.25,
+            stone_height_max=0.05,
+            stone_width_range=(1.0, 1.5),
+            stone_distance_range=(0.3, 0.8),
+            holes_depth=-0.8,
+            platform_width=4.0,
+        ),
+        "gap_narrow_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=0.25,
+            stone_height_max=0.03,
+            stone_width_range=(0.8, 1.2),
+            stone_distance_range=(0.4, 1.0),
+            holes_depth=-0.4,
+            platform_width=4.0,
+        ),
+        "gap_narrow_deep": terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=0.25,
+            stone_height_max=0.05,
+            stone_width_range=(0.8, 1.2),
+            stone_distance_range=(0.4, 1.0),
+            holes_depth=-0.6,
+            platform_width=4.0,
+        ),
+    }
+)
+
+# [Teacher 8] 跨栏跳跃专家 (Rail Jumping)
+# 运动模态：跳跃跨越栏杆 (需要高程+扫描感知前方障碍)
+# 不同高度和厚度的栏杆组合，难度递增
+RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "rail_low": rails_cfg.replace(
+            proportion=0.25,
+            rail_thickness_range=(0.02, 0.06),
+            rail_height_range=(0.05, 0.2),
+            platform_width=4.0,
+        ),
+        "rail_mid": rails_cfg.replace(
+            proportion=0.25,
+            rail_thickness_range=(0.03, 0.08),
+            rail_height_range=(0.1, 0.3),
+            platform_width=4.0,
+        ),
+        "rail_high": rails_cfg.replace(
+            proportion=0.25,
+            rail_thickness_range=(0.05, 0.1),
+            rail_height_range=(0.15, 0.4),
+            platform_width=4.0,
+        ),
+        "rail_thick": rails_cfg.replace(
+            proportion=0.25,
+            rail_thickness_range=(0.08, 0.15),
+            rail_height_range=(0.1, 0.35),
+            platform_width=4.0,
+        ),
+    }
 )
 
 # 向后兼容别名

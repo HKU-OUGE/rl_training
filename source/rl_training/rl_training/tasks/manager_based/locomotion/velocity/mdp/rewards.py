@@ -1178,3 +1178,25 @@ def horizontal_obstacle_penalty(env, sensor_cfg: SceneEntityCfg, force_threshold
     hit_obstacle = torch.any(horizontal_force > force_threshold, dim=1)
     
     return hit_obstacle.float()
+
+
+def all_feet_air_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.05,
+) -> torch.Tensor:
+    """Rewards simultaneous air time of ALL feet - encourages jumping/leaping behavior.
+
+    Unlike feet_air_time which rewards individual foot air time independently,
+    this rewards the MINIMUM air time across all feet. Only when all feet are
+    simultaneously in the air does the reward become positive. This shapes the
+    robot to perform full-body jumps for clearing obstacles like rails.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    min_air_time = last_air_time.min(dim=1).values
+    reward = (min_air_time - threshold).clip(min=0.0)
+    vel_cmd = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1)
+    reward *= (vel_cmd > 0.1).float()
+    return reward
