@@ -118,23 +118,23 @@ SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     sub_terrains={
         "hurdle": square_hurdle_cfg.replace(
             proportion=0.25,
-            hurdle_height_range=(0.25, 0.6),
-            bar_thickness=0.2,
+            hurdle_height_range=(0.3, 0.6),
+            bar_thickness=0.3,
         ),
         "hurdle2": square_hurdle_cfg.replace(
             proportion=0.25,
-            hurdle_height_range=(0.2, 0.5),
-            bar_thickness=0.15,
+            hurdle_height_range=(0.3, 0.6),
+            bar_thickness=0.2,
         ),
         "hurdle3": square_hurdle_cfg.replace(
             proportion=0.25,
-            hurdle_height_range=(0.15, 0.45),
+            hurdle_height_range=(0.3, 0.6),
             bar_thickness=0.1,
         ),
         "hurdle4": square_hurdle_cfg.replace(
             proportion=0.25,
-            hurdle_height_range=(0.1, 0.35),
-            bar_thickness=0.08,
+            hurdle_height_range=(0.3, 0.6),
+            bar_thickness=0.15,
         ),
     }
 )
