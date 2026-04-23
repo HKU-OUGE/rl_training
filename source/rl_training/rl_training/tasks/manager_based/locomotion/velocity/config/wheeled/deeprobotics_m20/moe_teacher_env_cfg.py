@@ -58,10 +58,10 @@ def process_lidar_data(depths: torch.Tensor, is_student: bool) -> torch.Tensor:
     
     # 2. 盲区处理 (仅Student)
     if is_student:
-        # 使用 -1.0 作为独特的盲区标识符 (Out-of-Band Flag)
+        blind_zone_fill = torch.tanh(torch.tensor(5.0 / scale))
         normalized_depths = torch.where(
-            depths < 0.2, 
-            torch.full_like(normalized_depths, -1.0), 
+            depths < 0.3,
+            torch.full_like(normalized_depths, blind_zone_fill.item()),
             normalized_depths
         )
     return normalized_depths
@@ -104,10 +104,10 @@ def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     # 归一化：[0, 5.0] 映射到 [0.0, 1.0]
     normalized_depths = torch.clip(depths / 5.0, 0.0, 1.0)
     
-    # 盲区覆写：物理距离 < 0.2m 强制标记为 -1.0
+    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 5.0m)
     normalized_depths = torch.where(
-        depths < 0.2, 
-        torch.full_like(normalized_depths, -1.0), 
+        depths < 0.3,
+        torch.full_like(normalized_depths, 1.0),
         normalized_depths
     )
     return normalized_depths
