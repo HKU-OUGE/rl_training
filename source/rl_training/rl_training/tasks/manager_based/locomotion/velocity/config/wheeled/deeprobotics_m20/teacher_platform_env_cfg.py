@@ -27,12 +27,13 @@ class PlatformRewardsCfg(DeeproboticsM20RewardsCfg):
         },
     )
 
-    # 严惩非轮部位碰撞：逼迫抬腿跨过台阶边缘
+    # 允许小腿 (knee) 和大腿 (hipy) 支撑台阶边缘进行攀爬
+    # 仅惩罚 base_link (底盘撞台=摔倒) 和 hipx (内侧关节卡住=机构损坏)
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-1.0,
+        weight=-0.3,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="^(?!.*_wheel).*"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*_hipx", ".*_hipy"]),
             "threshold": 1.0,
         }
     )

@@ -37,7 +37,7 @@ class PlacementRewardsCfg(DeeproboticsM20RewardsCfg):
         }
     )
     
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=0.0)
 
 
 @configclass

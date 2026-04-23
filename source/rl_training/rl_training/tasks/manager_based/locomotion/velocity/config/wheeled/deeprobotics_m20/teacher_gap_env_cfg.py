@@ -30,14 +30,13 @@ class GapRewardsCfg(DeeproboticsM20RewardsCfg):
     # 严惩非轮接触：避免用身体刮蹭沟壑边缘
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-1.0,
+        weight=-0.3,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="^(?!.*_wheel).*"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*_hipx", ".*_hipy"]),
             "threshold": 1.0,
         }
     )
-
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=0.0)
 
 
 @configclass

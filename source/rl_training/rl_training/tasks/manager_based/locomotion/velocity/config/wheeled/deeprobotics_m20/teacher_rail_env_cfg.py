@@ -10,46 +10,39 @@ from isaaclab.sensors import ContactSensorCfg
 
 @configclass
 class RailRewardsCfg(DeeproboticsM20RewardsCfg):
-    """T8 跨栏跳跃专家的奖励函数"""
+    """T8 跨栏跳跃专家的奖励函数
 
-    # 大幅放宽 Z 轴速度惩罚：跳跃时产生很大的垂直速度
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.01)
-    # 放宽 Roll/Pitch 惩罚：跳跃时身体会有较大倾斜
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.005)
+    设计原则：不显式奖励跳跃行为 (容易被exploit为自杀策略)，
+    而是通过强速度跟踪 + 栏杆碰撞惩罚 + terrain curriculum
+    让机器人自然学会在必要时跳跃。
+    """
 
-    # 鼓励单腿长腾空 (常规空中时间)
+    # 适度放宽 Z 轴速度惩罚 (跳跃会产生一些垂直速度，但不能太放松否则会飞)
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-1.0)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.03)
+
+    # 正常 air time (不刻意追求长腾空)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_curriculum,
-        weight=1.5,
+        weight=1.0,
         params={
             "command_name": "base_velocity",
-            "threshold": 0.3,
+            "threshold": 0.25,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel"),
         },
     )
 
-    # [新增] 鼓励所有脚同时离地 (全身跳跃行为)
-    all_feet_air = RewTerm(
-        func=mdp.all_feet_air_reward,
-        weight=2.0,
-        params={
-            "command_name": "base_velocity",
-            "threshold": 0.05,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel"),
-        },
-    )
-
-    # 严惩非轮接触：撞到栏杆就重罚
+    # 严惩非轮接触：撞到栏杆就重罚 (这是驱动跳跃的核心信号)
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-1.5,
+        weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names="^(?!.*_wheel).*"),
             "threshold": 1.0,
         }
     )
 
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=0.0)
 
 
 @configclass
@@ -58,7 +51,7 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
 
     运动模态：跳跃跨越栏杆
     地形：不同高度和厚度的栏杆
-    新增奖励：all_feet_air_reward 鼓励全身跳跃行为
+    核心策略：强速度跟踪 + 碰撞惩罚 + curriculum，不显式奖励跳跃
     """
 
     def __post_init__(self):
@@ -86,13 +79,12 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
             self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
 
-        # 4. 奖励
+        # 4. 奖励 (对齐 scan teacher 的保守设计)
         self.rewards = RailRewardsCfg()
         self.rewards.is_terminated.weight = -100
         self.rewards.flat_orientation_l2.weight = 0
-        self.rewards.base_roll_l2.weight = -5.0
-        # 放宽 base_height 惩罚：跳跃时高度会偏离正常值
-        self.rewards.base_height_l2.weight = -0.1
+        self.rewards.base_roll_l2.weight = -10.0
+        self.rewards.base_height_l2.weight = -0.5
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
@@ -117,11 +109,11 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.3
+        self.rewards.hipx_joint_pos_penalty.weight = -0.6
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.15
+        self.rewards.hipy_joint_pos_penalty.weight = -0.3
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
-        self.rewards.knee_joint_pos_penalty.weight = -0.05
+        self.rewards.knee_joint_pos_penalty.weight = -0.1
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
@@ -137,7 +129,7 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_rate_l2.weight = -0.005
+        self.rewards.action_rate_l2.weight = -0.01
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
@@ -155,16 +147,15 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.feet_slide.weight = 0
         self.rewards.feet_slide.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_slide.params["asset_cfg"].body_names = [self.foot_link_name]
-        # 鼓励抬腿高度：跳栏杆时脚要抬到足够高
-        self.rewards.feet_height.weight = 0.5
-        self.rewards.feet_height.params["target_height"] = 0.35
+        self.rewards.feet_height.weight = 0
+        self.rewards.feet_height.params["target_height"] = 0.3
         self.rewards.feet_height.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_height_body.weight = 0
         self.rewards.feet_height_body.params["target_height"] = -0.4
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        self.rewards.upward.weight = 0.1
+        self.rewards.upward.weight = 0.08
         self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
         self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
 

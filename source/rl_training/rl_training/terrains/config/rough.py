@@ -347,32 +347,32 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     sub_terrains={
         "pit_shallow": pit_cfg.replace(
             proportion=0.2,
-            pit_depth_range=(0.1, 0.4),
+            pit_depth_range=(0.05, 0.8),
             double_pit=True,
         ),
         "pit_deep": pit_cfg.replace(
             proportion=0.15,
-            pit_depth_range=(0.2, 0.6),
+            pit_depth_range=(0.05, 0.8),
             double_pit=True,
         ),
         "pit_single": pit_cfg.replace(
             proportion=0.15,
-            pit_depth_range=(0.1, 0.5),
+            pit_depth_range=(0.05, 0.8),
             double_pit=False,
         ),
         "box_low": box_cfg.replace(
             proportion=0.15,
-            box_height_range=(0.1, 0.3),
+            box_height_range=(0.05, 0.8),
             double_box=False,
         ),
         "box_high": box_cfg.replace(
             proportion=0.15,
-            box_height_range=(0.15, 0.4),
+            box_height_range=(0.05, 0.8),
             double_box=True,
         ),
         "box_tall": box_cfg.replace(
             proportion=0.2,
-            box_height_range=(0.2, 0.6),
+            box_height_range=(0.05, 0.8),
             double_box=True,
         ),
     }
@@ -385,36 +385,36 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "gap_wide_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
+        "gap_wide_shallow":terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
-            stone_height_max=0.05,
-            stone_width_range=(1.0, 1.5),
-            stone_distance_range=(0.3, 0.8),
-            holes_depth=-0.3,
+            stone_height_max=0.01,         
+            stone_width_range=(1.5, 1.5), 
+            stone_distance_range=(0.1, 0.8), 
+            holes_depth=-0.5,
             platform_width=4.0,
         ),
-        "gap_wide_deep": terrain_gen.HfSteppingStonesTerrainCfg(
+        "gap_wide_deep":terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
-            stone_height_max=0.05,
-            stone_width_range=(1.0, 1.5),
-            stone_distance_range=(0.3, 0.8),
-            holes_depth=-0.8,
-            platform_width=4.0,
-        ),
-        "gap_narrow_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.25,
-            stone_height_max=0.03,
-            stone_width_range=(0.8, 1.2),
-            stone_distance_range=(0.4, 1.0),
+            stone_height_max=0.01,         
+            stone_width_range=(1.5, 1.5), 
+            stone_distance_range=(0.1, 0.8), 
             holes_depth=-0.4,
             platform_width=4.0,
         ),
-        "gap_narrow_deep": terrain_gen.HfSteppingStonesTerrainCfg(
+        "gap_narrow_shallow":terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
-            stone_height_max=0.05,
-            stone_width_range=(0.8, 1.2),
-            stone_distance_range=(0.4, 1.0),
+            stone_height_max=0.01,         
+            stone_width_range=(1.5, 1.5), 
+            stone_distance_range=(0.1, 0.8), 
             holes_depth=-0.6,
+            platform_width=4.0,
+        ),
+        "gap_narrow_deep":terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=0.25,
+            stone_height_max=0.01,         
+            stone_width_range=(1.5, 1.5), 
+            stone_distance_range=(0.1, 0.8), 
+            holes_depth=-0.7,
             platform_width=4.0,
         ),
     }
@@ -428,26 +428,26 @@ RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     sub_terrains={
         "rail_low": rails_cfg.replace(
             proportion=0.25,
-            rail_thickness_range=(0.02, 0.06),
-            rail_height_range=(0.05, 0.2),
+            rail_thickness_range=(0.01, 0.06),
+            rail_height_range=(0.05, 0.4),
             platform_width=4.0,
         ),
         "rail_mid": rails_cfg.replace(
             proportion=0.25,
-            rail_thickness_range=(0.03, 0.08),
-            rail_height_range=(0.1, 0.3),
+            rail_thickness_range=(0.01, 0.06),
+            rail_height_range=(0.05, 0.4),
             platform_width=4.0,
         ),
         "rail_high": rails_cfg.replace(
             proportion=0.25,
-            rail_thickness_range=(0.05, 0.1),
-            rail_height_range=(0.15, 0.4),
+            rail_thickness_range=(0.01, 0.06),
+            rail_height_range=(0.05, 0.4),
             platform_width=4.0,
         ),
         "rail_thick": rails_cfg.replace(
             proportion=0.25,
-            rail_thickness_range=(0.08, 0.15),
-            rail_height_range=(0.1, 0.35),
+            rail_thickness_range=(0.01, 0.06),
+            rail_height_range=(0.05, 0.4),
             platform_width=4.0,
         ),
     }
