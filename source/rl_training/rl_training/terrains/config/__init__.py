@@ -7,4 +7,5 @@
 
 """Pre-defined terrain configurations for the terrain generator."""
 
+from rl_training.terrains import *
 from .rough import *  # noqa: F401
