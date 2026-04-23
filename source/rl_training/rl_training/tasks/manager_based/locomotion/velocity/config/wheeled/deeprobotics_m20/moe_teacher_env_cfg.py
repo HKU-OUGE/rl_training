@@ -58,10 +58,10 @@ def process_lidar_data(depths: torch.Tensor, is_student: bool) -> torch.Tensor:
     
     # 2. 盲区处理 (仅Student)
     if is_student:
-        blind_zone_fill = torch.tanh(torch.tensor(5.0 / scale))
+        # blind_zone_fill = torch.tanh(torch.tensor(5.0 / scale))
         normalized_depths = torch.where(
             depths < 0.3,
-            torch.full_like(normalized_depths, blind_zone_fill.item()),
+            torch.full_like(normalized_depths, -1.0), 
             normalized_depths
         )
     return normalized_depths
