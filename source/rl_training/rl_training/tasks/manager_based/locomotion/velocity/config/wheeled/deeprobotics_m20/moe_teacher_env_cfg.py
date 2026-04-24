@@ -803,7 +803,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             bwd_sensor.update_period = 0.1
             setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
         # Rewards
-        self.rewards.is_terminated.weight = 0
+        self.rewards.is_terminated.weight = -50.0
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.05
         self.rewards.flat_orientation_l2.weight = 0
@@ -893,8 +893,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
-        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.1, 1.0) 
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (1.0, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (1.0, 1.0) 
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
