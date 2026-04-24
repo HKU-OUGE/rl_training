@@ -92,25 +92,23 @@ def student_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normal
     depths = img.flatten(start_dim=1)
     return process_lidar_data(depths, is_student=True)
 def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """处理多层雷达扫描，输出归一化的距离数组 (严格区分安全区与盲区)"""
+    """处理多层雷达扫描，输出归一化的距离数组。
+
+    未命中 (NaN/inf)、盲区 (<0.3m) 统一映射为最远量程 5.0m，归一化后均为 1.0，
+    让网络对三种 "无有效回波" 情况看到同一个输入。
+    """
     sensor = env.scene.sensors[sensor_cfg.name]
-    
+
     rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
     depths = torch.norm(rel_vec, dim=-1)
-    
-    # 将 NaN 和 inf 视为安全距离 (5.0m)
+
+    # NaN/inf → 5.0m (未命中)
     depths = torch.nan_to_num(depths, posinf=5.0, neginf=5.0, nan=5.0)
-    
-    # 归一化：[0, 5.0] 映射到 [0.0, 1.0]
-    normalized_depths = torch.clip(depths / 5.0, 0.0, 1.0)
-    
-    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 5.0m)
-    normalized_depths = torch.where(
-        depths < 0.3,
-        torch.full_like(normalized_depths, 1.0),
-        normalized_depths
-    )
-    return normalized_depths
+    # 盲区 (<0.3m) 同样视为未命中 → 5.0m
+    depths = torch.where(depths < 0.3, torch.full_like(depths, 5.0), depths)
+
+    # 归一化：[0, 5.0] → [0.0, 1.0]
+    return torch.clip(depths / 5.0, 0.0, 1.0)
 
 def height_scan_sim2real(
     env, 
