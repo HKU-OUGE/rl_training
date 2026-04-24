@@ -28,10 +28,27 @@ class MeshSquareHurdleTerrainCfg(SubTerrainBaseCfg):
     """Cross-section side length of the four vertical posts (m)."""
 
     bar_width: float = 0.05
-    """Depth of the top bar along the robot's travel direction (m)."""
+    """Depth of the top bar along the robot's travel direction (m).
+
+    Used only if ``bar_width_range`` is None; otherwise the generator samples
+    uniformly from the range per tile.
+    """
+
+    bar_width_range: tuple[float, float] | None = None
+    """Optional per-tile uniform sample range for ``bar_width`` (m).
+
+    When set, each generated tile draws a fresh ``bar_width`` from this range,
+    giving within-column randomness without needing extra sub-terrain columns.
+    """
 
     bar_thickness: float = 0.03
-    """Thickness of the top bar along the z-axis (m)."""
+    """Thickness of the top bar along the z-axis (m).
+
+    Used only if ``bar_thickness_range`` is None.
+    """
+
+    bar_thickness_range: tuple[float, float] | None = None
+    """Optional per-tile uniform sample range for ``bar_thickness`` (m)."""
 
 
 @configclass

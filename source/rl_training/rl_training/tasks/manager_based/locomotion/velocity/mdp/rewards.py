@@ -994,15 +994,60 @@ def track_ang_vel_z_exp_curriculum(
 
 def base_roll_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize ONLY the base roll angle using L2 squared kernel.
-    
+
     Computed by penalizing the y-component of the projected gravity vector.
     This prevents lateral tilting without penalizing pitching on slopes.
     """
     # extract the used quantities
     asset: RigidObject = env.scene[asset_cfg.name]
-    
+
     reward = torch.square(asset.data.projected_gravity_b[:, 1])
-    
+
+    return reward
+
+
+def flat_orientation_l2_terrain_gated(
+    env: ManagerBasedRLEnv,
+    flat_terrain_ids: tuple[int, ...] = (0,),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """只在指定 "平地类" 子地形列上惩罚 base 的俯仰+翻滚投影重力.
+
+    `flat_terrain_ids` 是 TerrainImporter 的列号 (对应 sub_terrains dict 的插入顺序).
+    其他地形 (楼梯、斜坡等) 需要身体倾斜，所以返回 0.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    reward = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
+        terrain_types = env.scene.terrain.terrain_types
+        flat_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
+        for tid in flat_terrain_ids:
+            flat_mask |= (terrain_types == tid)
+        reward = reward * flat_mask.float()
+
+    return reward
+
+
+def stand_still_joint_deviation_full_cmd(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize joint deviation only when the FULL (vx, vy, wz) command is near zero.
+
+    与 Isaac Lab 的 ``stand_still_joint_deviation_l1`` 的区别: 后者仅用 ``norm(lin)`` 判零指令,
+    会在纯转向 (vx=vy=0, wz 非零) 时错误触发惩罚，阻止策略踏步/摆腿转向.
+    这里改成用完整三分量指令模长作为判据, 允许纯转向时腿部自由运动.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    diff_angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    reward = torch.sum(torch.abs(diff_angle), dim=1)
+
+    command = env.command_manager.get_command(command_name)
+    full_cmd_norm = torch.norm(command[:, :3], dim=1)
+    reward = reward * (full_cmd_norm < command_threshold)
     return reward
 
 # ==============================================================================

@@ -42,7 +42,20 @@ def terrain_level_normalized(env: ManagerBasedRLEnv) -> torch.Tensor:
     """提取归一化的地形等级作为特权信息 (-1.0 到 1.0)"""
     if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_levels"):
         levels = env.scene.terrain.terrain_levels.float().unsqueeze(1)
-        normalized_levels = levels / 30.0 
+        normalized_levels = levels / 30.0
         return normalized_levels
     else:
         return torch.zeros((env.num_envs, 1), device=env.device)
+
+
+def sub_terrain_one_hot(env: ManagerBasedRLEnv, num_types: int) -> torch.Tensor:
+    """子地形类型的 one-hot 编码 (Critic 特权信息).
+
+    依赖 TerrainImporter 的 ``terrain_types`` 张量 (每个 env 的列号).
+    要求: ``num_cols`` 等于 sub_terrains 的类型数, 使得 列号 <-> 类型 一一对应.
+    非 generator 地形 (flat plane) 下返回全零向量.
+    """
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
+        terrain_types = env.scene.terrain.terrain_types.long().clamp(min=0, max=num_types - 1)
+        return torch.nn.functional.one_hot(terrain_types, num_classes=num_types).float()
+    return torch.zeros((env.num_envs, num_types), device=env.device)

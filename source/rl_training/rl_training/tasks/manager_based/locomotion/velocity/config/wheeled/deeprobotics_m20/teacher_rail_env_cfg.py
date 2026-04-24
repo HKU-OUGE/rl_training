@@ -57,6 +57,10 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
+        # sub_terrain one-hot 的 num_types 和列顺序只在 MOE_TEACHER_TERRAINS_CFG 下有语义,
+        # 此子 teacher 的 terrain 不同, 关掉以免喂给 Critic 错位的 one-hot.
+        self.observations.critic.sub_terrain_id = None
+
         # 1. 地形
         self.scene.terrain.terrain_generator = RAIL_TEACHER_TERRAINS_CFG
 

@@ -76,9 +76,11 @@ box_cfg = terrain_gen.trimesh.mesh_terrains_cfg.MeshBoxTerrainCfg(
 square_hurdle_cfg = MeshSquareHurdleTerrainCfg(
     proportion=1.0,
     hurdle_height_range=(0.25, 0.6),
-    bar_thickness=0.2,
+    # 列内随机: 每个 tile 独立采样 bar 尺寸, 避免靠多列复制来获得参数变体,
+    # 同时保持 sub_terrain one-hot 语义只占 1 维
+    bar_width_range=(0.03, 0.10),
+    bar_thickness_range=(0.15, 0.30),
     platform_width=4.0,
-    bar_width=0.05,
     mode="crawl",
 )
 
@@ -451,19 +453,22 @@ RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 )
 
 # ==============================================================================
-# 5. 10种地形综合配置 (Combined 10-Terrain Config for MoE Teacher Training)
-#    地形类型：楼梯 / 反向楼梯 / 斜坡 / 反向斜坡 / 随机噪声 /
+# 5. 11种地形综合配置 (Combined 11-Terrain Config for MoE Teacher Training)
+#    地形类型：平地 / 楼梯 / 反向楼梯 / 斜坡 / 反向斜坡 / 随机噪声 /
 #              钻栏(hurdle) / 跨栏(rail) / gap / pit上高台 / box下高台
 #    课程难度：每种地形均通过 difficulty 参数递进
-#    num_cols=20：10种地形 × 2列/种
+#    num_cols=11：每种地形 1 列, 列号直接对应类型号 (供 sub_terrain one-hot 使用)
+#    插入顺序即 one-hot 索引顺序, 任何新增地形必须追加在末尾
 # ==============================================================================
 MOE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE,
     border_width=20.0,
     num_rows=NUM_ROWS,
-    num_cols=20,
+    num_cols=11,
     curriculum=True,
     sub_terrains={
+        # 0. 平地 — 纯轮式推进, 姿态规范化的基线地形
+        "flat": flat_cfg.replace(proportion=1.0),
         # 1. 楼梯 — 上下台阶，抬腿大动作
         "stairs": pyramid_stairs_cfg.replace(proportion=1.0),
         # 2. 反向楼梯 — 从中心坑向四周阶梯上行
@@ -486,6 +491,23 @@ MOE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         "box": box_cfg.replace(proportion=1.0),
     },
 )
+
+# 子地形列号 <-> 类型名 映射 (供 one-hot 维度推断与平地奖励门控)
+MOE_TEACHER_TERRAIN_TYPES: tuple[str, ...] = (
+    "flat",
+    "stairs",
+    "inv_stairs",
+    "slopes",
+    "inv_slopes",
+    "random_rough",
+    "hurdle",
+    "rail",
+    "gap",
+    "pit",
+    "box",
+)
+MOE_TEACHER_NUM_TERRAIN_TYPES: int = len(MOE_TEACHER_TERRAIN_TYPES)
+MOE_TEACHER_FLAT_TERRAIN_IDS: tuple[int, ...] = (0,)  # flat 列
 
 # 向后兼容别名
 MOE_ROUGH_TERRAINS_CFG = STUDENT_TERRAINS_CFG

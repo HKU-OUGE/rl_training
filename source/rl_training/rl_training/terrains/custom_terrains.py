@@ -30,8 +30,14 @@ def square_hurdle_terrain(
     meshes_list: list[trimesh.Trimesh] = []
 
     t_post = cfg.post_thickness
-    b_w = cfg.bar_width
-    b_t = cfg.bar_thickness
+
+    # Per-tile random sampling of bar dimensions for in-column variety.
+    # Falls back to the scalar config field when the range is not provided.
+    bw_range = getattr(cfg, "bar_width_range", None)
+    bt_range = getattr(cfg, "bar_thickness_range", None)
+    b_w = float(np.random.uniform(*bw_range)) if bw_range is not None else cfg.bar_width
+    b_t = float(np.random.uniform(*bt_range)) if bt_range is not None else cfg.bar_thickness
+
     W = cfg.platform_width
     H = hurdle_clearance
 

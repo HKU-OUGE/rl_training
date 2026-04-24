@@ -323,6 +323,14 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
         weight=0.0,
         params={"asset_cfg": SceneEntityCfg("robot")}
     )
+    flat_orientation_terrain_gated = RewTerm(
+        func=mdp.flat_orientation_l2_terrain_gated,
+        weight=0.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "flat_terrain_ids": MOE_TEACHER_FLAT_TERRAIN_IDS,
+        },
+    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
@@ -468,20 +476,20 @@ class DeeproboticsM20ObservationsCfg:
     class StudentPolicyCfg(BlindStudentPolicyCfg):
         pass
 
-    @configclass    
+    @configclass
     class CriticCfg(PolicyCfg):
         """Critic 获取与 Teacher Actor 相同的本体感觉维度"""
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-100.0, 100.0),
-            scale=1.0, 
+            scale=1.0,
         )
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
             noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-100.0, 100.0),
-            scale=0.25, 
+            scale=0.25,
         )
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
@@ -491,7 +499,7 @@ class DeeproboticsM20ObservationsCfg:
         )
         # 同样去除高程图，Critic 的环境感知将通过 `noisy_elevation` 提供
         height_scan = None
-        
+
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
@@ -504,10 +512,15 @@ class DeeproboticsM20ObservationsCfg:
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
             noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-100.0, 100.0),
-            scale=0.05, 
+            scale=0.05,
         )
         terrain_level = ObsTerm(
             func=mdp.terrain_level_normalized,
+            scale=1.0,
+        )
+        sub_terrain_id = ObsTerm(
+            func=mdp.sub_terrain_one_hot,
+            params={"num_types": MOE_TEACHER_NUM_TERRAIN_TYPES},
             scale=1.0,
         )
         def __post_init__(self):
@@ -516,7 +529,7 @@ class DeeproboticsM20ObservationsCfg:
 
     @configclass
     class EstimatorCfg(ObsGroup):
-        history_length = 15  
+        history_length = 15
         flatten_history_dim = True 
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
@@ -806,6 +819,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.ang_vel_xy_l2.weight = -0.05
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_roll_l2.weight = -10.0
+        # 平地上额外惩罚俯仰+翻滚, 防止弓背 / 歪头; 其他子地形不生效
+        self.rewards.flat_orientation_terrain_gated.weight = -1.0
         self.rewards.base_height_l2.weight = -0.5
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
@@ -831,6 +846,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
+        # 把 stand_still 的判零改成用 (vx, vy, wz) 全分量模长, 以便纯转向时腿部可以自由摆动
+        self.rewards.stand_still.func = mdp.stand_still_joint_deviation_full_cmd
+        self.rewards.stand_still.params["command_threshold"] = 0.1
         self.rewards.hipx_joint_pos_penalty.weight = -0.6
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.hipy_joint_pos_penalty.weight = -0.3
