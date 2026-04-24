@@ -1758,7 +1758,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     latent_dim: int = 256
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
-    sym_loss_coef: float = 0.5
+    sym_loss_coef: float = 0.0
 
     blind_vision: bool = False       
     use_elevation_ae: bool = True   
