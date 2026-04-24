@@ -331,6 +331,25 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
             "flat_terrain_ids": MOE_TEACHER_FLAT_TERRAIN_IDS,
         },
     )
+    # 平地专用: 压制 hipy+knee 偏离, 让轮式行进时腿部保持收起 (不影响斜坡 / 楼梯).
+    # joint_names 在 __post_init__ 里用 leg group 常量覆盖.
+    hipy_knee_deviation_flat = RewTerm(
+        func=mdp.leg_deviation_l2_flat_gated,
+        weight=0.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "flat_terrain_ids": MOE_TEACHER_FLAT_TERRAIN_IDS,
+        },
+    )
+    # 平地专用: 压制 hipx 在转向时的 "helper 动作", 让 skid-steer 只靠轮子差速
+    hipx_deviation_flat = RewTerm(
+        func=mdp.leg_deviation_l2_flat_gated,
+        weight=0.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "flat_terrain_ids": MOE_TEACHER_FLAT_TERRAIN_IDS,
+        },
+    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
@@ -821,6 +840,14 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.base_roll_l2.weight = -10.0
         # 平地上额外惩罚俯仰+翻滚, 防止弓背 / 歪头; 其他子地形不生效
         self.rewards.flat_orientation_terrain_gated.weight = -1.0
+        # 平地上压制 hipy+knee 偏离, 让前后运动时收腿而不甩腿 (斜坡 / 楼梯不生效)
+        self.rewards.hipy_knee_deviation_flat.weight = -1.0
+        self.rewards.hipy_knee_deviation_flat.params["asset_cfg"].joint_names = (
+            self.hipy_joint_names + self.knee_joint_names
+        )
+        # 平地上压制 hipx 在 skid-steer 转向时的 helper 摆动 (斜坡 / 楼梯不生效)
+        self.rewards.hipx_deviation_flat.weight = -0.5
+        self.rewards.hipx_deviation_flat.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.base_height_l2.weight = -0.5
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]

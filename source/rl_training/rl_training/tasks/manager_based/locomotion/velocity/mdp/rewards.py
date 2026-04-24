@@ -1029,6 +1029,30 @@ def flat_orientation_l2_terrain_gated(
     return reward
 
 
+def leg_deviation_l2_flat_gated(
+    env: ManagerBasedRLEnv,
+    flat_terrain_ids: tuple[int, ...] = (0,),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """只在 "平地类" 子地形列上惩罚指定关节的 L2 偏离默认姿态.
+
+    目的: 压制平地上轮式行进时无谓的抬腿 / 转向时的腿部 helper 动作, 不阻塞
+    skid-steer 必需的差速轮控制. 斜坡 / 楼梯 / 钻栏等地形返回 0, 不干扰抬腿.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    reward = torch.sum(torch.square(diff), dim=1)
+
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
+        terrain_types = env.scene.terrain.terrain_types
+        flat_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
+        for tid in flat_terrain_ids:
+            flat_mask |= (terrain_types == tid)
+        reward = reward * flat_mask.float()
+
+    return reward
+
+
 def stand_still_joint_deviation_full_cmd(
     env: ManagerBasedRLEnv,
     command_name: str,
