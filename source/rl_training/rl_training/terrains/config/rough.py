@@ -45,7 +45,7 @@ gap_cfg = MeshGapTerrainCfg(
 )
 
 boxes_cfg = terrain_gen.MeshRandomGridTerrainCfg(
-    proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=4.0
+    proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=0.0
 )
 
 # -- [极端挑战类]
