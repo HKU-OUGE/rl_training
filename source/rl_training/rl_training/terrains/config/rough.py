@@ -28,6 +28,10 @@ pyramid_slope_cfg = terrain_gen.HfPyramidSlopedTerrainCfg(
     proportion=1.0, slope_range=(0.0, 0.4), platform_width=4.0, border_width=0.25
 )
 
+inverted_slope_cfg = terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+    proportion=1.0, slope_range=(0.0, 0.4), platform_width=4.0, border_width=0.25
+)
+
 pyramid_stairs_cfg = terrain_gen.MeshPyramidStairsTerrainCfg(
     proportion=1.0, 
     step_height_range=(0.05, 0.25), 
@@ -444,6 +448,43 @@ RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
             platform_width=4.0,
         ),
     }
+)
+
+# ==============================================================================
+# 5. 10种地形综合配置 (Combined 10-Terrain Config for MoE Teacher Training)
+#    地形类型：楼梯 / 反向楼梯 / 斜坡 / 反向斜坡 / 随机噪声 /
+#              钻栏(hurdle) / 跨栏(rail) / gap / pit上高台 / box下高台
+#    课程难度：每种地形均通过 difficulty 参数递进
+#    num_cols=20：10种地形 × 2列/种
+# ==============================================================================
+MOE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE,
+    border_width=20.0,
+    num_rows=NUM_ROWS,
+    num_cols=20,
+    curriculum=True,
+    sub_terrains={
+        # 1. 楼梯 — 上下台阶，抬腿大动作
+        "stairs": pyramid_stairs_cfg.replace(proportion=1.0),
+        # 2. 反向楼梯 — 从中心坑向四周阶梯上行
+        "inv_stairs": inverted_stairs_cfg.replace(proportion=1.0),
+        # 3. 斜坡 — 坡面行走，重心调整
+        "slopes": pyramid_slope_cfg.replace(proportion=1.0),
+        # 4. 反向斜坡 — 从中心凹地向四周斜坡上行
+        "inv_slopes": inverted_slope_cfg.replace(proportion=1.0),
+        # 5. 随机噪声 — 不规则地面，本体感觉适应
+        "random_rough": random_rough_cfg.replace(proportion=1.0),
+        # 6. 钻栏(hurdle/crawl) — 压低重心穿越横杆
+        "hurdle": square_hurdle_cfg.replace(proportion=1.0),  # mode="crawl" inherited
+        # 7. 跨栏(rail) — 跳跃越过栏杆
+        "rail": rails_cfg.replace(proportion=1.0),
+        # 8. gap — 跨越沟壑
+        "gap": gap_cfg.replace(proportion=1.0),
+        # 9. pit上高台 — 从坑底攀爬至地面平台
+        "pit": pit_cfg.replace(proportion=1.0),
+        # 10. box下高台 — 从高台跳下
+        "box": box_cfg.replace(proportion=1.0),
+    },
 )
 
 # 向后兼容别名

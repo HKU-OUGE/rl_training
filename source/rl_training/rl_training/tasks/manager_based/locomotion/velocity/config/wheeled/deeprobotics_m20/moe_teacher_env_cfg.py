@@ -727,11 +727,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-        # ground terrain
+        # ground terrain — 9种地形综合课程
+        # 楼梯/斜坡/随机噪声/钻栏/跨栏/gap/pit上高台/box下高台/窄桥
         self.scene.terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
-            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
+            terrain_generator=MOE_TEACHER_TERRAINS_CFG,
             max_init_terrain_level=1,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -748,19 +749,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
-        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG2
-        if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
-            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG2):
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
-            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        else:
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
-            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
+        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
+        self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
         # self.events.randomize_rigid_body_material.params["static_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
