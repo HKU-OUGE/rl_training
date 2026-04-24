@@ -840,13 +840,16 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.base_roll_l2.weight = -10.0
         # 平地上额外惩罚俯仰+翻滚, 防止弓背 / 歪头; 其他子地形不生效
         self.rewards.flat_orientation_terrain_gated.weight = -1.0
-        # 平地上压制 hipy+knee 偏离, 让前后运动时收腿而不甩腿 (斜坡 / 楼梯不生效)
-        self.rewards.hipy_knee_deviation_flat.weight = -1.0
+        # baseline 列 (现 random_rough) 上轻压 hipy+knee 偏离:
+        # - 低难度 (noise ~2cm) 近似平地时, 鼓励收腿, 保持轮式推进
+        # - 高难度 (noise ~16cm) 时压力小, 不阻塞策略选择抬腿通过
+        self.rewards.hipy_knee_deviation_flat.weight = -0.3
         self.rewards.hipy_knee_deviation_flat.params["asset_cfg"].joint_names = (
             self.hipy_joint_names + self.knee_joint_names
         )
-        # 平地上压制 hipx 在 skid-steer 转向时的 helper 摆动 (斜坡 / 楼梯不生效)
-        self.rewards.hipx_deviation_flat.weight = -0.5
+        # baseline 列上轻压 hipx 偏离: 低难度抑制 skid-steer helper 摆动,
+        # 高难度不妨碍抬腿转向
+        self.rewards.hipx_deviation_flat.weight = -0.2
         self.rewards.hipx_deviation_flat.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.base_height_l2.weight = -0.5
         self.rewards.base_height_l2.params["target_height"] = 0.5

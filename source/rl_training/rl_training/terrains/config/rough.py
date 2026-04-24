@@ -454,11 +454,16 @@ RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 
 # ==============================================================================
 # 5. 11种地形综合配置 (Combined 11-Terrain Config for MoE Teacher Training)
-#    地形类型：平地 / 楼梯 / 反向楼梯 / 斜坡 / 反向斜坡 / 随机噪声 /
-#              钻栏(hurdle) / 跨栏(rail) / gap / pit上高台 / box下高台
+#    地形类型：随机噪声(baseline) / 楼梯 / 反向楼梯 / 斜坡 / 反向斜坡 /
+#              钻栏(hurdle) / 跨栏(rail) / gap / pit上高台 / box下高台 / box堆叠格栅
 #    课程难度：每种地形均通过 difficulty 参数递进
 #    num_cols=11：每种地形 1 列, 列号直接对应类型号 (供 sub_terrain one-hot 使用)
 #    插入顺序即 one-hot 索引顺序, 任何新增地形必须追加在末尾
+#
+#    设计思路: 去掉绝对平地, 用 random_rough 当作"基线地形"
+#      - 低难度 (~2cm noise) 近似平地, 允许轮式推进学习基础 locomotion
+#      - 高难度 (~16cm noise) 强制抬腿, 轮式差速转向容易打滑 → 策略被迫学习踏步转向
+#    新增 boxes (格栅方块阵列) 列对落脚点精度要求高, 进一步固化抬腿技能.
 # ==============================================================================
 MOE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE,
@@ -467,8 +472,8 @@ MOE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     num_cols=11,
     curriculum=True,
     sub_terrains={
-        # 0. 平地 — 纯轮式推进, 姿态规范化的基线地形
-        "flat": flat_cfg.replace(proportion=1.0),
+        # 0. 随机噪声 — 新 baseline, 低难度近平地, 高难度强制抬腿
+        "random_rough": random_rough_cfg.replace(proportion=1.0),
         # 1. 楼梯 — 上下台阶，抬腿大动作
         "stairs": pyramid_stairs_cfg.replace(proportion=1.0),
         # 2. 反向楼梯 — 从中心坑向四周阶梯上行
@@ -477,37 +482,39 @@ MOE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         "slopes": pyramid_slope_cfg.replace(proportion=1.0),
         # 4. 反向斜坡 — 从中心凹地向四周斜坡上行
         "inv_slopes": inverted_slope_cfg.replace(proportion=1.0),
-        # 5. 随机噪声 — 不规则地面，本体感觉适应
-        "random_rough": random_rough_cfg.replace(proportion=1.0),
-        # 6. 钻栏(hurdle/crawl) — 压低重心穿越横杆
+        # 5. 钻栏(hurdle/crawl) — 压低重心穿越横杆
         "hurdle": square_hurdle_cfg.replace(proportion=1.0),  # mode="crawl" inherited
-        # 7. 跨栏(rail) — 跳跃越过栏杆
+        # 6. 跨栏(rail) — 跳跃越过栏杆
         "rail": rails_cfg.replace(proportion=1.0),
-        # 8. gap — 跨越沟壑
+        # 7. gap — 跨越沟壑
         "gap": gap_cfg.replace(proportion=1.0),
-        # 9. pit上高台 — 从坑底攀爬至地面平台
+        # 8. pit上高台 — 从坑底攀爬至地面平台
         "pit": pit_cfg.replace(proportion=1.0),
-        # 10. box下高台 — 从高台跳下
+        # 9. box下高台 — 从高台跳下
         "box": box_cfg.replace(proportion=1.0),
+        # 10. boxes 堆叠格栅 — 高度随机的方块阵列 (5-20cm), 落脚点精度要求高
+        "boxes": boxes_cfg.replace(proportion=1.0),
     },
 )
 
-# 子地形列号 <-> 类型名 映射 (供 one-hot 维度推断与平地奖励门控)
+# 子地形列号 <-> 类型名 映射 (供 one-hot 维度推断与 baseline 奖励门控)
 MOE_TEACHER_TERRAIN_TYPES: tuple[str, ...] = (
-    "flat",
+    "random_rough",
     "stairs",
     "inv_stairs",
     "slopes",
     "inv_slopes",
-    "random_rough",
     "hurdle",
     "rail",
     "gap",
     "pit",
     "box",
+    "boxes",
 )
 MOE_TEACHER_NUM_TERRAIN_TYPES: int = len(MOE_TEACHER_TERRAIN_TYPES)
-MOE_TEACHER_FLAT_TERRAIN_IDS: tuple[int, ...] = (0,)  # flat 列
+# 命名沿用 "FLAT" 以兼容现有奖励函数 param; 语义已从 "绝对平地" 改为 "baseline 低难度近平地".
+# 现在 (0,) 指向 random_rough 列 —— 低难度时近似平地, 同样触发 flat-gated 奖励项.
+MOE_TEACHER_FLAT_TERRAIN_IDS: tuple[int, ...] = (0,)  # random_rough 列 (新 baseline)
 
 # 向后兼容别名
 MOE_ROUGH_TERRAINS_CFG = STUDENT_TERRAINS_CFG
