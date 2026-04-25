@@ -947,11 +947,15 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
-        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (1.0, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (1.0, 1.0) 
+        # Asymmetric curriculum: 起步时 ang 已在 50% 范围内 (±0.75 rad/s, 足够明显的转向),
+        # lin 限制到 10% (±0.15 m/s, 几乎不能前进). 策略被迫先学转向 (skid 或 step-turn),
+        # 待 track_lin/ang_vel 达到 75% 满分后, curriculum 自动放宽 lin 范围, 进入"边走边转".
+        # 配合 commands.py 的按 cfg.ranges 比例的 deadzone, threshold 不再覆盖 curriculum.
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.5, 1.0)
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         # ------------------------------Commands------------------------------
         # 课程指令采样策略

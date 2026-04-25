@@ -68,20 +68,37 @@ class UniformThresholdVelocityCommand(mdp.UniformVelocityCommand):
             if hasattr(self, "is_standing_env"):
                 self.is_standing_env[turn_ids] = False
 
-        # -------- 2. 其余环境：沿用原阈值，但 lin/ang 都很小才截断 --------
+        # -------- 2. 其余环境：阈值按当前 cfg.ranges 比例算, 与 curriculum 兼容 --------
+        # 早先版本里下限和重抽都硬编码 (0.5, 1.5), 一旦 command_levels_lin_vel curriculum
+        # 把 cfg.ranges.lin_vel_x 缩到 (-0.15, 0.15), 这里仍按 [0.5, 1.5] 重抽,
+        # curriculum 完全失效. 改成按 cfg.ranges 当前值的比例触发 + 重抽.
         other_mask = ~turn_mask
         other_ids = env_ids_tensor[other_mask]
         if other_ids.numel() > 0:
+            lin_max_cur = max(abs(self.cfg.ranges.lin_vel_x[0]), abs(self.cfg.ranges.lin_vel_x[1]))
+            ang_max_cur = ang_abs_max  # 已在上方算过
+            # "无意义命令" 阈值: 当前最大值的 deadzone_ratio (默认 30%) 或 0.05 m/s 取大
+            ratio = float(getattr(self.cfg, "deadzone_ratio", 0.3))
+            lin_thresh = max(ratio * lin_max_cur, 0.05)
+            ang_thresh = max(ratio * ang_max_cur, 0.05)
+
             vel_norm = torch.norm(self.vel_command_b[other_ids, :2], dim=1)
             ang_abs = self.vel_command_b[other_ids, 2].abs()
-            invalid_mask = (vel_norm < 0.5) & (ang_abs < 0.5) & (vel_norm > 1e-4)
+            invalid_mask = (vel_norm < lin_thresh) & (ang_abs < ang_thresh) & (vel_norm > 1e-4)
 
             if invalid_mask.any():
                 invalid_ids = other_ids[invalid_mask]
                 num_invalid = invalid_ids.numel()
 
                 directions = torch.randint(0, 2, (num_invalid,), device=self.device) * 2 - 1
-                magnitudes = math_utils.sample_uniform(0.5, 1.5, (num_invalid,), device=self.device)
+                # 重抽到当前 [lin_thresh, lin_max_cur] 的上半部分, 不再硬编码 1.5
+                if lin_max_cur > lin_thresh + 1e-6:
+                    magnitudes = math_utils.sample_uniform(
+                        lin_thresh, lin_max_cur, (num_invalid,), device=self.device
+                    )
+                else:
+                    # curriculum 缩到极小时, 退化为 lin_thresh 常数, 避免 sample_uniform low>=high
+                    magnitudes = torch.full((num_invalid,), lin_thresh, device=self.device)
 
                 self.vel_command_b[invalid_ids, 0] = directions * magnitudes
                 self.vel_command_b[invalid_ids, 1] = 0.0
@@ -98,6 +115,14 @@ class UniformThresholdVelocityCommandCfg(mdp.UniformVelocityCommandCfg):
 
     pure_turn_min_abs: float = 0.5
     """Minimum absolute wz value for pure-turn samples; clipped to the configured ang_vel_z range."""
+
+    deadzone_ratio: float = 0.3
+    """Fraction of the current cfg.ranges max defining the "meaningless command" deadzone.
+
+    A sample is considered invalid (and redrawn) if both ``|lin| < ratio * lin_max_cur`` and
+    ``|ang| < ratio * ang_max_cur``. With curriculum enabled this scales the deadzone with the
+    current (curriculum-shrunken) range so the redraw never overshoots the intended range.
+    """
 
 
 class DiscreteCommandController(CommandTerm):

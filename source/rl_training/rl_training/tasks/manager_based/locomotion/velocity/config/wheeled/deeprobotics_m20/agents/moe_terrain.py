@@ -1806,8 +1806,8 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     
     policy = SplitMoEActorCriticCfg(
         init_noise_std=1.0, 
-        init_noise_legs=1.0,
-        init_noise_wheels=0.6, 
+        init_noise_legs=0.4,
+        init_noise_wheels=1.2, 
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
