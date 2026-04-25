@@ -1045,6 +1045,33 @@ def base_roll_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
     return reward
 
 
+def is_terminated_terrain_excluded(
+    env: ManagerBasedRLEnv,
+    excluded_terrain_ids: tuple[int, ...] = (),
+) -> torch.Tensor:
+    """``is_terminated`` 但在指定 terrain 列上不发放惩罚.
+
+    用途: 在结构性极难的地形 (e.g. pit / hurdle) 上, 大额 termination 惩罚 (weight=-50)
+    会让 policy 学会"远离这些地形" / "原地不动避免摔" 而不是去探索新动作. 把这些列从
+    is_terminated 中排除, 让 policy 在那里失败 ≈ 免费, 鼓励大胆尝试 step-up / crawl.
+
+    其他地形 (random_rough, slopes, stairs 等) 仍然按原 -50 惩罚, 维持基础生存激励.
+
+    Args:
+        excluded_terrain_ids: TerrainImporter 的列号 (一组). 这些列上 reward 强制为 0.
+    """
+    terminated = env.termination_manager.terminated.float()
+    if not excluded_terrain_ids:
+        return terminated
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
+        terrain_types = env.scene.terrain.terrain_types
+        excluded_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
+        for tid in excluded_terrain_ids:
+            excluded_mask |= (terrain_types == tid)
+        terminated = terminated * (~excluded_mask).float()
+    return terminated
+
+
 def flat_orientation_l2_terrain_gated(
     env: ManagerBasedRLEnv,
     flat_terrain_ids: tuple[int, ...] = (0,),

@@ -841,6 +841,16 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             bwd_sensor.update_period = 0.1
             setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
         # Rewards
+        # is_terminated: 在 pit / hurdle 上不发放 (-50 大惩罚会让 policy 学会"避开" 而不是
+        # 去尝试 step-up/crawl). 其他地形仍然 -50 维持基础生存激励.
+        # 列号从 MOE_TEACHER_TYPE_TO_COLUMNS 自动派生, 即使 column 编号变化也不会失效.
+        _excluded_terrain_cols = tuple(
+            c for tname, cols in zip(MOE_TEACHER_TERRAIN_TYPES, MOE_TEACHER_TYPE_TO_COLUMNS)
+            if tname in ("hurdle", "pit")
+            for c in cols
+        )
+        self.rewards.is_terminated.func = mdp.is_terminated_terrain_excluded
+        self.rewards.is_terminated.params = {"excluded_terrain_ids": _excluded_terrain_cols}
         self.rewards.is_terminated.weight = -50.0
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.05
