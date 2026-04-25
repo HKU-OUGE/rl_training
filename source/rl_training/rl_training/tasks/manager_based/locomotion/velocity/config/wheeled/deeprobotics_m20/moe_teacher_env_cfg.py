@@ -918,9 +918,19 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
+        # 切换到 yaw-weighted 版: 去掉 terrain_level scale + 阈值降到 0.05s + 命令 |wz|
+        # 比例 boost (|wz|>=0.3 时 reward 3×). 目标: 在原地/小线速度转向命令下激励抬腿迈步,
+        # 不再依赖 terrain_level (curriculum 还在 lvl 0 也能发放 reward).
+        self.rewards.feet_air_time.func = mdp.feet_air_time_yaw_weighted
         self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params["threshold"] = 0.2
-        self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_air_time.params = {
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=self.foot_link_name),
+            "threshold": 0.05,
+            "yaw_boost": 2.0,
+            "yaw_thresh": 0.3,
+            "cmd_min": 0.1,
+        }
         self.rewards.feet_air_time_long.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
         self.rewards.feet_contact.params["sensor_cfg"].body_names = [self.foot_link_name]

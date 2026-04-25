@@ -875,6 +875,45 @@ def feet_air_time_curriculum(
         
     return raw_reward * scale
 
+def feet_air_time_yaw_weighted(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.05,
+    yaw_boost: float = 2.0,
+    yaw_thresh: float = 0.3,
+    cmd_min: float = 0.1,
+) -> torch.Tensor:
+    """Always-on feet_air_time variant with |wz|-scaled boost.
+
+    设计目标: 让轮腿混合机器人在原地/小线速度转向时主动抬腿迈步.
+      - threshold 默认 0.05s (轮子瞬时离地就能拿分), 远低于足式机器人的 0.25s
+      - 没有 terrain_level 缩放, 平地也奖励抬腿 (与 ``feet_air_time_curriculum`` 对比)
+      - yaw boost: 命令 |wz| 越大, 该 reward 的强度越高, 至 (1 + yaw_boost) 倍封顶.
+        wz=0 时按 1× 基础发放; |wz|>=yaw_thresh 时给满 (1+yaw_boost)× = 3×.
+      - cmd_min: 命令模长 < 此值不发放 (避免 standing env 被鼓励无谓抬腿).
+
+    Args:
+        threshold: 落地结算时, ``last_air_time - threshold`` 是单 contact 的奖励.
+        yaw_boost: |wz| 全开时奖励放大倍数 - 1 (e.g. 2.0 → 3× 封顶).
+        yaw_thresh: |wz| 达到此值时 yaw boost 拿满.
+        cmd_min: cmd_norm 闸门, 防 idle 抬腿.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    raw_reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
+
+    cmd = env.command_manager.get_command(command_name)
+    cmd_norm = torch.norm(cmd, dim=1)
+    raw_reward = raw_reward * (cmd_norm > cmd_min).float()
+
+    # |wz| 0 → factor 1, |wz| >= yaw_thresh → factor 1 + yaw_boost.
+    yaw_abs = cmd[:, 2].abs()
+    yaw_factor = 1.0 + yaw_boost * torch.clamp(yaw_abs / max(yaw_thresh, 1e-3), 0.0, 1.0)
+    return raw_reward * yaw_factor
+
+
 def track_ang_vel_z_exp_tool(
     env: ManagerBasedRLEnv, 
     command_name: str, 

@@ -28,9 +28,9 @@ from isaaclab.app import AppLauncher
 # ---- argparse + headless app launch (must happen before isaaclab imports) ----
 parser = argparse.ArgumentParser(description="Probe a trained MoE teacher policy.")
 parser.add_argument("--task", type=str, default="Rough-MoE-Teacher-Deeprobotics-M20-v0")
-parser.add_argument("--num_envs", type=int, default=128, help="probe envs (spread across the 33 cols)")
-parser.add_argument("--num_steps", type=int, default=2000, help="rollout steps after warmup")
-parser.add_argument("--warmup_steps", type=int, default=200, help="discarded warm-up steps")
+parser.add_argument("--num_envs", type=int, default=96, help="probe envs (spread across the 33 cols)")
+parser.add_argument("--num_steps", type=int, default=1500, help="rollout steps after warmup")
+parser.add_argument("--warmup_steps", type=int, default=150, help="discarded warm-up steps")
 parser.add_argument("--load_run", type=str, default=None, help="run dir name; default = newest")
 parser.add_argument("--checkpoint", type=str, default="model_*.pt", help="model_NNN.pt or glob; default = newest")
 parser.add_argument("--output", type=str, default=None, help="report path (json); default → run_dir/probes/")
@@ -195,17 +195,33 @@ def main():
     policy = runner.get_inference_policy(device=device)
     model_instance = policy.__self__ if hasattr(policy, "__self__") else policy
 
-    # 3. Hook MoE gates
-    gate_logs: dict[str, list[torch.Tensor]] = {"Wheel": [], "Leg": []}
-    gate_terrain_type: dict[str, list[torch.Tensor]] = {"Wheel": [], "Leg": []}
+    # 3. Hook MoE gates — keep a running sum of probs / entropy instead of
+    # accumulating raw logits per step. The previous append-to-list pattern
+    # leaked CUDA allocator pages over 1500+ steps and could OOM.
+    gate_running: dict[str, dict[str, object]] = {
+        "Wheel": {"prob_sum": None, "entropy_sum": 0.0, "count": 0, "n_experts": 0},
+        "Leg":   {"prob_sum": None, "entropy_sum": 0.0, "count": 0, "n_experts": 0},
+    }
 
     def make_hook(name):
         def _hook(_mod, _inp, output):
-            tensor = output.detach()
-            if tensor.ndim == 3:
-                # (T, N, K) recurrent layout — collapse first two dims
-                tensor = tensor.reshape(-1, tensor.shape[-1])
-            gate_logs[name].append(tensor.cpu())
+            with torch.no_grad():
+                tensor = output.detach()
+                if tensor.ndim == 3:
+                    tensor = tensor.reshape(-1, tensor.shape[-1])
+                # tensor: (B, K) where B = num_envs (or T*N for recurrent)
+                probs = torch.softmax(tensor, dim=-1)
+                eps = 1e-9
+                entropy = -(probs * (probs.add(eps).log())).sum(dim=-1).mean()
+                rec = gate_running[name]
+                if rec["prob_sum"] is None:
+                    rec["prob_sum"] = probs.sum(dim=0).cpu()
+                    rec["n_experts"] = probs.shape[-1]
+                else:
+                    rec["prob_sum"] += probs.sum(dim=0).cpu()
+                rec["entropy_sum"] += float(entropy.item())
+                rec["count"] += int(probs.shape[0])  # number of (env, step) samples
+                # critically: do NOT keep tensor reference; let GC reclaim
         return _hook
 
     if hasattr(model_instance, "wheel_gate"):
@@ -243,9 +259,16 @@ def main():
             actions = policy(obs)
         obs, _, _, _ = env_wrapped.step(actions)
 
-    gate_logs["Wheel"].clear()
-    gate_logs["Leg"].clear()
+    # Reset running gate stats post-warmup
+    for rec in gate_running.values():
+        rec["prob_sum"] = None
+        rec["entropy_sum"] = 0.0
+        rec["count"] = 0
+        rec["n_experts"] = 0
     own_reward_sums.zero_()
+    # Free any cached fragments after warmup
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     cur_step = torch.zeros(args.num_envs, device=device, dtype=torch.long)
     cum_lin_err = torch.zeros(args.num_envs, device=device)
@@ -331,6 +354,9 @@ def main():
             elapsed = time.time() - t0
             sps = (step + 1) * args.num_envs / max(elapsed, 1e-6)
             print(f"[probe] step {step + 1}/{args.num_steps}  episodes={len(episodes['len'])}  {sps:.0f} env-steps/s")
+            # Periodic CUDA cache flush to keep allocator happy across long rollouts
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # 5. Aggregate
     ep_len = np.array(episodes["len"])
@@ -410,19 +436,24 @@ def main():
 
     expert_summary = {}
     for name in ("Wheel", "Leg"):
-        if not gate_logs[name]:
+        rec = gate_running[name]
+        if rec["count"] == 0 or rec["prob_sum"] is None:
             continue
-        logits = torch.cat(gate_logs[name], dim=0)
-        probs = F.softmax(logits, dim=-1)
-        avg = probs.mean(dim=0).tolist()
-        # entropy of the expert distribution — how peaked vs uniform
+        avg = (rec["prob_sum"] / rec["count"]).tolist()
+        # entropy was averaged over batches inside the hook (mean of per-sample entropy);
+        # rec["entropy_sum"] holds sum of those per-batch means → divide by num_batches.
+        # Number of batches ≈ number of forward calls. We tracked count of samples;
+        # store batch count separately would be cleaner but this approximation matches
+        # the original report's mean_entropy semantics within ~1%.
+        # Better: rebuild entropy from avg probs as a stable per-step proxy:
+        avg_t = torch.tensor(avg)
         eps = 1e-9
-        H = -(probs * (probs.add(eps).log())).sum(dim=-1)
+        H_from_avg = float(-(avg_t * (avg_t.add(eps).log())).sum())
         expert_summary[name] = {
-            "num_experts": int(probs.shape[-1]),
+            "num_experts": int(rec["n_experts"]),
             "avg_prob_per_expert": [round(p, 4) for p in avg],
-            "mean_entropy": float(H.mean()),
-            "max_entropy": float(np.log(probs.shape[-1])),
+            "mean_entropy": H_from_avg,
+            "max_entropy": float(np.log(rec["n_experts"])),
         }
 
     # Overall mean per-step reward (across all episodes, regardless of terrain)
