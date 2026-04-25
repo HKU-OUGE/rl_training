@@ -539,7 +539,10 @@ class DeeproboticsM20ObservationsCfg:
         )
         sub_terrain_id = ObsTerm(
             func=mdp.sub_terrain_one_hot,
-            params={"num_types": MOE_TEACHER_NUM_TERRAIN_TYPES},
+            params={
+                "num_types": MOE_TEACHER_NUM_TERRAIN_TYPES,
+                "column_to_type": MOE_TEACHER_COLUMN_TO_TYPE,
+            },
             scale=1.0,
         )
         def __post_init__(self):
@@ -779,12 +782,17 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
+        # 摩擦/恢复系数: per-env 共享, 跨 env 随机. 使用自定义的
+        # ``randomize_rigid_body_material_per_env`` 函数: 每个 env 单 sample 一组
+        # (static, dynamic, restitution) 然后广播到该 env 的所有 shape, 这样 4 个
+        # 轮子摩擦相同 (避免 IsaacLab 默认 per-shape 抽样导致的轮间不一致),
+        # 同时保留跨 env 随机化以保证 sim2real robustness.
+        self.events.randomize_rigid_body_material.func = mdp.randomize_rigid_body_material_per_env
         self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
         self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
         self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        # self.events.randomize_rigid_body_material.params["static_friction_range"] = [1.0, 1.0]
-        # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
-        # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
+        # num_buckets is no longer meaningful for the per-env variant but the base
+        # cfg still passes it; the custom function silently accepts and ignores it.
         
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)

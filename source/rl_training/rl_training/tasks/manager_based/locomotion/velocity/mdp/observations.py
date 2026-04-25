@@ -48,14 +48,36 @@ def terrain_level_normalized(env: ManagerBasedRLEnv) -> torch.Tensor:
         return torch.zeros((env.num_envs, 1), device=env.device)
 
 
-def sub_terrain_one_hot(env: ManagerBasedRLEnv, num_types: int) -> torch.Tensor:
+def sub_terrain_one_hot(
+    env: ManagerBasedRLEnv,
+    num_types: int,
+    column_to_type: tuple[int, ...] | None = None,
+) -> torch.Tensor:
     """子地形类型的 one-hot 编码 (Critic 特权信息).
 
     依赖 TerrainImporter 的 ``terrain_types`` 张量 (每个 env 的列号).
-    要求: ``num_cols`` 等于 sub_terrains 的类型数, 使得 列号 <-> 类型 一一对应.
+
+    Args:
+        num_types: 输出 one-hot 的维度 (即语义上的地形类型数).
+        column_to_type: 长度为 ``num_cols`` 的整数序列, 把 TerrainImporter 的
+            列号映射到语义类型号. ``None`` 时退化为 "列号 == 类型号" 的旧行为.
+
     非 generator 地形 (flat plane) 下返回全零向量.
     """
-    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
-        terrain_types = env.scene.terrain.terrain_types.long().clamp(min=0, max=num_types - 1)
-        return torch.nn.functional.one_hot(terrain_types, num_classes=num_types).float()
-    return torch.zeros((env.num_envs, num_types), device=env.device)
+    if not (hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types")):
+        return torch.zeros((env.num_envs, num_types), device=env.device)
+
+    terrain_types = env.scene.terrain.terrain_types.long()
+
+    if column_to_type is not None:
+        cache_attr = "_sub_terrain_col2type_cache"
+        cached = getattr(env, cache_attr, None)
+        if cached is None or cached.numel() != len(column_to_type) or cached.device != terrain_types.device:
+            cached = torch.tensor(column_to_type, dtype=torch.long, device=terrain_types.device)
+            setattr(env, cache_attr, cached)
+        col_idx = terrain_types.clamp(min=0, max=cached.numel() - 1)
+        type_ids = cached[col_idx].clamp(min=0, max=num_types - 1)
+    else:
+        type_ids = terrain_types.clamp(min=0, max=num_types - 1)
+
+    return torch.nn.functional.one_hot(type_ids, num_classes=num_types).float()

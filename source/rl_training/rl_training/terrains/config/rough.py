@@ -4,7 +4,20 @@ import isaaclab.terrains as terrain_gen
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 from isaaclab.terrains import FlatPatchSamplingCfg, TerrainImporter, TerrainImporterCfg
 
-from rl_training.terrains import MeshGapTerrainCfg, MeshSquareHurdleTerrainCfg
+from rl_training.terrains import (
+    MeshGapTerrainCfg,
+    MeshSquareHurdleTerrainCfg,
+    NoisyHfInvertedPyramidSlopedTerrainCfg,
+    NoisyHfPyramidSlopedTerrainCfg,
+    NoisyMeshBoxTerrainCfg,
+    NoisyMeshGapTerrainCfg,
+    NoisyMeshInvertedPyramidStairsTerrainCfg,
+    NoisyMeshPitTerrainCfg,
+    NoisyMeshPyramidStairsTerrainCfg,
+    NoisyMeshRailsTerrainCfg,
+    NoisyMeshRandomGridTerrainCfg,
+    NoisyMeshSquareHurdleTerrainCfg,
+)
 
 # ==============================================================================
 # 1. 基础配置参数
@@ -456,65 +469,355 @@ RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 # 5. 11种地形综合配置 (Combined 11-Terrain Config for MoE Teacher Training)
 #    地形类型：随机噪声(baseline) / 楼梯 / 反向楼梯 / 斜坡 / 反向斜坡 /
 #              钻栏(hurdle) / 跨栏(rail) / gap / pit上高台 / box下高台 / box堆叠格栅
-#    课程难度：每种地形均通过 difficulty 参数递进
-#    num_cols=11：每种地形 1 列, 列号直接对应类型号 (供 sub_terrain one-hot 使用)
-#    插入顺序即 one-hot 索引顺序, 任何新增地形必须追加在末尾
 #
-#    设计思路: 去掉绝对平地, 用 random_rough 当作"基线地形"
-#      - 低难度 (~2cm noise) 近似平地, 允许轮式推进学习基础 locomotion
-#      - 高难度 (~16cm noise) 强制抬腿, 轮式差速转向容易打滑 → 策略被迫学习踏步转向
-#    新增 boxes (格栅方块阵列) 列对落脚点精度要求高, 进一步固化抬腿技能.
+#    多列变种设计 (鲁棒性强化):
+#      - 每种地形拆成 2-3 列不同参数 / 噪声变种, 列在物理网格内仍然分组排列.
+#      - one-hot 编码仍然按 "类型" (而非列) 输出, 由 ``MOE_TEACHER_COLUMN_TO_TYPE``
+#        提供列号到类型号的映射, 保持 Critic 输入维度不变.
+#      - 噪声变种: 在原地形 platform 区域叠加随机高度凸起 (Noisy* 生成器),
+#        让 robot 在 hurdle/stairs 等结构化地形上也学会在凹凸不平面起跳/落地.
+#        random_rough / boxes 这两类天然带噪声, 仅做参数变种, 不再加 platform noise.
 # ==============================================================================
+
+# (类型名, 该类型下的若干 (子地形键, cfg) 列变种)
+# 子地形键全局唯一; 列在生成器里的顺序就是 TerrainImporter 的列号顺序.
+MOE_TEACHER_TERRAIN_GROUPS: tuple[tuple[str, list[tuple[str, object]]], ...] = (
+    # 噪声分配规则: 每种地形 3 列, 2 列 "强噪声 (0.02, 0.16)" + 1 列 "弱噪声 (0.0, 0.03)".
+    # hurdle 例外: 全部 3 列都用弱噪声, 避免 crawl 通过空间被噪声挤掉.
+    # random_rough / boxes 是自带高度场噪声的地形, 直接用 noise_range / grid_height_range 调强弱.
+    # 0. random_rough — 自带噪声, 用 noise_range 调强弱
+    (
+        "random_rough",
+        [
+            ("random_rough_v0", random_rough_cfg.replace(
+                proportion=1.0, noise_range=(0.02, 0.16), noise_step=0.02
+            )),
+            ("random_rough_v1", random_rough_cfg.replace(
+                proportion=1.0, noise_range=(0.04, 0.20), noise_step=0.02
+            )),
+            ("random_rough_light", random_rough_cfg.replace(
+                proportion=1.0, noise_range=(0.0, 0.03), noise_step=0.01
+            )),
+        ],
+    ),
+    # 1. stairs (pyramid)
+    (
+        "stairs",
+        [
+            ("stairs_v0", NoisyMeshPyramidStairsTerrainCfg(
+                proportion=1.0,
+                step_height_range=(0.05, 0.25),
+                step_width=0.3,
+                platform_width=5.0,
+                border_width=1.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("stairs_v1", NoisyMeshPyramidStairsTerrainCfg(
+                proportion=1.0,
+                step_height_range=(0.05, 0.20),
+                step_width=0.4,
+                platform_width=5.0,
+                border_width=1.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("stairs_light", NoisyMeshPyramidStairsTerrainCfg(
+                proportion=1.0,
+                step_height_range=(0.05, 0.25),
+                step_width=0.3,
+                platform_width=5.0,
+                border_width=1.0,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 2. inverted stairs
+    (
+        "inv_stairs",
+        [
+            ("inv_stairs_v0", NoisyMeshInvertedPyramidStairsTerrainCfg(
+                proportion=1.0,
+                step_height_range=(0.05, 0.25),
+                step_width=0.3,
+                platform_width=5.0,
+                border_width=1.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("inv_stairs_v1", NoisyMeshInvertedPyramidStairsTerrainCfg(
+                proportion=1.0,
+                step_height_range=(0.05, 0.20),
+                step_width=0.4,
+                platform_width=5.0,
+                border_width=1.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("inv_stairs_light", NoisyMeshInvertedPyramidStairsTerrainCfg(
+                proportion=1.0,
+                step_height_range=(0.05, 0.25),
+                step_width=0.3,
+                platform_width=5.0,
+                border_width=1.0,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 3. pyramid slope
+    (
+        "slopes",
+        [
+            ("slopes_v0", NoisyHfPyramidSlopedTerrainCfg(
+                proportion=1.0,
+                slope_range=(0.0, 0.4),
+                platform_width=4.0,
+                border_width=0.25,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("slopes_v1", NoisyHfPyramidSlopedTerrainCfg(
+                proportion=1.0,
+                slope_range=(0.0, 0.55),
+                platform_width=4.0,
+                border_width=0.25,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("slopes_light", NoisyHfPyramidSlopedTerrainCfg(
+                proportion=1.0,
+                slope_range=(0.0, 0.4),
+                platform_width=4.0,
+                border_width=0.25,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 4. inverted slope
+    (
+        "inv_slopes",
+        [
+            ("inv_slopes_v0", NoisyHfInvertedPyramidSlopedTerrainCfg(
+                proportion=1.0,
+                slope_range=(0.0, 0.4),
+                platform_width=4.0,
+                border_width=0.25,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("inv_slopes_v1", NoisyHfInvertedPyramidSlopedTerrainCfg(
+                proportion=1.0,
+                slope_range=(0.0, 0.55),
+                platform_width=4.0,
+                border_width=0.25,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("inv_slopes_light", NoisyHfInvertedPyramidSlopedTerrainCfg(
+                proportion=1.0,
+                slope_range=(0.0, 0.4),
+                platform_width=4.0,
+                border_width=0.25,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 5. hurdle (crawl 低姿钻越) — 全部使用弱噪声, 保证 bar 下面通过空间充足
+    (
+        "hurdle",
+        [
+            ("hurdle_v0", NoisyMeshSquareHurdleTerrainCfg(
+                proportion=1.0,
+                hurdle_height_range=(0.25, 0.6),
+                bar_width_range=(0.03, 0.10),
+                bar_thickness_range=(0.20, 0.50),
+                platform_width=4.0,
+                mode="crawl",
+                platform_noise_range=(0.0, 0.03),
+            )),
+            ("hurdle_v1", NoisyMeshSquareHurdleTerrainCfg(
+                proportion=1.0,
+                hurdle_height_range=(0.3, 0.5),
+                bar_width_range=(0.03, 0.10),
+                bar_thickness_range=(0.05, 0.15),
+                platform_width=4.0,
+                mode="crawl",
+                platform_noise_range=(0.0, 0.03),
+            )),
+            ("hurdle_v2", NoisyMeshSquareHurdleTerrainCfg(
+                proportion=1.0,
+                hurdle_height_range=(0.25, 0.55),
+                bar_width_range=(0.03, 0.10),
+                bar_thickness_range=(0.10, 0.20),
+                platform_width=4.0,
+                mode="crawl",
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 6. rail (跨栏跳跃)
+    (
+        "rail",
+        [
+            ("rail_v0", NoisyMeshRailsTerrainCfg(
+                proportion=1.0,
+                rail_thickness_range=(0.05, 0.1),
+                rail_height_range=(0.2, 0.45),
+                platform_width=4.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("rail_v1", NoisyMeshRailsTerrainCfg(
+                proportion=1.0,
+                rail_thickness_range=(0.01, 0.06),
+                rail_height_range=(0.05, 0.4),
+                platform_width=4.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("rail_light", NoisyMeshRailsTerrainCfg(
+                proportion=1.0,
+                rail_thickness_range=(0.05, 0.1),
+                rail_height_range=(0.2, 0.45),
+                platform_width=4.0,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 7. gap
+    (
+        "gap",
+        [
+            ("gap_v0", NoisyMeshGapTerrainCfg(
+                proportion=1.0,
+                gap_width_range=(0.3, 0.8),
+                platform_width=4.0,
+                gap_depth=0.5,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("gap_v1", NoisyMeshGapTerrainCfg(
+                proportion=1.0,
+                gap_width_range=(0.2, 0.6),
+                platform_width=4.0,
+                gap_depth=0.3,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("gap_light", NoisyMeshGapTerrainCfg(
+                proportion=1.0,
+                gap_width_range=(0.3, 0.8),
+                platform_width=4.0,
+                gap_depth=0.5,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 8. pit (上高台)
+    (
+        "pit",
+        [
+            ("pit_v0", NoisyMeshPitTerrainCfg(
+                proportion=1.0,
+                pit_depth_range=(0.05, 0.8),
+                double_pit=True,
+                platform_width=4.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("pit_v1", NoisyMeshPitTerrainCfg(
+                proportion=1.0,
+                pit_depth_range=(0.05, 0.5),
+                double_pit=False,
+                platform_width=4.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("pit_light", NoisyMeshPitTerrainCfg(
+                proportion=1.0,
+                pit_depth_range=(0.05, 0.8),
+                double_pit=True,
+                platform_width=4.0,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 9. box (下高台)
+    (
+        "box",
+        [
+            ("box_v0", NoisyMeshBoxTerrainCfg(
+                proportion=1.0,
+                box_height_range=(0.1, 0.4),
+                double_box=True,
+                platform_width=4.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("box_v1", NoisyMeshBoxTerrainCfg(
+                proportion=1.0,
+                box_height_range=(0.1, 0.5),
+                double_box=False,
+                platform_width=4.0,
+                platform_noise_range=(0.02, 0.16),
+            )),
+            ("box_light", NoisyMeshBoxTerrainCfg(
+                proportion=1.0,
+                box_height_range=(0.1, 0.4),
+                double_box=True,
+                platform_width=4.0,
+                platform_noise_range=(0.0, 0.03),
+            )),
+        ],
+    ),
+    # 10. boxes (堆叠格栅) — 自带噪声, 用 grid_height_range 调强弱
+    (
+        "boxes",
+        [
+            ("boxes_v0", boxes_cfg.replace(
+                proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.20)
+            )),
+            ("boxes_v1", boxes_cfg.replace(
+                proportion=1.0, grid_width=0.55, grid_height_range=(0.05, 0.25)
+            )),
+            ("boxes_light", boxes_cfg.replace(
+                proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.25)
+            )),
+        ],
+    ),
+)
+
+
+def _build_moe_terrain_layout():
+    sub_terrains: dict[str, object] = {}
+    column_to_type: list[int] = []
+    type_to_columns: list[tuple[int, ...]] = []
+    type_names: list[str] = []
+    col_idx = 0
+    for type_idx, (type_name, variants) in enumerate(MOE_TEACHER_TERRAIN_GROUPS):
+        type_names.append(type_name)
+        cols_for_type: list[int] = []
+        for sub_name, sub_cfg in variants:
+            if sub_name in sub_terrains:
+                raise ValueError(f"duplicate sub-terrain key: {sub_name}")
+            sub_terrains[sub_name] = sub_cfg
+            column_to_type.append(type_idx)
+            cols_for_type.append(col_idx)
+            col_idx += 1
+        type_to_columns.append(tuple(cols_for_type))
+    return sub_terrains, tuple(column_to_type), tuple(type_to_columns), tuple(type_names)
+
+
+(
+    _MOE_SUB_TERRAINS,
+    MOE_TEACHER_COLUMN_TO_TYPE,
+    MOE_TEACHER_TYPE_TO_COLUMNS,
+    MOE_TEACHER_TERRAIN_TYPES,
+) = _build_moe_terrain_layout()
+
+MOE_TEACHER_NUM_COLS: int = len(MOE_TEACHER_COLUMN_TO_TYPE)
+MOE_TEACHER_NUM_TERRAIN_TYPES: int = len(MOE_TEACHER_TERRAIN_TYPES)
+
 MOE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE,
     border_width=20.0,
     num_rows=NUM_ROWS,
-    num_cols=11,
+    num_cols=MOE_TEACHER_NUM_COLS,
     curriculum=True,
-    sub_terrains={
-        # 0. 随机噪声 — 新 baseline, 低难度近平地, 高难度强制抬腿
-        "random_rough": random_rough_cfg.replace(proportion=1.0),
-        # 1. 楼梯 — 上下台阶，抬腿大动作
-        "stairs": pyramid_stairs_cfg.replace(proportion=1.0),
-        # 2. 反向楼梯 — 从中心坑向四周阶梯上行
-        "inv_stairs": inverted_stairs_cfg.replace(proportion=1.0),
-        # 3. 斜坡 — 坡面行走，重心调整
-        "slopes": pyramid_slope_cfg.replace(proportion=1.0),
-        # 4. 反向斜坡 — 从中心凹地向四周斜坡上行
-        "inv_slopes": inverted_slope_cfg.replace(proportion=1.0),
-        # 5. 钻栏(hurdle/crawl) — 压低重心穿越横杆
-        "hurdle": square_hurdle_cfg.replace(proportion=1.0),  # mode="crawl" inherited
-        # 6. 跨栏(rail) — 跳跃越过栏杆
-        "rail": rails_cfg.replace(proportion=1.0),
-        # 7. gap — 跨越沟壑
-        "gap": gap_cfg.replace(proportion=1.0),
-        # 8. pit上高台 — 从坑底攀爬至地面平台
-        "pit": pit_cfg.replace(proportion=1.0),
-        # 9. box下高台 — 从高台跳下
-        "box": box_cfg.replace(proportion=1.0),
-        # 10. boxes 堆叠格栅 — 高度随机的方块阵列 (5-20cm), 落脚点精度要求高
-        "boxes": boxes_cfg.replace(proportion=1.0),
-    },
+    sub_terrains=_MOE_SUB_TERRAINS,
 )
 
-# 子地形列号 <-> 类型名 映射 (供 one-hot 维度推断与 baseline 奖励门控)
-MOE_TEACHER_TERRAIN_TYPES: tuple[str, ...] = (
-    "random_rough",
-    "stairs",
-    "inv_stairs",
-    "slopes",
-    "inv_slopes",
-    "hurdle",
-    "rail",
-    "gap",
-    "pit",
-    "box",
-    "boxes",
-)
-MOE_TEACHER_NUM_TERRAIN_TYPES: int = len(MOE_TEACHER_TERRAIN_TYPES)
-# 命名沿用 "FLAT" 以兼容现有奖励函数 param; 语义已从 "绝对平地" 改为 "baseline 低难度近平地".
-# 现在 (0,) 指向 random_rough 列 —— 低难度时近似平地, 同样触发 flat-gated 奖励项.
-MOE_TEACHER_FLAT_TERRAIN_IDS: tuple[int, ...] = (0,)  # random_rough 列 (新 baseline)
+# 平地 (baseline) 列号集合: 仅 ``random_rough_light`` 一列 (noise_range=(0.0, 0.03)).
+# random_rough_v0/v1 是强噪声 (16-20cm), flat-gated reward (压制 hipy/knee/hipx 偏离 +
+# 平躺姿态) 在那种地形上会和"必须抬腿过坎"的策略动作矛盾, 所以只在真正接近平地的
+# light 列上触发. ``MOE_TEACHER_TYPE_TO_COLUMNS[0]`` 是 random_rough 三列 (0,1,2),
+# 取末尾即 ``random_rough_light`` 的列号.
+MOE_TEACHER_FLAT_TERRAIN_IDS: tuple[int, ...] = (MOE_TEACHER_TYPE_TO_COLUMNS[0][-1],)
 
 # 向后兼容别名
 MOE_ROUGH_TERRAINS_CFG = STUDENT_TERRAINS_CFG
