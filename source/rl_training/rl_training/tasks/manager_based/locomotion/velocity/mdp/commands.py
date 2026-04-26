@@ -20,88 +20,35 @@ import math
 import isaaclab.utils.math as math_utils
 
 class UniformThresholdVelocityCommand(mdp.UniformVelocityCommand):
-    """Command generator with threshold and explicit pure-turn bucket.
+    """Command generator that generates a velocity command in SE(2) from uniform distribution with threshold."""
 
-    在均匀采样的基础上:
-      1. 按 `pure_turn_probability` 划出一个 "纯转向" 桶，这些环境 vx=vy=0、|wz|>=0.5,
-         并且显式关闭 heading_command / standing，使 wz 能走完整个 `_update_command` 流程.
-      2. 对剩余环境沿用原 <0.5 截断，但只在 lin_vel 和 ang_vel_z 同时较小时才视为 "无效",
-         否则保留 (小 lin, 大 ang) / (大 lin, 小 ang) 的正常组合.
-    """
-
-    cfg: "UniformThresholdVelocityCommandCfg"
+    cfg: mdp.UniformThresholdVelocityCommandCfg
     """The configuration of the command generator."""
 
     def _resample_command(self, env_ids: Sequence[int]):
 
         super()._resample_command(env_ids)
-
+        
         env_ids_tensor = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
-        n = env_ids_tensor.numel()
-        if n == 0:
-            return
-
-        ang_low, ang_high = self.cfg.ranges.ang_vel_z
-        ang_abs_max = max(abs(ang_low), abs(ang_high))
-        pure_turn_min = min(self.cfg.pure_turn_min_abs, ang_abs_max) if ang_abs_max > 1e-4 else 0.0
-
-        # -------- 1. 纯转向桶 --------
-        pure_turn_prob = float(getattr(self.cfg, "pure_turn_probability", 0.0))
-        if pure_turn_prob > 0.0 and pure_turn_min > 1e-4:
-            turn_mask = torch.rand(n, device=self.device) < pure_turn_prob
-        else:
-            turn_mask = torch.zeros(n, dtype=torch.bool, device=self.device)
-
-        turn_ids = env_ids_tensor[turn_mask]
-        if turn_ids.numel() > 0:
-            magnitudes = math_utils.sample_uniform(
-                pure_turn_min, ang_abs_max, (turn_ids.numel(),), device=self.device
-            )
-            signs = torch.randint(0, 2, (turn_ids.numel(),), device=self.device) * 2 - 1
-            self.vel_command_b[turn_ids, 0] = 0.0
-            self.vel_command_b[turn_ids, 1] = 0.0
-            self.vel_command_b[turn_ids, 2] = signs * magnitudes
-            # 关闭 heading 控制，防止 _update_command 用航向误差覆盖 wz
-            if hasattr(self, "is_heading_env"):
-                self.is_heading_env[turn_ids] = False
-            # 关闭 standing 覆盖，保证 wz 能存活
-            if hasattr(self, "is_standing_env"):
-                self.is_standing_env[turn_ids] = False
-
-        # -------- 2. 其余环境：阈值按当前 cfg.ranges 比例算, 与 curriculum 兼容 --------
-        # 早先版本里下限和重抽都硬编码 (0.5, 1.5), 一旦 command_levels_lin_vel curriculum
-        # 把 cfg.ranges.lin_vel_x 缩到 (-0.15, 0.15), 这里仍按 [0.5, 1.5] 重抽,
-        # curriculum 完全失效. 改成按 cfg.ranges 当前值的比例触发 + 重抽.
-        other_mask = ~turn_mask
-        other_ids = env_ids_tensor[other_mask]
-        if other_ids.numel() > 0:
-            lin_max_cur = max(abs(self.cfg.ranges.lin_vel_x[0]), abs(self.cfg.ranges.lin_vel_x[1]))
-            ang_max_cur = ang_abs_max  # 已在上方算过
-            # "无意义命令" 阈值: 当前最大值的 deadzone_ratio (默认 30%) 或 0.05 m/s 取大
-            ratio = float(getattr(self.cfg, "deadzone_ratio", 0.3))
-            lin_thresh = max(ratio * lin_max_cur, 0.05)
-            ang_thresh = max(ratio * ang_max_cur, 0.05)
-
-            vel_norm = torch.norm(self.vel_command_b[other_ids, :2], dim=1)
-            ang_abs = self.vel_command_b[other_ids, 2].abs()
-            invalid_mask = (vel_norm < lin_thresh) & (ang_abs < ang_thresh) & (vel_norm > 1e-4)
-
-            if invalid_mask.any():
-                invalid_ids = other_ids[invalid_mask]
-                num_invalid = invalid_ids.numel()
-
-                directions = torch.randint(0, 2, (num_invalid,), device=self.device) * 2 - 1
-                # 重抽到当前 [lin_thresh, lin_max_cur] 的上半部分, 不再硬编码 1.5
-                if lin_max_cur > lin_thresh + 1e-6:
-                    magnitudes = math_utils.sample_uniform(
-                        lin_thresh, lin_max_cur, (num_invalid,), device=self.device
-                    )
-                else:
-                    # curriculum 缩到极小时, 退化为 lin_thresh 常数, 避免 sample_uniform low>=high
-                    magnitudes = torch.full((num_invalid,), lin_thresh, device=self.device)
-
-                self.vel_command_b[invalid_ids, 0] = directions * magnitudes
-                self.vel_command_b[invalid_ids, 1] = 0.0
+        
+        # 1. 找出速度模长(绝对值) < 0.5 的“不合格”环境
+        vel_norm = torch.norm(self.vel_command_b[env_ids_tensor, :2], dim=1)
+        invalid_mask = (vel_norm < 0.5) & (vel_norm > 1e-4)
+        
+        # 2. 如果存在不合格的环境，直接使用张量运算为它们分配新的合法速度
+        if invalid_mask.any():
+            invalid_ids = env_ids_tensor[invalid_mask]
+            num_invalid = len(invalid_ids)
+            
+            # 随机决定方向：生成 1 (向前) 或 -1 (向后)
+            directions = torch.randint(0, 2, (num_invalid,), device=self.device) * 2 - 1
+            
+            # 随机生成幅度：在 0.5 到 1.5 之间均匀采样
+            magnitudes = math_utils.sample_uniform(0.5, 1.5, (num_invalid,), device=self.device)
+            
+            # 赋予新的合法速度，并强制 Y 轴为 0 (2.5D 运动)
+            self.vel_command_b[invalid_ids, 0] = directions * magnitudes
+            self.vel_command_b[invalid_ids, 1] = 0.0
 
 
 @configclass
@@ -109,20 +56,6 @@ class UniformThresholdVelocityCommandCfg(mdp.UniformVelocityCommandCfg):
     """Configuration for the uniform threshold velocity command generator."""
 
     class_type: type = UniformThresholdVelocityCommand
-
-    pure_turn_probability: float = 0.15
-    """Fraction of environments that receive a pure-turn command (vx=vy=0, |wz|>=pure_turn_min_abs)."""
-
-    pure_turn_min_abs: float = 0.5
-    """Minimum absolute wz value for pure-turn samples; clipped to the configured ang_vel_z range."""
-
-    deadzone_ratio: float = 0.3
-    """Fraction of the current cfg.ranges max defining the "meaningless command" deadzone.
-
-    A sample is considered invalid (and redrawn) if both ``|lin| < ratio * lin_max_cur`` and
-    ``|ang| < ratio * ang_max_cur``. With curriculum enabled this scales the deadzone with the
-    current (curriculum-shrunken) range so the redraw never overshoots the intended range.
-    """
 
 
 class DiscreteCommandController(CommandTerm):
@@ -223,7 +156,7 @@ class TerrainAwareVelocityCommand(UniformThresholdVelocityCommand):
     cfg: "TerrainAwareVelocityCommandCfg"
 
     def _resample_command(self, env_ids: Sequence[int]):
-        # 1. 执行基类采样 (已经包含纯转向桶 + lin/ang 双小截断)
+        # 1. 执行基类采样
         super()._resample_command(env_ids)
 
         # 2. 获取地形等级
@@ -248,19 +181,19 @@ class TerrainAwareVelocityCommand(UniformThresholdVelocityCommand):
                 self.cfg.hard_ranges.ang_vel_z[0], self.cfg.hard_ranges.ang_vel_z[1], (len(hard_ids),), device=self.device
             )
 
-        # 4. 对被 hard 覆盖过的环境再跑一次 "lin/ang 双小" 截断，保持规则一致
-        if len(hard_ids) > 0:
-            vel_norm = torch.norm(self.vel_command_b[hard_ids, :2], dim=1)
-            ang_abs = self.vel_command_b[hard_ids, 2].abs()
-            invalid_mask = (vel_norm < 0.5) & (ang_abs < 0.5) & (vel_norm > 1e-4)
-
-            if invalid_mask.any():
-                invalid_ids = hard_ids[invalid_mask]
-                directions = torch.randint(0, 2, (len(invalid_ids),), device=self.device) * 2 - 1
-                magnitudes = math_utils.sample_uniform(0.5, 1.5, (len(invalid_ids),), device=self.device)
-
-                self.vel_command_b[invalid_ids, 0] = directions * magnitudes
-                self.vel_command_b[invalid_ids, 1] = 0.0
+        # 4. 彻底消除 0.5 以下的速度
+        vel_norm = torch.norm(self.vel_command_b[env_ids_tensor, :2], dim=1)
+        invalid_mask = (vel_norm < 0.5) & (vel_norm > 1e-4)
+        
+        if invalid_mask.any():
+            invalid_ids = env_ids_tensor[invalid_mask]
+            
+            # 幅度限制在 [0.5, 1.5]
+            directions = torch.randint(0, 2, (len(invalid_ids),), device=self.device) * 2 - 1
+            magnitudes = math_utils.sample_uniform(0.5, 1.5, (len(invalid_ids),), device=self.device)
+            
+            self.vel_command_b[invalid_ids, 0] = directions * magnitudes
+            self.vel_command_b[invalid_ids, 1] = 0.0
         
         # if 0 in env_ids_tensor:
         #     idx = (env_ids_tensor == 0).nonzero(as_tuple=True)[0][0]

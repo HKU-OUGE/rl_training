@@ -58,10 +58,10 @@ def process_lidar_data(depths: torch.Tensor, is_student: bool) -> torch.Tensor:
     
     # 2. 盲区处理 (仅Student)
     if is_student:
-        # blind_zone_fill = torch.tanh(torch.tensor(5.0 / scale))
+        blind_zone_fill = torch.tanh(torch.tensor(5.0 / scale))
         normalized_depths = torch.where(
             depths < 0.3,
-            torch.full_like(normalized_depths, -1.0), 
+            torch.full_like(normalized_depths, blind_zone_fill.item()),
             normalized_depths
         )
     return normalized_depths
@@ -92,23 +92,25 @@ def student_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normal
     depths = img.flatten(start_dim=1)
     return process_lidar_data(depths, is_student=True)
 def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """处理多层雷达扫描，输出归一化的距离数组。
-
-    未命中 (NaN/inf)、盲区 (<0.3m) 统一映射为最远量程 5.0m，归一化后均为 1.0，
-    让网络对三种 "无有效回波" 情况看到同一个输入。
-    """
+    """处理多层雷达扫描，输出归一化的距离数组 (严格区分安全区与盲区)"""
     sensor = env.scene.sensors[sensor_cfg.name]
-
+    
     rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
     depths = torch.norm(rel_vec, dim=-1)
-
-    # NaN/inf → 5.0m (未命中)
+    
+    # 将 NaN 和 inf 视为安全距离 (5.0m)
     depths = torch.nan_to_num(depths, posinf=5.0, neginf=5.0, nan=5.0)
-    # 盲区 (<0.3m) 同样视为未命中 → 5.0m
-    depths = torch.where(depths < 0.3, torch.full_like(depths, 5.0), depths)
-
-    # 归一化：[0, 5.0] → [0.0, 1.0]
-    return torch.clip(depths / 5.0, 0.0, 1.0)
+    
+    # 归一化：[0, 5.0] 映射到 [0.0, 1.0]
+    normalized_depths = torch.clip(depths / 5.0, 0.0, 1.0)
+    
+    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 5.0m)
+    normalized_depths = torch.where(
+        depths < 0.3,
+        torch.full_like(normalized_depths, 1.0),
+        normalized_depths
+    )
+    return normalized_depths
 
 def height_scan_sim2real(
     env, 
@@ -323,33 +325,6 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
         weight=0.0,
         params={"asset_cfg": SceneEntityCfg("robot")}
     )
-    flat_orientation_terrain_gated = RewTerm(
-        func=mdp.flat_orientation_l2_terrain_gated,
-        weight=0.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "flat_terrain_ids": MOE_TEACHER_FLAT_TERRAIN_IDS,
-        },
-    )
-    # 平地专用: 压制 hipy+knee 偏离, 让轮式行进时腿部保持收起 (不影响斜坡 / 楼梯).
-    # joint_names 在 __post_init__ 里用 leg group 常量覆盖.
-    hipy_knee_deviation_flat = RewTerm(
-        func=mdp.leg_deviation_l2_flat_gated,
-        weight=0.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "flat_terrain_ids": MOE_TEACHER_FLAT_TERRAIN_IDS,
-        },
-    )
-    # 平地专用: 压制 hipx 在转向时的 "helper 动作", 让 skid-steer 只靠轮子差速
-    hipx_deviation_flat = RewTerm(
-        func=mdp.leg_deviation_l2_flat_gated,
-        weight=0.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "flat_terrain_ids": MOE_TEACHER_FLAT_TERRAIN_IDS,
-        },
-    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
@@ -495,20 +470,20 @@ class DeeproboticsM20ObservationsCfg:
     class StudentPolicyCfg(BlindStudentPolicyCfg):
         pass
 
-    @configclass
+    @configclass    
     class CriticCfg(PolicyCfg):
         """Critic 获取与 Teacher Actor 相同的本体感觉维度"""
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
             noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-100.0, 100.0),
-            scale=1.0,
+            scale=1.0, 
         )
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
             noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-100.0, 100.0),
-            scale=0.25,
+            scale=0.25, 
         )
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
@@ -518,7 +493,7 @@ class DeeproboticsM20ObservationsCfg:
         )
         # 同样去除高程图，Critic 的环境感知将通过 `noisy_elevation` 提供
         height_scan = None
-
+        
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
@@ -531,18 +506,10 @@ class DeeproboticsM20ObservationsCfg:
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
             noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-100.0, 100.0),
-            scale=0.05,
+            scale=0.05, 
         )
         terrain_level = ObsTerm(
             func=mdp.terrain_level_normalized,
-            scale=1.0,
-        )
-        sub_terrain_id = ObsTerm(
-            func=mdp.sub_terrain_one_hot,
-            params={
-                "num_types": MOE_TEACHER_NUM_TERRAIN_TYPES,
-                "column_to_type": MOE_TEACHER_COLUMN_TO_TYPE,
-            },
             scale=1.0,
         )
         def __post_init__(self):
@@ -551,7 +518,7 @@ class DeeproboticsM20ObservationsCfg:
 
     @configclass
     class EstimatorCfg(ObsGroup):
-        history_length = 15
+        history_length = 15  
         flatten_history_dim = True 
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
@@ -760,13 +727,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-        # ground terrain — 9种地形综合课程
-        # 楼梯/斜坡/随机噪声/钻栏/跨栏/gap/pit上高台/box下高台/窄桥
+        # ground terrain
         self.scene.terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
-            terrain_generator=MOE_TEACHER_TERRAINS_CFG,
-            max_init_terrain_level=0,
+            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
+            max_init_terrain_level=1,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
@@ -782,17 +748,22 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
-        # 摩擦/恢复系数: per-env 共享, 跨 env 随机. 使用自定义的
-        # ``randomize_rigid_body_material_per_env`` 函数: 每个 env 单 sample 一组
-        # (static, dynamic, restitution) 然后广播到该 env 的所有 shape, 这样 4 个
-        # 轮子摩擦相同 (避免 IsaacLab 默认 per-shape 抽样导致的轮间不一致),
-        # 同时保留跨 env 随机化以保证 sim2real robustness.
-        self.events.randomize_rigid_body_material.func = mdp.randomize_rigid_body_material_per_env
-        self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
-        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
-        self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        # num_buckets is no longer meaningful for the per-env variant but the base
-        # cfg still passes it; the custom function silently accepts and ignores it.
+        self.scene.terrain.terrain_generator = MOE_ROUGH_TERRAINS_CFG2
+        if(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        elif(self.scene.terrain.terrain_generator == MOE_ROUGH_TERRAINS_CFG2):
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        else:
+            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
+            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        # self.events.randomize_rigid_body_material.params["static_friction_range"] = [1.0, 1.0]
+        # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
+        # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
         
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
@@ -841,34 +812,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             bwd_sensor.update_period = 0.1
             setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
         # Rewards
-        # is_terminated: 在 pit / hurdle 上不发放 (-50 大惩罚会让 policy 学会"避开" 而不是
-        # 去尝试 step-up/crawl). 其他地形仍然 -50 维持基础生存激励.
-        # 列号从 MOE_TEACHER_TYPE_TO_COLUMNS 自动派生, 即使 column 编号变化也不会失效.
-        _excluded_terrain_cols = tuple(
-            c for tname, cols in zip(MOE_TEACHER_TERRAIN_TYPES, MOE_TEACHER_TYPE_TO_COLUMNS)
-            if tname in ("hurdle", "pit")
-            for c in cols
-        )
-        self.rewards.is_terminated.func = mdp.is_terminated_terrain_excluded
-        self.rewards.is_terminated.params = {"excluded_terrain_ids": _excluded_terrain_cols}
-        self.rewards.is_terminated.weight = -50.0
+        self.rewards.is_terminated.weight = 0
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.05
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_roll_l2.weight = -10.0
-        # 平地上额外惩罚俯仰+翻滚, 防止弓背 / 歪头; 其他子地形不生效
-        self.rewards.flat_orientation_terrain_gated.weight = -1.0
-        # baseline 列 (现 random_rough) 上轻压 hipy+knee 偏离:
-        # - 低难度 (noise ~2cm) 近似平地时, 鼓励收腿, 保持轮式推进
-        # - 高难度 (noise ~16cm) 时压力小, 不阻塞策略选择抬腿通过
-        self.rewards.hipy_knee_deviation_flat.weight = -0.3
-        self.rewards.hipy_knee_deviation_flat.params["asset_cfg"].joint_names = (
-            self.hipy_joint_names + self.knee_joint_names
-        )
-        # baseline 列上轻压 hipx 偏离: 低难度抑制 skid-steer helper 摆动,
-        # 高难度不妨碍抬腿转向
-        self.rewards.hipx_deviation_flat.weight = -0.2
-        self.rewards.hipx_deviation_flat.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.base_height_l2.weight = -0.5
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
@@ -894,9 +842,6 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        # 把 stand_still 的判零改成用 (vx, vy, wz) 全分量模长, 以便纯转向时腿部可以自由摆动
-        self.rewards.stand_still.func = mdp.stand_still_joint_deviation_full_cmd
-        self.rewards.stand_still.params["command_threshold"] = 0.1
         self.rewards.hipx_joint_pos_penalty.weight = -0.6
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
         self.rewards.hipy_joint_pos_penalty.weight = -0.3
@@ -928,19 +873,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
-        # 切换到 yaw-weighted 版: 去掉 terrain_level scale + 阈值降到 0.05s + 命令 |wz|
-        # 比例 boost (|wz|>=0.3 时 reward 3×). 目标: 在原地/小线速度转向命令下激励抬腿迈步,
-        # 不再依赖 terrain_level (curriculum 还在 lvl 0 也能发放 reward).
-        self.rewards.feet_air_time.func = mdp.feet_air_time_yaw_weighted
         self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params = {
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=self.foot_link_name),
-            "threshold": 0.05,
-            "yaw_boost": 2.0,
-            "yaw_thresh": 0.3,
-            "cmd_min": 0.1,
-        }
+        self.rewards.feet_air_time.params["threshold"] = 0.25
+        self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_air_time_long.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
         self.rewards.feet_contact.params["sensor_cfg"].body_names = [self.foot_link_name]
@@ -967,15 +902,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.terminations.illegal_contact = None
         self.terminations.bad_orientation_2 = None
 
-        # Asymmetric curriculum: 起步时 ang 已在 50% 范围内 (±0.75 rad/s, 足够明显的转向),
-        # lin 限制到 10% (±0.15 m/s, 几乎不能前进). 策略被迫先学转向 (skid 或 step-turn),
-        # 待 track_lin/ang_vel 达到 75% 满分后, curriculum 自动放宽 lin 范围, 进入"边走边转".
-        # 配合 commands.py 的按 cfg.ranges 比例的 deadzone, threshold 不再覆盖 curriculum.
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.5, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.1, 1.0) 
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         # ------------------------------Commands------------------------------
         # 课程指令采样策略

@@ -875,45 +875,6 @@ def feet_air_time_curriculum(
         
     return raw_reward * scale
 
-def feet_air_time_yaw_weighted(
-    env: ManagerBasedRLEnv,
-    command_name: str,
-    sensor_cfg: SceneEntityCfg,
-    threshold: float = 0.05,
-    yaw_boost: float = 2.0,
-    yaw_thresh: float = 0.3,
-    cmd_min: float = 0.1,
-) -> torch.Tensor:
-    """Always-on feet_air_time variant with |wz|-scaled boost.
-
-    设计目标: 让轮腿混合机器人在原地/小线速度转向时主动抬腿迈步.
-      - threshold 默认 0.05s (轮子瞬时离地就能拿分), 远低于足式机器人的 0.25s
-      - 没有 terrain_level 缩放, 平地也奖励抬腿 (与 ``feet_air_time_curriculum`` 对比)
-      - yaw boost: 命令 |wz| 越大, 该 reward 的强度越高, 至 (1 + yaw_boost) 倍封顶.
-        wz=0 时按 1× 基础发放; |wz|>=yaw_thresh 时给满 (1+yaw_boost)× = 3×.
-      - cmd_min: 命令模长 < 此值不发放 (避免 standing env 被鼓励无谓抬腿).
-
-    Args:
-        threshold: 落地结算时, ``last_air_time - threshold`` 是单 contact 的奖励.
-        yaw_boost: |wz| 全开时奖励放大倍数 - 1 (e.g. 2.0 → 3× 封顶).
-        yaw_thresh: |wz| 达到此值时 yaw boost 拿满.
-        cmd_min: cmd_norm 闸门, 防 idle 抬腿.
-    """
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
-    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
-    raw_reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
-
-    cmd = env.command_manager.get_command(command_name)
-    cmd_norm = torch.norm(cmd, dim=1)
-    raw_reward = raw_reward * (cmd_norm > cmd_min).float()
-
-    # |wz| 0 → factor 1, |wz| >= yaw_thresh → factor 1 + yaw_boost.
-    yaw_abs = cmd[:, 2].abs()
-    yaw_factor = 1.0 + yaw_boost * torch.clamp(yaw_abs / max(yaw_thresh, 1e-3), 0.0, 1.0)
-    return raw_reward * yaw_factor
-
-
 def track_ang_vel_z_exp_tool(
     env: ManagerBasedRLEnv, 
     command_name: str, 
@@ -1033,111 +994,15 @@ def track_ang_vel_z_exp_curriculum(
 
 def base_roll_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize ONLY the base roll angle using L2 squared kernel.
-
+    
     Computed by penalizing the y-component of the projected gravity vector.
     This prevents lateral tilting without penalizing pitching on slopes.
     """
     # extract the used quantities
     asset: RigidObject = env.scene[asset_cfg.name]
-
+    
     reward = torch.square(asset.data.projected_gravity_b[:, 1])
-
-    return reward
-
-
-def is_terminated_terrain_excluded(
-    env: ManagerBasedRLEnv,
-    excluded_terrain_ids: tuple[int, ...] = (),
-) -> torch.Tensor:
-    """``is_terminated`` 但在指定 terrain 列上不发放惩罚.
-
-    用途: 在结构性极难的地形 (e.g. pit / hurdle) 上, 大额 termination 惩罚 (weight=-50)
-    会让 policy 学会"远离这些地形" / "原地不动避免摔" 而不是去探索新动作. 把这些列从
-    is_terminated 中排除, 让 policy 在那里失败 ≈ 免费, 鼓励大胆尝试 step-up / crawl.
-
-    其他地形 (random_rough, slopes, stairs 等) 仍然按原 -50 惩罚, 维持基础生存激励.
-
-    Args:
-        excluded_terrain_ids: TerrainImporter 的列号 (一组). 这些列上 reward 强制为 0.
-    """
-    terminated = env.termination_manager.terminated.float()
-    if not excluded_terrain_ids:
-        return terminated
-    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
-        terrain_types = env.scene.terrain.terrain_types
-        excluded_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
-        for tid in excluded_terrain_ids:
-            excluded_mask |= (terrain_types == tid)
-        terminated = terminated * (~excluded_mask).float()
-    return terminated
-
-
-def flat_orientation_l2_terrain_gated(
-    env: ManagerBasedRLEnv,
-    flat_terrain_ids: tuple[int, ...] = (0,),
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """只在指定 "平地类" 子地形列上惩罚 base 的俯仰+翻滚投影重力.
-
-    `flat_terrain_ids` 是 TerrainImporter 的列号 (对应 sub_terrains dict 的插入顺序).
-    其他地形 (楼梯、斜坡等) 需要身体倾斜，所以返回 0.
-    """
-    asset: RigidObject = env.scene[asset_cfg.name]
-    reward = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
-
-    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
-        terrain_types = env.scene.terrain.terrain_types
-        flat_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
-        for tid in flat_terrain_ids:
-            flat_mask |= (terrain_types == tid)
-        reward = reward * flat_mask.float()
-
-    return reward
-
-
-def leg_deviation_l2_flat_gated(
-    env: ManagerBasedRLEnv,
-    flat_terrain_ids: tuple[int, ...] = (0,),
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """只在 "平地类" 子地形列上惩罚指定关节的 L2 偏离默认姿态.
-
-    目的: 压制平地上轮式行进时无谓的抬腿 / 转向时的腿部 helper 动作, 不阻塞
-    skid-steer 必需的差速轮控制. 斜坡 / 楼梯 / 钻栏等地形返回 0, 不干扰抬腿.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
-    reward = torch.sum(torch.square(diff), dim=1)
-
-    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_types"):
-        terrain_types = env.scene.terrain.terrain_types
-        flat_mask = torch.zeros_like(terrain_types, dtype=torch.bool)
-        for tid in flat_terrain_ids:
-            flat_mask |= (terrain_types == tid)
-        reward = reward * flat_mask.float()
-
-    return reward
-
-
-def stand_still_joint_deviation_full_cmd(
-    env: ManagerBasedRLEnv,
-    command_name: str,
-    command_threshold: float = 0.1,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Penalize joint deviation only when the FULL (vx, vy, wz) command is near zero.
-
-    与 Isaac Lab 的 ``stand_still_joint_deviation_l1`` 的区别: 后者仅用 ``norm(lin)`` 判零指令,
-    会在纯转向 (vx=vy=0, wz 非零) 时错误触发惩罚，阻止策略踏步/摆腿转向.
-    这里改成用完整三分量指令模长作为判据, 允许纯转向时腿部自由运动.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    diff_angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
-    reward = torch.sum(torch.abs(diff_angle), dim=1)
-
-    command = env.command_manager.get_command(command_name)
-    full_cmd_norm = torch.norm(command[:, :3], dim=1)
-    reward = reward * (full_cmd_norm < command_threshold)
+    
     return reward
 
 # ==============================================================================

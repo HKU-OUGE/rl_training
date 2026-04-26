@@ -84,11 +84,7 @@ class DeeproboticsM20TeacherAcrobaticEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     
     def __post_init__(self):
         super().__post_init__()
-
-        # sub_terrain one-hot 的 num_types 和列顺序只在 MOE_TEACHER_TERRAINS_CFG 下有语义,
-        # 此子 teacher 的 terrain 不同, 关掉以免喂给 Critic 错位的 one-hot.
-        self.observations.critic.sub_terrain_id = None
-
+        
         # 1. 强制使用全平地地形，关闭地形课程
         self.scene.terrain.terrain_generator = ACROBATIC_TEACHER_TERRAINS_CFG
         self.scene.terrain.terrain_generator.curriculum = False

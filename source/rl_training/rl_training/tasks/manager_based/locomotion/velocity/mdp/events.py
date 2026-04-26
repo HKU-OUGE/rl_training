@@ -17,62 +17,6 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
 
-def randomize_rigid_body_material_per_env(
-    env: ManagerBasedEnv,
-    env_ids: torch.Tensor | None,
-    static_friction_range: tuple[float, float],
-    dynamic_friction_range: tuple[float, float],
-    restitution_range: tuple[float, float],
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    make_consistent: bool = False,
-    num_buckets: int | None = None,  # accepted for API compat, ignored
-):
-    """Per-env (vs. per-shape) material randomization.
-
-    IsaacLab's stock :class:`isaaclab.envs.mdp.events.randomize_rigid_body_material`
-    samples a fresh material for every shape of every env, so a 4-wheel robot
-    ends up with four mismatched wheel frictions. For sim-to-real friction DR
-    we want one sample per env broadcast to every shape so all four wheels
-    (and the rest of the body) share the same coefficients within an env.
-
-    Args:
-        static_friction_range: (low, high) uniform sample range per env.
-        dynamic_friction_range: same, per env.
-        restitution_range: same, per env.
-        make_consistent: if True, clamp dynamic_friction <= static_friction.
-        num_buckets: ignored — kept so existing EventTerm params dicts that
-            still carry ``num_buckets`` from the stock isaaclab term don't blow up.
-    """
-    asset = env.scene[asset_cfg.name]
-
-    # resolve env ids
-    if env_ids is None:
-        env_ids = torch.arange(env.scene.num_envs, device="cpu")
-    else:
-        env_ids = env_ids.cpu()
-
-    n_env = int(env_ids.shape[0])
-    if n_env == 0:
-        return
-
-    total_num_shapes = asset.root_physx_view.max_shapes
-
-    # one (static, dynamic, restitution) per env
-    samples = torch.empty((n_env, 3), device="cpu")
-    samples[:, 0].uniform_(static_friction_range[0], static_friction_range[1])
-    samples[:, 1].uniform_(dynamic_friction_range[0], dynamic_friction_range[1])
-    samples[:, 2].uniform_(restitution_range[0], restitution_range[1])
-    if make_consistent:
-        samples[:, 1] = torch.minimum(samples[:, 0], samples[:, 1])
-
-    # broadcast to every shape: (n_env, total_num_shapes, 3)
-    expanded = samples.unsqueeze(1).expand(-1, total_num_shapes, -1).contiguous()
-
-    materials = asset.root_physx_view.get_material_properties()
-    materials[env_ids] = expanded
-    asset.root_physx_view.set_material_properties(materials, env_ids)
-
-
 def randomize_rigid_body_inertia(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor | None,
