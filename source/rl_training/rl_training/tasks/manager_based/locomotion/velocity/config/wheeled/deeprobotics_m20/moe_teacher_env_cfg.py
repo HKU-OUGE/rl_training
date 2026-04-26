@@ -903,11 +903,25 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.bad_orientation_2 = None
 
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.1, 1.0) 
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.5, 1.0)
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+        # 改回不带 0.5 阈值过滤的 UniformVelocityCommandCfg, 否则 (1e-4, 0.5)
+        # 区间的命令会被强制重采到 [0.5, 1.5], 让课程在 X 上前 ~70% 训练空跑.
+        self.commands.base_velocity = mdp.UniformVelocityCommandCfg(
+            asset_name="robot",
+            resampling_time_range=(10.0, 10.0),
+            rel_standing_envs=0.02,
+            rel_heading_envs=1.0,
+            heading_command=True,
+            heading_control_stiffness=0.5,
+            debug_vis=False,
+            ranges=mdp.UniformVelocityCommandCfg.Ranges(
+                lin_vel_x=(-1.5, 1.5),
+                lin_vel_y=(-0.0, 0.0),
+                ang_vel_z=(-1.5, 1.5),
+                heading=(-math.pi, math.pi),
+            ),
+        )
         # ------------------------------Commands------------------------------
         # 课程指令采样策略
         # self.commands.base_velocity = TerrainAwareVelocityCommandCfg(
