@@ -27,13 +27,13 @@ class PlatformRewardsCfg(DeeproboticsM20RewardsCfg):
         },
     )
 
-    # 允许小腿 (knee) 和大腿 (hipy) 支撑台阶边缘进行攀爬
-    # 仅惩罚 base_link (底盘撞台=摔倒) 和 hipx (内侧关节卡住=机构损坏)
+    # 惩罚 base_link、hipx、hipy、knee 的 collision —— 强制策略用 wheel 接触台面,
+    # 抑制"半身在台、膝盖/大腿拖着另一半"的捷径解.
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-0.3,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*_hipx", ".*_hipy"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*_hipx", ".*_hipy", ".*_knee"]),
             "threshold": 1.0,
         }
     )
@@ -140,7 +140,7 @@ class DeeproboticsM20TeacherPlatformEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        self.rewards.upward.weight = 0.08
+        self.rewards.upward.weight = 0  # platform teacher: 攀爬必然 pitch, "保持竖直" 反向信号
         self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
         self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
         self.rewards.joint_mirror_lr.weight = -0.015

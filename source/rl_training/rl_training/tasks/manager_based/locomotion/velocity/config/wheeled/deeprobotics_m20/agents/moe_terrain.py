@@ -1037,7 +1037,8 @@ class SplitMoEPPO(PPO):
         
         # 自定义 Loss 的追踪
         avg_lb_loss = 0.0
-        avg_sym_loss = 0.0
+        avg_sym_loss_lr = 0.0
+        avg_sym_loss_fb = 0.0
         avg_elev_ae_loss = 0.0
         avg_scan_ae_loss = 0.0
         avg_depth_ae_loss = 0.0
@@ -1059,8 +1060,15 @@ class SplitMoEPPO(PPO):
 
         # 2. 预定义对称性硬编码字典 (避免在循环中重复计算)
         device = self.device
+        # L-R (左右) 镜像: FL↔FR, HL↔HR.  hipx 取反, hipy/knee 不取反, wheels 不取反.
         action_swap_idx = torch.tensor([3,4,5, 0,1,2, 9,10,11, 6,7,8, 13,12, 15,14], dtype=torch.long, device=device)
         action_neg_mask = torch.tensor([-1,1,1, -1,1,1, -1,1,1, -1,1,1, 1, 1, 1, 1], dtype=torch.float32, device=device)
+        # F-B (前后) 镜像: FL↔HL, FR↔HR, wheel_FL↔wheel_HL, wheel_FR↔wheel_HR.
+        # hipx 不取反 (左右 side 不变, abduction convention 不变).
+        # hipy/knee 取反 (URDF 前后 axis 镜像, 见 deeprobotics.py init_state: f_hipy=-0.6, h_hipy=+0.6 等).
+        # wheels 取反 (rolling 方向在 body-X 反转后反向).
+        action_swap_idx_fb = torch.tensor([6,7,8, 9,10,11, 0,1,2, 3,4,5, 14,15, 12,13], dtype=torch.long, device=device)
+        action_neg_mask_fb = torch.tensor([1,-1,-1, 1,-1,-1, 1,-1,-1, 1,-1,-1, -1,-1,-1,-1], dtype=torch.float32, device=device)
 
         batch_cnt = 0
 
@@ -1305,7 +1313,30 @@ class SplitMoEPPO(PPO):
 
             sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions)
             loss = loss + getattr(model, 'sym_loss_coef', 1.0) * sym_loss
-            avg_sym_loss += sym_loss.item()
+            avg_sym_loss_lr += sym_loss.item()
+
+            # -----------------------------------------------------------------
+            # STEP D2: F-B (前后) 对称性正则化 Symmetry Loss
+            # 用 layer 0 (real) hidden state 作为起点 — 等变收敛时 M_FB(h) ≈ h_FB,
+            # 所以 policy(M_FB(obs), h_real) ≈ M_FB(policy(obs, h_real)) 这个约束是合理的.
+            # -----------------------------------------------------------------
+            obs_mirrored_fb_batch = self._mirror_obs_fb(obs_batch)
+            target_mirrored_fb_actions = current_mean[..., action_swap_idx_fb] * action_neg_mask_fb
+
+            if isinstance(actor_hid_batch, tuple):
+                real_h_batch = (actor_hid_batch[0][0:1], actor_hid_batch[1][0:1])
+            else:
+                real_h_batch = actor_hid_batch[0:1]
+
+            pred_fb_actions = model.act_inference(
+                obs_mirrored_fb_batch,
+                masks=masks_batch,
+                hidden_states=real_h_batch
+            )
+
+            sym_loss_fb = torch.nn.functional.mse_loss(pred_fb_actions, target_mirrored_fb_actions)
+            loss = loss + getattr(model, 'sym_loss_coef', 1.0) * sym_loss_fb
+            avg_sym_loss_fb += sym_loss_fb.item()
 
             # -----------------------------------------------------------------
             # STEP E: 终极单趟反向传播
@@ -1357,7 +1388,8 @@ class SplitMoEPPO(PPO):
             mean_surrogate_loss /= batch_cnt
             mean_entropy /= batch_cnt
             avg_lb_loss /= batch_cnt
-            avg_sym_loss /= batch_cnt
+            avg_sym_loss_lr /= batch_cnt
+            avg_sym_loss_fb /= batch_cnt
             avg_elev_ae_loss /= batch_cnt
             avg_scan_ae_loss /= batch_cnt
             avg_vel_loss /= batch_cnt
@@ -1376,7 +1408,9 @@ class SplitMoEPPO(PPO):
         # 填入附加 Loss
         if not getattr(model, "is_student_mode", False):
             loss_dict["Loss/Load_Balancing"] = avg_lb_loss
-            loss_dict["Loss/Actor_Symmetry_Reg"] = avg_sym_loss
+            loss_dict["Loss/Actor_Symmetry_Reg_LR"] = avg_sym_loss_lr
+            loss_dict["Loss/Actor_Symmetry_Reg_FB"] = avg_sym_loss_fb
+            loss_dict["Loss/Actor_Symmetry_Reg"] = avg_sym_loss_lr + avg_sym_loss_fb
             if model.estimator is not None:
                 loss_dict["Loss/VAE_Vel_MSE"] = avg_vel_loss
                 loss_dict["Loss/VAE_Recon_MSE"] = avg_recon_loss
@@ -1457,8 +1491,81 @@ class SplitMoEPPO(PPO):
                 obs_mirrored["noisy_elevation"] = env_raw
         else:
             obs_mirrored = (obs_mirrored[..., obs_swap_idx] * obs_neg_mask).clone()
-            
+
         return obs_mirrored
+
+    def _mirror_obs_fb(self, obs):
+        """前后 (F-B) 镜像: X 轴反射, FL↔HL / FR↔HR / 前 lidar ↔ 后 lidar.
+
+        Layout (与 _mirror_obs 保持一致):
+            policy 57-d   = [w_x, w_y, w_z, g_x, g_y, g_z, vx, vy, wz, joint_pos(16), joint_vel(16), last_act(16)]
+            estimator     = policy obs × history
+            noisy_elev    = elevation(187, 11×17 grid) ⊕ scan(252, 12 ch × 21 ray)
+                            scan channels = [fwd_l0..l5, bwd_l0..l5]
+
+        F-B 约束:
+            prefix flips : w_y, w_z, g_x, vx_cmd, wz_cmd
+            joint blocks : action_swap_idx_fb + action_neg_mask_fb (FL↔HL 等)
+            elevation    : flip(dim=-1)  (17 列 = X 轴 = 前后)
+            scan         : 前 6 channels ↔ 后 6 channels (整段互换), ray 不翻
+        """
+        device = self.device
+        model = getattr(self, "actor_critic", getattr(self, "policy", None))
+
+        action_swap_idx = torch.tensor([6,7,8, 9,10,11, 0,1,2, 3,4,5, 14,15, 12,13], dtype=torch.long, device=device)
+        action_neg_mask = torch.tensor([1,-1,-1, 1,-1,-1, 1,-1,-1, 1,-1,-1, -1,-1,-1,-1], dtype=torch.float32, device=device)
+
+        obs_swap_idx = torch.arange(57, dtype=torch.long, device=device)
+        obs_neg_mask = torch.ones(57, dtype=torch.float32, device=device)
+        obs_neg_mask[1], obs_neg_mask[2], obs_neg_mask[3], obs_neg_mask[6], obs_neg_mask[8] = -1.0, -1.0, -1.0, -1.0, -1.0
+        for offset in [9, 25, 41]:
+            obs_swap_idx[offset:offset+16] = action_swap_idx + offset
+            obs_neg_mask[offset:offset+16] = action_neg_mask
+
+        if isinstance(obs, dict) or hasattr(obs, "keys"):
+            obs_mirrored = {}
+            for k, v in obs.items():
+                obs_mirrored[k] = v.clone()
+        else:
+            obs_mirrored = obs.clone()
+
+        if isinstance(obs_mirrored, dict):
+            if "policy" in obs_mirrored:
+                p = obs_mirrored["policy"]
+                obs_mirrored["policy"] = (p[..., obs_swap_idx] * obs_neg_mask).clone()
+
+            if "estimator" in obs_mirrored:
+                e = obs_mirrored["estimator"]
+                history_len = e.shape[-1] // 57
+                est_neg_mask = obs_neg_mask.repeat(history_len)
+                est_swap_idx = torch.zeros(e.shape[-1], dtype=torch.long, device=device)
+                for h_i in range(history_len):
+                    est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
+                obs_mirrored["estimator"] = (e[..., est_swap_idx] * est_neg_mask).clone()
+
+            if "noisy_elevation" in obs_mirrored:
+                env_raw = obs_mirrored["noisy_elevation"].clone()
+                if getattr(model, "use_elevation_ae", False):
+                    elev = env_raw[..., :model.elevation_dim]
+                    elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-1]).reshape(*elev.shape[:-1], model.elevation_dim)
+                    env_raw[..., :model.elevation_dim] = elev_mirrored
+                if getattr(model, "use_multilayer_scan", False):
+                    scan_start = model.elevation_dim if getattr(model, "use_elevation_ae", False) else 0
+                    scan = env_raw[..., scan_start : scan_start + model.scan_dim]
+                    n_half = model.num_scan_channels // 2
+                    chan_swap = torch.cat([
+                        torch.arange(n_half, model.num_scan_channels, device=device),
+                        torch.arange(0, n_half, device=device),
+                    ]).long()
+                    scan_view = scan.view(*scan.shape[:-1], model.num_scan_channels, model.num_scan_rays)
+                    scan_mirrored = scan_view[..., chan_swap, :].reshape(*scan.shape[:-1], model.scan_dim)
+                    env_raw[..., scan_start : scan_start + model.scan_dim] = scan_mirrored
+                obs_mirrored["noisy_elevation"] = env_raw
+        else:
+            obs_mirrored = (obs_mirrored[..., obs_swap_idx] * obs_neg_mask).clone()
+
+        return obs_mirrored
+
     def act(self, obs, **kwargs):
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
 
@@ -2208,10 +2315,10 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
     
     policy = SplitMoEActorCriticCfg(
-        init_noise_std=1.0, 
+        init_noise_std=1.0,
         init_noise_legs=0.6,
-        init_noise_wheels=1.5, 
-        actor_hidden_dims=[256, 128, 128], 
+        init_noise_wheels=1.5,
+        actor_hidden_dims=[256, 128, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
@@ -2220,15 +2327,19 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        
+        # 启用对称性增强 (LR + FB sym loss). 0.5 是 sweep 测试得到的最佳折中:
+        # sym 残差 ~0.005-0.007, task tracking 几乎不受影响, 梯度稳定 < clip.
+        # 0.0 → sym MSE 反而上升 (训练让 policy 越学越不对称, 必须有约束).
+        sym_loss_coef=0.5,
+
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=True, 
+        use_elevation_ae=True,
         elevation_dim=187,
-        use_cnn=False, 
-        
+        use_cnn=False,
+
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
-        estimator_target_indices=[0, 1, 2], 
+        estimator_target_indices=[0, 1, 2],
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
 
@@ -2236,11 +2347,11 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         num_scan_channels=12,  # 6前 + 6后
         num_scan_rays=21,     # 每个通道的射线数
 
-        actor_obs_normalization=True, 
+        actor_obs_normalization=True,
         critic_obs_normalization=True,
 
         # 接收 AE/VAE
-        feed_estimator_to_policy=True, 
+        feed_estimator_to_policy=True,
         feed_ae_to_policy=True,
     )
 
@@ -2252,7 +2363,7 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3, 
+        learning_rate=1.0e-3,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
@@ -2410,6 +2521,10 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
+        # 启用对称性增强 (LR + FB sym loss). 0.5 是 sweep 测试得到的最佳折中:
+        # sym 残差 ~0.005-0.007, task tracking 几乎不受影响, 梯度稳定 < clip.
+        # 0.0 → sym MSE 反而上升 (训练让 policy 越学越不对称, 必须有约束).
+        sym_loss_coef=0.5,
 
         blind_vision=False,
         use_elevation_ae=True,
