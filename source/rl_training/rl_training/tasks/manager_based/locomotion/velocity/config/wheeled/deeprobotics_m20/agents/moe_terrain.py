@@ -463,6 +463,9 @@ class SplitMoEActorCritic(ActorCritic):
         self.rnn_type = rnn_type.lower()
         self.aux_loss_coef = aux_loss_coef
         self.sym_loss_coef = kwargs.get("sym_loss_coef", 1.0)
+        # sym_loss_coef<=0 时禁用对称性增强, 避免 rollout 2x 前向与更新阶段镜像 MSE 的额外开销,
+        # 同时让 RNN 隐状态只用 1 层 (正常路径), 不再维护镜像 piggyback 层.
+        self.sym_enabled = bool(self.sym_loss_coef > 0.0)
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
 
@@ -517,11 +520,13 @@ class SplitMoEActorCritic(ActorCritic):
         self.std.data.copy_(new_std.to(device))
 
     def _init_rnn_state(self, batch_size, device):
+        # Layer 0 = 真实状态; Layer 1 = 镜像 piggyback 状态 (仅在 sym_enabled 时使用).
+        num_layers = 2 if getattr(self, "sym_enabled", True) else 1
         if self.rnn_type == "lstm":
-            return (torch.zeros(2, batch_size, self.latent_dim, device=device), 
-                    torch.zeros(2, batch_size, self.latent_dim, device=device))
+            return (torch.zeros(num_layers, batch_size, self.latent_dim, device=device),
+                    torch.zeros(num_layers, batch_size, self.latent_dim, device=device))
         else:
-            return torch.zeros(2, batch_size, self.latent_dim, device=device)
+            return torch.zeros(num_layers, batch_size, self.latent_dim, device=device)
 
     def _init_gate(self, gate_net):
         orthogonal_init(gate_net[0], gain=np.sqrt(2))
@@ -1198,11 +1203,27 @@ class SplitMoEPPO(PPO):
                     avg_depth_ae_loss += depth_ae_loss.item()
                         
             # -----------------------------------------------------------------
-            # STEP D: 对称性正则化 Symmetry Loss
+            # STEP D: 对称性正则化 Symmetry Loss (sym_enabled 关闭时整段跳过)
             # -----------------------------------------------------------------
+            if not getattr(model, "sym_enabled", True):
+                loss.backward()
+
+                if getattr(self, "is_multi_gpu", False):
+                    self.reduce_parameters()
+                if self.max_grad_norm is not None:
+                    nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+
+                self.optimizer.step()
+
+                mean_value_loss += value_loss.item()
+                mean_surrogate_loss += surrogate_loss.item()
+                mean_entropy += entropy_batch.mean().item()
+                batch_cnt += 1
+                continue
+
             obs_mirrored_batch = self._mirror_obs(obs_batch)
 
-            current_mean = model.distribution.mean.detach() 
+            current_mean = model.distribution.mean.detach()
             target_mirrored_actions = current_mean[..., action_swap_idx] * action_neg_mask
 
             actor_hid_batch = hid_states_batch[0]
@@ -1440,6 +1461,28 @@ class SplitMoEPPO(PPO):
         return obs_mirrored
     def act(self, obs, **kwargs):
         model = getattr(self, "actor_critic", getattr(self, "policy", None))
+
+        # =====================================================================
+        # 快速路径: sym 未启用时, 单 B 前向, 不做任何镜像 piggyback.
+        # =====================================================================
+        if not getattr(model, "sym_enabled", True):
+            if model.is_recurrent:
+                self.transition.hidden_states = model.get_hidden_states()
+
+            was_training = model.training
+            model.eval()
+            with torch.no_grad():
+                action = model.act(obs).detach()
+                value = model.evaluate(obs).detach()
+            model.train(was_training)
+
+            self.transition.actions = action
+            self.transition.values = value
+            self.transition.actions_log_prob = model.get_actions_log_prob(action).detach()
+            self.transition.action_mean = model.action_mean.detach()
+            self.transition.action_sigma = model.action_std.detach()
+            self.transition.observations = obs
+            return self.transition.actions
 
         # 辅助函数 (兼容 GRU 和 LSTM hidden state)
         def _slice_layer(h, start, end):
@@ -1715,7 +1758,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     latent_dim: int = 256
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
-    sym_loss_coef: float = 0.1
+    sym_loss_coef: float = 0.0
 
     blind_vision: bool = False       
     use_elevation_ae: bool = True   
@@ -1762,9 +1805,9 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
     
     policy = SplitMoEActorCriticCfg(
-        init_noise_std=1.0, 
+        init_noise_std=1.0,
         init_noise_legs=0.2,
-        init_noise_wheels=1.5, 
+        init_noise_wheels=1.5,
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
