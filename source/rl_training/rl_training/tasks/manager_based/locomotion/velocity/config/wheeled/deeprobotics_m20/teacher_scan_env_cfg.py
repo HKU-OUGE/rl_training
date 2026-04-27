@@ -151,10 +151,10 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             # 依然不允许侧向平移
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
             # 只有这里有范围，Heading控制器算出的纠偏角速度才能下发给机器人
-            self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5) 
-            
+            self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+
             # 正常的前向速度训练范围
-            self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+            self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
 
 
         self.events.randomize_reset_base.params = {
@@ -240,8 +240,8 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 3.0 # 1.8
-        self.rewards.track_ang_vel_z_exp.weight = 2.0 # 1.2
+        self.rewards.track_lin_vel_xy_exp.weight = 4.0
+        self.rewards.track_ang_vel_z_exp.weight = 3.0
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 

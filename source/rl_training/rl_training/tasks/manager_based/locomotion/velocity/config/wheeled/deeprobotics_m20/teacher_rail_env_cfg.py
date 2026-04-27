@@ -75,9 +75,9 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             self.commands.base_velocity.heading_command = True
             self.commands.base_velocity.heading_control_stiffness = 0.5
             self.commands.base_velocity.ranges.heading = (0.0, 0.0)
-            self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+            self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-            self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+            self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
 
         # 4. 奖励 (对齐 scan teacher 的保守设计)
         self.rewards = RailRewardsCfg()
@@ -133,8 +133,8 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 3.0
-        self.rewards.track_ang_vel_z_exp.weight = 2.0
+        self.rewards.track_lin_vel_xy_exp.weight = 4.0
+        self.rewards.track_ang_vel_z_exp.weight = 3.0
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
