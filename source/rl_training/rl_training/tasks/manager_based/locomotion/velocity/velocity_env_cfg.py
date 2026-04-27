@@ -679,10 +679,14 @@ class RewardsCfg:
     )
 
     stand_still = RewTerm(
-        func=mdp.stand_still_joint_deviation_l1,
+        # 用本地 stand_still_without_cmd 替代 IsaacLab 的 stand_still_joint_deviation_l1：
+        # 后者只检查 ||cmd_xy|| < threshold，会在"原地转身"命令 (vx=0, wz>0) 下错误触发；
+        # 本地版本检查 ||cmd_3d|| (含 ang_vel)，保证只有真正全 0 命令时才触发。
+        func=mdp.stand_still_without_cmd,
         weight=0,
         params={
             "command_name": "base_velocity",
+            "command_threshold": 0.06,
             "asset_cfg": SceneEntityCfg("robot", joint_names=""),
         },
     ) # negetive

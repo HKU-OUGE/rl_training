@@ -104,12 +104,12 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.05
+        self.rewards.joint_mirror.weight = 0.0  # sym_loss 已替代
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_mirror.weight = -0.0
+        self.rewards.action_mirror.weight = 0.0
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
@@ -143,7 +143,7 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.upward.weight = 0.08
         self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
         self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
-        self.rewards.joint_mirror_lr.weight = -0.015
+        self.rewards.joint_mirror_lr.weight = 0.0
 
         # 4. 终止条件
         self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name]

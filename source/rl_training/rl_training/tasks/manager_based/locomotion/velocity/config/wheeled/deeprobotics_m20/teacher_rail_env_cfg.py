@@ -118,13 +118,13 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.025
+        self.rewards.joint_mirror.weight = 0.0  # sym_loss 已替代
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.joint_mirror_lr.weight = -0.015
-        self.rewards.action_mirror.weight = -0.0
+        self.rewards.joint_mirror_lr.weight = 0.0
+        self.rewards.action_mirror.weight = 0.0
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],

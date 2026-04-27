@@ -269,12 +269,12 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
     )
     joint_mirror_lr = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.03,
+        weight=0.0,  # 由 actor sym_loss (LR 等变约束) 替代，避免双重约束抑制动态步态
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
-                ["fl_(hipy|knee).*", "fr_(hipy|knee).*"], 
-                ["hl_(hipy|knee).*", "hr_(hipy|knee).*"], 
+                ["fl_(hipy|knee).*", "fr_(hipy|knee).*"],
+                ["hl_(hipy|knee).*", "hr_(hipy|knee).*"],
             ]
         }
     )
@@ -852,12 +852,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = self.foot_link_name
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        self.rewards.joint_mirror.weight = -0.05
+        self.rewards.joint_mirror.weight = 0.0  # sym_loss 已替代
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
         ]
-        self.rewards.action_mirror.weight = -0.0
+        self.rewards.action_mirror.weight = 0.0
         self.rewards.action_mirror.params["mirror_joints"] = [
             ["fl_(hipx|hipy|knee).*", "hr_(hipx|hipy|knee).*"],
             ["fr_(hipx|hipy|knee).*", "hl_(hipx|hipy|knee).*"],
