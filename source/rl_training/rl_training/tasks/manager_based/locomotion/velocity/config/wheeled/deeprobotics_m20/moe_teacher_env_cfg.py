@@ -97,14 +97,14 @@ def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     
     rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
     depths = torch.norm(rel_vec, dim=-1)
-    
-    # 将 NaN 和 inf 视为安全距离 (5.0m)
-    depths = torch.nan_to_num(depths, posinf=5.0, neginf=5.0, nan=5.0)
-    
-    # 归一化：[0, 5.0] 映射到 [0.0, 1.0]
-    normalized_depths = torch.clip(depths / 5.0, 0.0, 1.0)
-    
-    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 5.0m)
+
+    # 将 NaN 和 inf 视为安全距离 (2.5m)
+    depths = torch.nan_to_num(depths, posinf=2.5, neginf=2.5, nan=2.5)
+
+    # 归一化：[0, 2.5] 映射到 [0.0, 1.0] —— 近场聚焦：robot 长 2m，主要交互 < 2.5m
+    normalized_depths = torch.clip(depths / 2.5, 0.0, 1.0)
+
+    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 2.5m)
     normalized_depths = torch.where(
         depths < 0.3,
         torch.full_like(normalized_depths, 1.0),
@@ -401,20 +401,20 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         # --- 前向 6 层 ---
-        forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        forward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer3")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        forward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer4")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        forward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer5")}, noise=Unoise(n_min=-0.005, n_max=0.005))
         
         # --- 后向 6 层 ---
-        backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        backward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer3")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        backward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer4")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        backward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer5")}, noise=Unoise(n_min=-0.005, n_max=0.005))
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -767,27 +767,28 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
-        
 
-        down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 25.0]
+
+        # L5 (last entry) 改为 50° 当贴脚悬崖探测器：sensor z≈0.6m → ground @ 0.5m 水平 / 0.78m 量程
+        down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 50.0]
 
         SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
         SCAN_MESHES = ["/World/ground"]
 
         for i, angle_deg in enumerate(down_angles_deg):
-            
+
             # 前向雷达
             fwd_pitch_deg = -(90.0 - angle_deg)
             fwd_half_rad = math.radians(fwd_pitch_deg) / 2.0
             fwd_rot = (math.cos(fwd_half_rad), 0.0, math.sin(fwd_half_rad), 0.0)
-            
+
             fwd_sensor = MultiMeshRayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
                 offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, 
-                max_distance=5.0, # 修改为 5.0m
-                debug_vis=False, 
+                ray_alignment="base",
+                pattern_cfg=SCAN_PATTERN,
+                max_distance=2.5,
+                debug_vis=False,
                 reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
             )
@@ -798,14 +799,14 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             bwd_pitch_deg = (90.0 - angle_deg)
             bwd_half_rad = math.radians(bwd_pitch_deg) / 2.0
             bwd_rot = (math.cos(bwd_half_rad), 0.0, math.sin(bwd_half_rad), 0.0)
-            
+
             bwd_sensor = MultiMeshRayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
                 offset=MultiMeshRayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, 
-                max_distance=5.0, # 修改为 5.0m
-                debug_vis=False, 
+                ray_alignment="base",
+                pattern_cfg=SCAN_PATTERN,
+                max_distance=2.5,
+                debug_vis=False,
                 reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
             )

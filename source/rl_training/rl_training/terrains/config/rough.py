@@ -121,25 +121,30 @@ ELEVATION_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "hurdle": square_hurdle_cfg.replace(
-            proportion=0.25,
-            hurdle_height_range=(0.3, 0.6),
-            bar_thickness=0.3,
-        ),
-        "hurdle2": square_hurdle_cfg.replace(
-            proportion=0.25,
-            hurdle_height_range=(0.3, 0.6),
-            bar_thickness=0.2,
-        ),
-        "hurdle3": square_hurdle_cfg.replace(
+        # 同 clearance 下覆盖 (薄/厚) × (窄/宽) 四个角点，thickness 0.1~0.8，width 0.05~0.9
+        "hurdle_thin_narrow": square_hurdle_cfg.replace(
             proportion=0.25,
             hurdle_height_range=(0.3, 0.6),
             bar_thickness=0.1,
+            bar_width=0.05,
         ),
-        "hurdle4": square_hurdle_cfg.replace(
+        "hurdle_thick_narrow": square_hurdle_cfg.replace(
             proportion=0.25,
             hurdle_height_range=(0.3, 0.6),
-            bar_thickness=0.15,
+            bar_thickness=0.6,
+            bar_width=0.1,
+        ),
+        "hurdle_thin_wide": square_hurdle_cfg.replace(
+            proportion=0.25,
+            hurdle_height_range=(0.3, 0.6),
+            bar_thickness=0.2,
+            bar_width=0.6,
+        ),
+        "hurdle_thick_wide": square_hurdle_cfg.replace(
+            proportion=0.25,
+            hurdle_height_range=(0.3, 0.6),
+            bar_thickness=0.8,
+            bar_width=0.9,
         ),
     }
 )
@@ -147,30 +152,37 @@ SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 SCAN_TEACHER_TERRAINS_CFG2 = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
+        # 课程难度递增：clearance 降低 + bar_width 加大；bar_thickness 在 0.1~0.8 间穿插以覆盖
+        # 不同视觉/扫描轮廓 (thickness 仅影响栏顶高度，与 clearance 无关)
         "hurdle": square_hurdle_cfg.replace(
             proportion=0.2,
             hurdle_height_range=(0.3, 0.65),
-            bar_thickness=0.25,
+            bar_thickness=0.1,
+            bar_width=0.05,
         ),
         "hurdle2": square_hurdle_cfg.replace(
             proportion=0.2,
             hurdle_height_range=(0.25, 0.55),
-            bar_thickness=0.2,
+            bar_thickness=0.5,
+            bar_width=0.15,
         ),
         "hurdle3": square_hurdle_cfg.replace(
             proportion=0.2,
             hurdle_height_range=(0.2, 0.5),
-            bar_thickness=0.15,
+            bar_thickness=0.3,
+            bar_width=0.4,
         ),
         "hurdle4": square_hurdle_cfg.replace(
             proportion=0.2,
             hurdle_height_range=(0.15, 0.4),
-            bar_thickness=0.1,
+            bar_thickness=0.8,
+            bar_width=0.7,
         ),
         "hurdle5": square_hurdle_cfg.replace(
             proportion=0.2,
             hurdle_height_range=(0.1, 0.3),
-            bar_thickness=0.08,
+            bar_thickness=0.15,
+            bar_width=0.95,
         ),
     }
 )

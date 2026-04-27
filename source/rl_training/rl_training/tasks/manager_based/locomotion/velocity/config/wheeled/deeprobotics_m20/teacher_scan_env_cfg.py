@@ -66,26 +66,27 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
 
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
-        
 
-        down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 25.0]
+
+        # L5 (last entry) 改为 50° 当贴脚悬崖探测器：sensor z≈0.6m → ground @ 0.5m 水平 / 0.78m 量程
+        down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 50.0]
 
         SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
         SCAN_MESHES = ["/World/ground"]  # 扫描地形1和地形2，捕捉跨栏和坑洞信息
 
         for i, angle_deg in enumerate(down_angles_deg):
-            
+
             # 前向雷达
             fwd_pitch_deg = -(90.0 - angle_deg)
             fwd_half_rad = math.radians(fwd_pitch_deg) / 2.0
             fwd_rot = (math.cos(fwd_half_rad), 0.0, math.sin(fwd_half_rad), 0.0)
-            
+
             fwd_sensor = RayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
                 offset=RayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
                 ray_alignment="base",
                 pattern_cfg=SCAN_PATTERN,
-                max_distance=5.0,
+                max_distance=2.5,
                 debug_vis=False,
                 mesh_prim_paths=SCAN_MESHES,
             )
@@ -96,13 +97,13 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             bwd_pitch_deg = (90.0 - angle_deg)
             bwd_half_rad = math.radians(bwd_pitch_deg) / 2.0
             bwd_rot = (math.cos(bwd_half_rad), 0.0, math.sin(bwd_half_rad), 0.0)
-            
+
             bwd_sensor = RayCasterCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base_link",
                 offset=RayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
                 ray_alignment="base",
                 pattern_cfg=SCAN_PATTERN,
-                max_distance=5.0,
+                max_distance=2.5,
                 debug_vis=False,
                 mesh_prim_paths=SCAN_MESHES,
             )

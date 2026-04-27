@@ -51,10 +51,11 @@ def square_hurdle_terrain(
         )
 
     bar_z = H + b_t / 2.0
-    _box((b_w, W + 2 * t_post, b_t), (center_x + W / 2.0 + t_post / 2.0, center_y, bar_z))
-    _box((b_w, W + 2 * t_post, b_t), (center_x - W / 2.0 - t_post / 2.0, center_y, bar_z))
-    _box((W, b_w, b_t), (center_x, center_y + W / 2.0 + t_post / 2.0, bar_z))
-    _box((W, b_w, b_t), (center_x, center_y - W / 2.0 - t_post / 2.0, bar_z))
+    bar_span = W + 2 * t_post
+    _box((b_w, bar_span, b_t), (center_x + W / 2.0 + t_post / 2.0, center_y, bar_z))
+    _box((b_w, bar_span, b_t), (center_x - W / 2.0 - t_post / 2.0, center_y, bar_z))
+    _box((bar_span, b_w, b_t), (center_x, center_y + W / 2.0 + t_post / 2.0, bar_z))
+    _box((bar_span, b_w, b_t), (center_x, center_y - W / 2.0 - t_post / 2.0, bar_z))
 
     post_z = H / 2.0
     for sx, sy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:

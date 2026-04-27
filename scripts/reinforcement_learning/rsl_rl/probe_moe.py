@@ -75,15 +75,26 @@ try:
 except Exception:
     pass
 
-from rl_training.terrains.config.rough import (
-    MOE_TEACHER_COLUMN_TO_TYPE,
-    MOE_TEACHER_TERRAIN_TYPES,
-)
-
-
 # ============================================================================
 # Helpers
 # ============================================================================
+
+def _derive_terrain_layout(base_env):
+    """Read sub_terrains and num_cols off the live env to mirror IsaacLab's
+    curriculum-mode column → sub-terrain assignment (terrain_generator.py)."""
+    gen_cfg = base_env.scene.terrain.cfg.terrain_generator
+    sub_terrains = gen_cfg.sub_terrains
+    num_cols = gen_cfg.num_cols
+    names = list(sub_terrains.keys())
+    proportions = np.array([sub_terrains[k].proportion for k in names], dtype=np.float64)
+    proportions /= proportions.sum()
+    cumprop = np.cumsum(proportions)
+    column_to_type = []
+    for col in range(num_cols):
+        idx = int(np.min(np.where(col / num_cols + 0.001 < cumprop)[0]))
+        column_to_type.append(idx)
+    return column_to_type, names
+
 
 def _unwrap(env):
     cur = env
@@ -231,7 +242,9 @@ def main():
 
     # 4. Roll-out
     obs, _ = env_wrapped.reset()
-    col2type = torch.tensor(MOE_TEACHER_COLUMN_TO_TYPE, dtype=torch.long, device=device)
+    column_to_type_list, terrain_type_names = _derive_terrain_layout(base_env)
+    print(f"[probe] terrain layout: {len(column_to_type_list)} cols, types={terrain_type_names}")
+    col2type = torch.tensor(column_to_type_list, dtype=torch.long, device=device)
     n_cols = col2type.numel()
 
     # Per-term reward accumulator: env.reward_manager._step_reward is (N, K) and
@@ -393,7 +406,7 @@ def main():
     term_sums_arr = np.stack(episodes["term_sums"], axis=0) if episodes["term_sums"] else np.zeros((0, n_terms))
 
     per_type = {}
-    for t_idx, t_name in enumerate(MOE_TEACHER_TERRAIN_TYPES):
+    for t_idx, t_name in enumerate(terrain_type_names):
         m = ep_type == t_idx
         if not m.any():
             per_type[t_name] = None
@@ -505,7 +518,7 @@ def main():
 
     print("\n  Per-terrain-type:")
     print(f"    {'type':<14} {'n':>5} {'len':>6} {'illegal':>8} {'lin_err':>8} {'spd':>6} {'lvl':>6}")
-    for t_name in MOE_TEACHER_TERRAIN_TYPES:
+    for t_name in terrain_type_names:
         s = per_type.get(t_name)
         if s is None:
             continue
