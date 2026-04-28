@@ -42,9 +42,6 @@ class RailRewardsCfg(DeeproboticsM20RewardsCfg):
         }
     )
 
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=0.0)
-
-
 @configclass
 class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     """[Teacher 8] 跨栏跳跃专家环境配置

@@ -14,8 +14,6 @@ class BaseRewardsCfg(DeeproboticsM20RewardsCfg):
     
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.02)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.01)
-    
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
 
 
 @configclass
@@ -41,6 +39,7 @@ class DeeproboticsM20TeacherBaseEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
 
         # 3. 奖励函数
         self.rewards = BaseRewardsCfg()
+        self.rewards.is_terminated.weight = -100  # 摔/撞惩罚 (统一用 is_terminated, 不再用 termination_penalty)
         self.rewards.track_lin_vel_xy_exp.weight = 3.0
         self.rewards.track_ang_vel_z_exp.weight = 2.0
         self.rewards.action_rate_l2.weight = -0.01

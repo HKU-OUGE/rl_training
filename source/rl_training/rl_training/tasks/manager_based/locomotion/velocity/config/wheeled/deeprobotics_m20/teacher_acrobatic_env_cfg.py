@@ -70,9 +70,6 @@ class AcrobaticRewardsCfg(RewardsCfg):
     # =========================================================
     # 动作平滑度惩罚 (避免高频抽搐，但不限制低频爆发)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
-    
-    # 基础生存惩罚
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
 
 
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -128,6 +125,7 @@ class DeeproboticsM20TeacherAcrobaticEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         
         # 5. 替换奖励函数
         self.rewards = AcrobaticRewardsCfg()
+        self.rewards.is_terminated.weight = -100  # 摔/撞惩罚 (统一用 is_terminated, 不再用 termination_penalty)
         if hasattr(self, "disable_zero_weight_rewards"):
             self.disable_zero_weight_rewards()
         # 6. 放宽 Termination 条件

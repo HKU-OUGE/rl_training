@@ -36,9 +36,6 @@ class GapRewardsCfg(DeeproboticsM20RewardsCfg):
             "threshold": 1.0,
         }
     )
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
-
-
 @configclass
 class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     """[Teacher 7] 跨越沟壑专家环境配置
@@ -67,7 +64,7 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
 
         # 3. 奖励
         self.rewards = GapRewardsCfg()
-        self.rewards.is_terminated.weight = 0
+        self.rewards.is_terminated.weight = -100  # 摔/撞惩罚 (统一用 is_terminated, 不再用 termination_penalty)
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_roll_l2.weight = -10.0
         self.rewards.base_height_l2.weight = -0.0

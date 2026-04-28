@@ -42,10 +42,6 @@ class ElevationRewardsCfg(DeeproboticsM20RewardsCfg):
         }
     )
     
-    # 基础生存惩罚
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
-
-
 @configclass
 class DeeproboticsM20TeacherElevationEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     """[Teacher 2] 精准高程专家环境配置"""
@@ -74,7 +70,7 @@ class DeeproboticsM20TeacherElevationEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         # 3. 替换奖励并清理
         # ---------------------------------------------------------
         self.rewards = ElevationRewardsCfg()
-        self.rewards.is_terminated.weight = 0
+        self.rewards.is_terminated.weight = -100  # 摔/撞惩罚 (统一用 is_terminated, 不再用 termination_penalty)
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_roll_l2.weight = -10.0
         self.rewards.base_height_l2.weight = -0.0
