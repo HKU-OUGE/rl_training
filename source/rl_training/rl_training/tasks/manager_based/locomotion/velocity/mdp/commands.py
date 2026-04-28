@@ -20,35 +20,64 @@ import math
 import isaaclab.utils.math as math_utils
 
 class UniformThresholdVelocityCommand(mdp.UniformVelocityCommand):
-    """Command generator that generates a velocity command in SE(2) from uniform distribution with threshold."""
+    """Command generator with explicit standing / pure-turn / moving categories.
 
-    cfg: mdp.UniformThresholdVelocityCommandCfg
-    """The configuration of the command generator."""
+    Categorization (per resample):
+      - **Standing** (rel_standing_envs of all envs): cmd = (0, 0, 0). Set by parent.
+      - **Pure-turn** (rel_pure_turn_envs of all envs, parallel to standing):
+        cmd = (0, 0, ±[0.5, 1.0]) — in-place rotation training samples.
+      - **Moving** (the rest): parent's uniform sample, with a weak filter that
+        re-assigns wishy-washy small commands (3D norm < min_cmd_norm) to
+        |lin_x|∈[0.5, 1.5] keeping ang_z.
+
+    Naturally-sampled "lin small + ang large" commands automatically pass through
+    the moving filter (since their 3D norm is large), giving extra free pure-turn
+    samples on top of the explicit allocation.
+    """
+
+    cfg: "UniformThresholdVelocityCommandCfg"
 
     def _resample_command(self, env_ids: Sequence[int]):
-
         super()._resample_command(env_ids)
-        
+
         env_ids_tensor = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
-        
-        # 1. 找出速度模长(绝对值) < 0.5 的“不合格”环境
-        vel_norm = torch.norm(self.vel_command_b[env_ids_tensor, :2], dim=1)
-        invalid_mask = (vel_norm < 0.5) & (vel_norm > 1e-4)
-        
-        # 2. 如果存在不合格的环境，直接使用张量运算为它们分配新的合法速度
-        if invalid_mask.any():
-            invalid_ids = env_ids_tensor[invalid_mask]
-            num_invalid = len(invalid_ids)
-            
-            # 随机决定方向：生成 1 (向前) 或 -1 (向后)
-            directions = torch.randint(0, 2, (num_invalid,), device=self.device) * 2 - 1
-            
-            # 随机生成幅度：在 0.5 到 1.5 之间均匀采样
-            magnitudes = math_utils.sample_uniform(0.5, 1.5, (num_invalid,), device=self.device)
-            
-            # 赋予新的合法速度，并强制 Y 轴为 0 (2.5D 运动)
-            self.vel_command_b[invalid_ids, 0] = directions * magnitudes
-            self.vel_command_b[invalid_ids, 1] = 0.0
+        min_cmd_norm = getattr(self.cfg, "min_cmd_norm", 0.5)
+
+        # Pure-turn 比例：默认与 rel_standing_envs 一致
+        rate_pt = getattr(self.cfg, "rel_pure_turn_envs", None)
+        if rate_pt is None:
+            rate_pt = getattr(self.cfg, "rel_standing_envs", 0.0)
+
+        # standing envs (parent 已设为 0)，从命令是否为 0 反查
+        cur_norm_after_parent = torch.norm(self.vel_command_b[env_ids_tensor], dim=1)
+        standing_mask = cur_norm_after_parent < 1e-4
+
+        # 在非 standing envs 中显式抽出 rate_pt 比例做纯转向
+        rand = torch.rand(len(env_ids_tensor), device=self.device)
+        pure_turn_mask = (~standing_mask) & (rand < rate_pt)
+        if pure_turn_mask.any():
+            pt_ids = env_ids_tensor[pure_turn_mask]
+            n = len(pt_ids)
+            ang_dirs = torch.randint(0, 2, (n,), device=self.device) * 2 - 1
+            ang_mags = math_utils.sample_uniform(0.5, 1.0, (n,), device=self.device)
+            self.vel_command_b[pt_ids, 0] = 0.0
+            self.vel_command_b[pt_ids, 1] = 0.0
+            self.vel_command_b[pt_ids, 2] = ang_dirs * ang_mags
+
+        # 余下"moving" envs：原 weak filter——total_norm 太小则重采样为直行
+        moving_mask = (~standing_mask) & (~pure_turn_mask)
+        if moving_mask.any():
+            mv_ids = env_ids_tensor[moving_mask]
+            mv_norm = torch.norm(self.vel_command_b[mv_ids], dim=1)
+            invalid = (mv_norm < min_cmd_norm) & (mv_norm > 1e-4)
+            if invalid.any():
+                inv_ids = mv_ids[invalid]
+                n = len(inv_ids)
+                lin_dirs = torch.randint(0, 2, (n,), device=self.device) * 2 - 1
+                lin_mags = math_utils.sample_uniform(0.5, 1.5, (n,), device=self.device)
+                self.vel_command_b[inv_ids, 0] = lin_dirs * lin_mags
+                self.vel_command_b[inv_ids, 1] = 0.0
+                # ang_z 保留
 
 
 @configclass
@@ -56,6 +85,16 @@ class UniformThresholdVelocityCommandCfg(mdp.UniformVelocityCommandCfg):
     """Configuration for the uniform threshold velocity command generator."""
 
     class_type: type = UniformThresholdVelocityCommand
+
+    min_cmd_norm: float = 0.5
+    """Minimum 3D command norm sqrt(lin_x^2 + lin_y^2 + ang_z^2). Below this the
+    moving (non-standing, non-pure-turn) command is re-sampled to have |lin_x|>=0.5."""
+
+    rel_pure_turn_envs: float | None = None
+    """Fraction of envs assigned pure-turn commands (lin=0, |ang_z|∈[0.5,1.0]) per
+    resample. If ``None``, defaults to ``rel_standing_envs`` so pure-turn rate
+    matches standing rate exactly. Set to 0.0 to disable explicit pure-turn
+    allocation (natural samples can still produce pure-turn-like cmds)."""
 
 
 class DiscreteCommandController(CommandTerm):
@@ -181,24 +220,39 @@ class TerrainAwareVelocityCommand(UniformThresholdVelocityCommand):
                 self.cfg.hard_ranges.ang_vel_z[0], self.cfg.hard_ranges.ang_vel_z[1], (len(hard_ids),), device=self.device
             )
 
-        # 4. 彻底消除 0.5 以下的速度
-        vel_norm = torch.norm(self.vel_command_b[env_ids_tensor, :2], dim=1)
-        invalid_mask = (vel_norm < 0.5) & (vel_norm > 1e-4)
-        
-        if invalid_mask.any():
-            invalid_ids = env_ids_tensor[invalid_mask]
-            
-            # 幅度限制在 [0.5, 1.5]
-            directions = torch.randint(0, 2, (len(invalid_ids),), device=self.device) * 2 - 1
-            magnitudes = math_utils.sample_uniform(0.5, 1.5, (len(invalid_ids),), device=self.device)
-            
-            self.vel_command_b[invalid_ids, 0] = directions * magnitudes
-            self.vel_command_b[invalid_ids, 1] = 0.0
-        
-        # if 0 in env_ids_tensor:
-        #     idx = (env_ids_tensor == 0).nonzero(as_tuple=True)[0][0]
-        #     lvl = levels[idx].item()
-        #     print(f"👉 [Command Debug] Env 0 | 地形等级: {lvl} | 指令 -> X: {self.vel_command_b[0, 0].item():.2f}, Y: {self.vel_command_b[0, 1].item():.2f}, Yaw: {self.vel_command_b[0, 2].item():.2f}")
+        # 4. 标准化处理：standing / pure-turn / moving 三类显式分配
+        #    （和 UniformThresholdVelocityCommand 同逻辑）
+        min_cmd_norm = getattr(self.cfg, "min_cmd_norm", 0.5)
+        rate_pt = getattr(self.cfg, "rel_pure_turn_envs", None)
+        if rate_pt is None:
+            rate_pt = getattr(self.cfg, "rel_standing_envs", 0.0)
+
+        cur_norm_after_parent = torch.norm(self.vel_command_b[env_ids_tensor], dim=1)
+        standing_mask = cur_norm_after_parent < 1e-4
+
+        rand = torch.rand(len(env_ids_tensor), device=self.device)
+        pure_turn_mask = (~standing_mask) & (rand < rate_pt)
+        if pure_turn_mask.any():
+            pt_ids = env_ids_tensor[pure_turn_mask]
+            n = len(pt_ids)
+            ang_dirs = torch.randint(0, 2, (n,), device=self.device) * 2 - 1
+            ang_mags = math_utils.sample_uniform(0.5, 1.0, (n,), device=self.device)
+            self.vel_command_b[pt_ids, 0] = 0.0
+            self.vel_command_b[pt_ids, 1] = 0.0
+            self.vel_command_b[pt_ids, 2] = ang_dirs * ang_mags
+
+        moving_mask = (~standing_mask) & (~pure_turn_mask)
+        if moving_mask.any():
+            mv_ids = env_ids_tensor[moving_mask]
+            mv_norm = torch.norm(self.vel_command_b[mv_ids], dim=1)
+            invalid = (mv_norm < min_cmd_norm) & (mv_norm > 1e-4)
+            if invalid.any():
+                inv_ids = mv_ids[invalid]
+                n = len(inv_ids)
+                lin_dirs = torch.randint(0, 2, (n,), device=self.device) * 2 - 1
+                lin_mags = math_utils.sample_uniform(0.5, 1.5, (n,), device=self.device)
+                self.vel_command_b[inv_ids, 0] = lin_dirs * lin_mags
+                self.vel_command_b[inv_ids, 1] = 0.0
 
 
 @configclass

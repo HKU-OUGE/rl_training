@@ -132,8 +132,9 @@ class DeeproboticsM20TeacherPlatformEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.feet_height.weight = 0
         self.rewards.feet_height.params["target_height"] = 0.3
         self.rewards.feet_height.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_height_body.weight = 0
-        self.rewards.feet_height_body.params["target_height"] = -0.4
+        self.rewards.feet_height_body.weight = -0.5  # 抑制蹲走 (was 0)
+        # 默认站姿 foot_z_in_body ≈ -0.436 (URDF FK + init pose 0.52); 取 -0.48 给一点"站直"偏好
+        self.rewards.feet_height_body.params["target_height"] = -0.48  # was -0.4 (反向鼓励蹲)
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))

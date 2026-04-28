@@ -50,6 +50,8 @@ parser.add_argument("--output", type=str, default=None,
                     help="JSON output path (default: /tmp/plane_<task>_<ts>.json)")
 parser.add_argument("--num_envs_per_gpu_check", action="store_true",
                     help="If set, also print MoE gate distribution per iter")
+parser.add_argument("--enable_behavior_probe", action="store_true",
+                    help="Run forced-command rollouts after training (currently flaky — keep off by default).")
 
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
@@ -404,10 +406,10 @@ def main():
             print(f"[plane] iter {i+1}/{args.max_iter}  reward={fmt(mr)}  "
                   f"ep_len={fmt(el, 0)}  err_vxy={fmt(vxy)}")
 
-    # ---- behavior probe under fixed commands ----
+    # ---- behavior probe under fixed commands (opt-in only) ----
     behavior_results = None
     behavior_flags = None
-    if is_master:
+    if is_master and args.enable_behavior_probe:
         try:
             print("\n[plane] running behavior probes (forward / turn / stand)...")
             behavior_results = []
@@ -484,7 +486,14 @@ def main():
         print("=" * 70)
         print(f"\n  full report: {out_path}")
 
-    simulation_app.close()
+    # IsaacSim 在某些 task / behavior_probe 中断后 simulation_app.close() 会卡死 30+ min
+    # 不依赖正常退出，写完 JSON 就强制 _exit，避免占用 GPU
+    try:
+        simulation_app.close()
+    except Exception as e:
+        print(f"[plane] simulation_app.close() failed: {e}")
+    if is_master:
+        os._exit(0)
 
 
 if __name__ == "__main__":

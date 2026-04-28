@@ -708,7 +708,9 @@ class RewardsCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=""),
             "tanh_mult": 2.0,
-            "target_height": -0.3,
+            # M20 默认站姿 foot link 在 body frame z ≈ -0.44 (URDF FK + init pose 0.52)
+            # 取 -0.48 给一点点"站直"偏好；teacher 各自可 override
+            "target_height": -0.48,
             "command_name": "base_velocity",
         },
     )
