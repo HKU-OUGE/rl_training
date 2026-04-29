@@ -392,29 +392,12 @@ class DeeproboticsM20ObservationsCfg:
 
     @configclass
     class NoisyElevationCfg(ObsGroup):
-        """专门用于训练 AE 以及提供给所有策略 (Teacher/Student) 使用的带噪声高程组"""
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-            noise=Unoise(n_min=-0.1, n_max=0.1),
-            clip=(-1.0, 1.0),
-            scale=1.0,
-        )
-        # --- 前向 6 层 ---
-        forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        forward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer3")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        forward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer4")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        forward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer5")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        
-        # --- 后向 6 层 ---
-        backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        backward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer3")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        backward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer4")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        backward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer5")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        """提供给 ScanAE 的环境感知组（已切除 elevation map，纯 LIDAR）"""
+        # height_scan 已禁用 —— 真机 elevation map sim2real gap 太大，改用半球 LIDAR 代替
+        height_scan = None
+        # --- 前后两个半球 LidarPattern sensor (16 ch × 31 az = 496/sensor, 共 992) ---
+        forward_scan = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_lidar")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        backward_scan = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_lidar")}, noise=Unoise(n_min=-0.005, n_max=0.005))
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -663,10 +646,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         super().__post_init__()
         
         self.scene.robot = DEEPROBOTICS_M20_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # height_scanner (187-dim grid for elevation map) 已禁用 — 由半球 LIDAR scan 替代
+        self.scene.height_scanner = None
+        # height_scanner_base (9-pt grid for base height reward) 仍保留
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-        if self.scene.height_scanner is not None:
-            self.scene.height_scanner.update_period = 0.1
         obs_groups_to_process = [
             self.observations.policy,
             self.observations.blind_student_policy,
@@ -768,50 +751,44 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
 
-
-        # L5 (last entry) 改为 50° 当贴脚悬崖探测器：sensor z≈0.6m → ground @ 0.5m 水平 / 0.78m 量程
-        down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 50.0]
-
-        SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
+        # 半球 LidarPattern 模拟 Robosense Airy 的扫描形态
+        # 单 sensor: 16 channels × 31 azimuth = 496 ray
+        # 前 + 后 共 992 ray ≈ k 级，与 Airy hemispherical 输出量级匹配
+        SCAN_PATTERN = patterns.LidarPatternCfg(
+            channels=16,                             # elevation 16 层 (-60° 到 +60°, 8°/层)
+            vertical_fov_range=(-60.0, 60.0),
+            horizontal_fov_range=(-90.0, 90.0),     # 前/后向各覆盖 ±90° 半球
+            horizontal_res=6.0,                      # → 31 azimuth bin
+        )
         SCAN_MESHES = ["/World/ground"]
 
-        for i, angle_deg in enumerate(down_angles_deg):
+        # 前向雷达：朝 +x，azimuth 中心对齐 +x 方向，无额外旋转
+        fwd_sensor = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=(1.0, 0.0, 0.0, 0.0)),
+            ray_alignment="base",
+            pattern_cfg=SCAN_PATTERN,
+            max_distance=2.5,
+            debug_vis=False,
+            reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+        fwd_sensor.update_period = 0.1
+        self.scene.forward_lidar = fwd_sensor
 
-            # 前向雷达
-            fwd_pitch_deg = -(90.0 - angle_deg)
-            fwd_half_rad = math.radians(fwd_pitch_deg) / 2.0
-            fwd_rot = (math.cos(fwd_half_rad), 0.0, math.sin(fwd_half_rad), 0.0)
-
-            fwd_sensor = MultiMeshRayCasterCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
-                ray_alignment="base",
-                pattern_cfg=SCAN_PATTERN,
-                max_distance=2.5,
-                debug_vis=False,
-                reference_meshes=True,
-                mesh_prim_paths=SCAN_MESHES,
-            )
-            fwd_sensor.update_period = 0.1
-            setattr(self.scene, f"forward_scanner_layer{i}", fwd_sensor)
-
-            # 后向雷达
-            bwd_pitch_deg = (90.0 - angle_deg)
-            bwd_half_rad = math.radians(bwd_pitch_deg) / 2.0
-            bwd_rot = (math.cos(bwd_half_rad), 0.0, math.sin(bwd_half_rad), 0.0)
-
-            bwd_sensor = MultiMeshRayCasterCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
-                ray_alignment="base",
-                pattern_cfg=SCAN_PATTERN,
-                max_distance=2.5,
-                debug_vis=False,
-                reference_meshes=True,
-                mesh_prim_paths=SCAN_MESHES,
-            )
-            bwd_sensor.update_period = 0.1
-            setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
+        # 后向雷达：朝 -x，绕 z 轴旋 180°；quat = (cos(90°), 0, 0, sin(90°)) = (0, 0, 0, 1)
+        bwd_sensor = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=(0.0, 0.0, 0.0, 1.0)),
+            ray_alignment="base",
+            pattern_cfg=SCAN_PATTERN,
+            max_distance=2.5,
+            debug_vis=False,
+            reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+        bwd_sensor.update_period = 0.1
+        self.scene.backward_lidar = bwd_sensor
         # Rewards
         self.rewards.is_terminated.weight = 0
         self.rewards.lin_vel_z_l2.weight = -2.0
@@ -981,19 +958,9 @@ class DeeproboticsM20MoETeacherEnvCfg_EleOnly(DeeproboticsM20MoETeacherEnvCfg):
     """仅使用 Elevation Map 的环境"""
     def __post_init__(self):
         super().__post_init__()
-        # 禁用所有多层雷达扫描
-        self.observations.noisy_elevation.forward_scan_l0 = None
-        self.observations.noisy_elevation.forward_scan_l1 = None
-        self.observations.noisy_elevation.forward_scan_l2 = None
-        self.observations.noisy_elevation.forward_scan_l3 = None
-        self.observations.noisy_elevation.forward_scan_l4 = None
-        self.observations.noisy_elevation.forward_scan_l5 = None
-        self.observations.noisy_elevation.backward_scan_l0 = None
-        self.observations.noisy_elevation.backward_scan_l1 = None
-        self.observations.noisy_elevation.backward_scan_l2 = None
-        self.observations.noisy_elevation.backward_scan_l3 = None
-        self.observations.noisy_elevation.backward_scan_l4 = None
-        self.observations.noisy_elevation.backward_scan_l5 = None
+        # 禁用半球 LidarPattern（保留 elevation map）
+        self.observations.noisy_elevation.forward_scan = None
+        self.observations.noisy_elevation.backward_scan = None
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg_EleOnly":
             self.disable_zero_weight_rewards()
 

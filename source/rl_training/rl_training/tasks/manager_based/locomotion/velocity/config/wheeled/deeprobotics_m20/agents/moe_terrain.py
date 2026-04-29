@@ -149,22 +149,24 @@ class ElevationAE(nn.Module):
         return latent, recon
 
 class MultiLayerScanAE(nn.Module):
-    def __init__(self, num_channels=12, num_rays=21, output_dim=64, hidden_dims=[128, 64]):
+    def __init__(self, num_channels=32, num_rays=31, output_dim=64, hidden_dims=[128, 64]):
         super().__init__()
         self.num_channels = num_channels
         self.num_rays = num_rays
         self.flat_dim = num_channels * num_rays
-        self.actual_channels = num_channels // 2  
-        
+        self.actual_channels = num_channels // 2
+
+        # 半球 LIDAR (32 ch × 31 az) 输入比旧 GridScan (12 ch × 21 ray) 大 5.7×;
+        # conv 通道相应翻倍以保留细粒度边缘特征
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(self.actual_channels * 2, 16, kernel_size=5, stride=2, padding=2), nn.ELU(),
-            nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1), nn.ELU(),
+            nn.Conv1d(self.actual_channels * 2, 32, kernel_size=5, stride=2, padding=2), nn.ELU(),
+            nn.Conv1d(32, 64, kernel_size=3, stride=2, padding=1), nn.ELU(),
         )
-        
+
         conv_out_len = (self.num_rays + 1) // 2
         conv_out_len = (conv_out_len + 1) // 2
-        linear_in_dim = 32 * conv_out_len 
-        
+        linear_in_dim = 64 * conv_out_len
+
         self.encoder_linear = nn.Sequential(
             nn.Linear(linear_in_dim, hidden_dims[0]), nn.ELU(),
             nn.Linear(hidden_dims[0], output_dim)
@@ -273,7 +275,7 @@ class SplitMoEActorCritic(ActorCritic):
                  critic_hidden_dims=[512, 256, 128], activation='elu', init_noise_std=1.0,
                  num_wheel_experts=2, num_leg_experts=2, num_leg_actions=12,
                  latent_dim=256, rnn_type="gru", aux_loss_coef=0.01,
-                 blind_vision=True, use_elevation_ae=True, elevation_dim=187,     
+                 blind_vision=True, use_elevation_ae=False,elevation_dim=187,     
                  use_cnn=False, num_cameras=2, camera_height=58, camera_width=87,
                  forced_input_key=None, is_student_mode=False, 
                  feed_estimator_to_policy=False, feed_ae_to_policy=False, **kwargs):
@@ -409,8 +411,8 @@ class SplitMoEActorCritic(ActorCritic):
             self.vae_feature_dim = 0
 
         self.use_multilayer_scan = kwargs.get("use_multilayer_scan", True)
-        self.num_scan_channels = kwargs.get("num_scan_channels", 12)
-        self.num_scan_rays = kwargs.get("num_scan_rays", 21)
+        self.num_scan_channels = kwargs.get("num_scan_channels", 32)
+        self.num_scan_rays = kwargs.get("num_scan_rays", 31)
         self.scan_dim = self.num_scan_channels * self.num_scan_rays
 
         self.ae_output_dim = 0
@@ -1868,11 +1870,11 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     sym_loss_coef: float = 0.0
 
     blind_vision: bool = False       
-    use_elevation_ae: bool = True   
+    use_elevation_ae: bool = False  # ELE AE 已弃用，由半球 LIDAR scan AE 替代
     elevation_dim: int = 187      
     use_multilayer_scan: bool = False
-    num_scan_channels: int = 12 
-    num_scan_rays: int = 21   
+    num_scan_channels: int = 32  # 16 fwd + 16 bwd (LidarPattern hemispherical)
+    num_scan_rays: int = 31      # azimuth bins ±90° / 6°
     use_cnn: bool = False           
     num_cameras: int = 2
     camera_height: int = 58
@@ -1926,7 +1928,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         aux_loss_coef=0.01,
         
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=True, 
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False, 
         
@@ -1937,8 +1939,8 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,  # 6前 + 6后
-        num_scan_rays=21,     # 每个通道的射线数
+        num_scan_channels=32,  # 16前 + 16后 (LidarPattern hemispherical, 16 channels each)
+        num_scan_rays=31,     # 每个 sensor 的 azimuth bin 数 (±90° / 6° + 1 = 31)
 
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
@@ -1990,7 +1992,7 @@ class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         aux_loss_coef=0.01,
         
         blind_vision=True, 
-        use_elevation_ae=True,
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False, 
         
@@ -2059,7 +2061,7 @@ class SplitMoEDistillationCfg(RslRlDistillationRunnerCfg):
         
         blind_vision=False,
         
-        use_elevation_ae=True, 
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False,
         estimator_output_dim=3,
@@ -2110,7 +2112,7 @@ class SplitMoESenseDistillationCfg(RslRlDistillationRunnerCfg):
         critic_obs_normalization=True,
         
         blind_vision=False,
-        use_elevation_ae=True, 
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False,
         
@@ -2265,7 +2267,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         aux_loss_coef=0.01,
         
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=True, 
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False, 
         
@@ -2276,8 +2278,8 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,  # 6前 + 6后
-        num_scan_rays=21,     # 每个通道的射线数
+        num_scan_channels=32,  # 16前 + 16后 (LidarPattern hemispherical, 16 channels each)
+        num_scan_rays=31,     # 每个 sensor 的 azimuth bin 数 (±90° / 6° + 1 = 31)
 
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
@@ -2333,7 +2335,7 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         sym_loss_coef=0.5,
 
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=True,
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False,
 
@@ -2344,8 +2346,8 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,  # 6前 + 6后
-        num_scan_rays=21,     # 每个通道的射线数
+        num_scan_channels=32,  # 16前 + 16后 (LidarPattern hemispherical, 16 channels each)
+        num_scan_rays=31,     # 每个 sensor 的 azimuth bin 数 (±90° / 6° + 1 = 31)
 
         actor_obs_normalization=True,
         critic_obs_normalization=True,
@@ -2462,7 +2464,7 @@ class PlacementMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         aux_loss_coef=0.01,
 
         blind_vision=False,
-        use_elevation_ae=True,  # 使用高程估计器
+        use_elevation_ae=False, # 使用高程估计器
         elevation_dim=187,
         use_cnn=False,
 
@@ -2527,7 +2529,7 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         sym_loss_coef=0.5,
 
         blind_vision=False,
-        use_elevation_ae=True,
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False,
 
@@ -2538,8 +2540,8 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,
-        num_scan_rays=21,
+        num_scan_channels=32,
+        num_scan_rays=31,
 
         actor_obs_normalization=True,
         critic_obs_normalization=True,
@@ -2590,7 +2592,7 @@ class GapMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         aux_loss_coef=0.01,
 
         blind_vision=False,
-        use_elevation_ae=True,
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False,
 
@@ -2601,8 +2603,8 @@ class GapMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,
-        num_scan_rays=21,
+        num_scan_channels=32,
+        num_scan_rays=31,
 
         actor_obs_normalization=True,
         critic_obs_normalization=True,
@@ -2653,7 +2655,7 @@ class RailMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         aux_loss_coef=0.01,
 
         blind_vision=False,
-        use_elevation_ae=True,
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False,
 
@@ -2664,8 +2666,8 @@ class RailMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,
-        num_scan_rays=21,
+        num_scan_channels=32,
+        num_scan_rays=31,
 
         actor_obs_normalization=True,
         critic_obs_normalization=True,
