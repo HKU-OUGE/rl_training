@@ -173,7 +173,8 @@ def main():
         depths = torch.nan_to_num(depths, posinf=float("inf"), neginf=float("inf"), nan=float("inf"))
         NUM_CH, NUM_AZ = 16, 31
         depths = depths.reshape(-1, NUM_CH, NUM_AZ)
-        az_lo, az_hi = NUM_AZ // 2 - 2, NUM_AZ // 2 + 3  # ±12° around center
+        # polar 上限收紧到 80° 后，每 ch 步长为 80°/15 ≈ 5.33°；az_lo/az_hi ≈ ±10.7° 中心区
+        az_lo, az_hi = NUM_AZ // 2 - 2, NUM_AZ // 2 + 3
 
         # Aggregate by sub_terrain × simulated_cap
         for sub in sorted(set(col_to_sub)):

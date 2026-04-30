@@ -3,14 +3,19 @@
 Matches the geometry used in sdk_deploy mujoco sim2sim, which approximates a
 real Robosense Airy: rays uniform in (polar, azimuth) where polar is the
 angle from the boresight axis (+X local) and azimuth sweeps a full circle
-around it. Coverage is the full forward hemisphere (180° solid angle).
+around it.
 
 Differences from isaaclab's built-in LidarPatternCfg:
   - Pole at sensor-local +X (boresight) rather than +Z.
-  - Circular FOV (hemispherical) rather than rectangular (elevation × azimuth).
+  - Circular FOV rather than rectangular (elevation × azimuth).
   - Density biased toward boresight (azimuth points collapse near the pole),
     matching forward-facing Airy-like sensors that need fine-grained info
     near boresight.
+
+Polar range is configurable. Default 80° (not full 90°) because real Airy's
+Lissajous scanning density drops off sharply at polar 84°+ — sim2real data
+shows polar=90° has 86% no-hit on the real robot vs 59% in sim. Limiting sim
+to ≤80° matches the practically usable FOV envelope.
 
 Flat ray layout is row-major (polar, azimuth) — polar is the outer dim, so
 ``data.reshape(num_polar, num_azimuth)`` recovers the per-channel layout
@@ -25,6 +30,7 @@ the symmetry loss.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import MISSING
 
@@ -37,7 +43,7 @@ from isaaclab.utils import configclass
 def hemispherical_lidar_pattern(
     cfg: "HemisphericalLidarPatternCfg", device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    polar = torch.linspace(0.0, torch.pi / 2, cfg.num_polar, device=device)
+    polar = torch.linspace(0.0, cfg.polar_max_rad, cfg.num_polar, device=device)
     azimuth = torch.linspace(-torch.pi, torch.pi, cfg.num_azimuth, device=device)
 
     pol_g, az_g = torch.meshgrid(polar, azimuth, indexing="ij")
@@ -55,7 +61,7 @@ def hemispherical_lidar_pattern(
 
 @configclass
 class HemisphericalLidarPatternCfg(PatternBaseCfg):
-    """Hemispherical LiDAR pattern (forward-facing, pole at sensor-local +X).
+    """Forward-facing partial-hemisphere LiDAR pattern (pole at sensor-local +X).
 
     Use ``RayCasterCfg.OffsetCfg.rot`` on the parent sensor to point the
     boresight in the desired robot-frame direction (e.g. identity for a
@@ -65,7 +71,11 @@ class HemisphericalLidarPatternCfg(PatternBaseCfg):
     func: Callable = hemispherical_lidar_pattern
 
     num_polar: int = MISSING
-    """Polar samples in [0, π/2]. 0 = boresight (pole), π/2 = rim of hemisphere."""
+    """Polar samples in [0, polar_max_rad]. 0 = boresight, polar_max_rad = outermost ring."""
 
     num_azimuth: int = MISSING
     """Azimuth samples in [-π, π] (symmetric, includes one duplicate at ±π so flip ↔ negation)."""
+
+    polar_max_rad: float = math.radians(80.0)
+    """Upper limit of polar angle. Default 80° matches real Airy's effective FOV envelope
+    (sim2real data shows density divergence sharply between polar 84° and 90°)."""

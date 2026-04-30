@@ -486,14 +486,12 @@ def main():
         print("=" * 70)
         print(f"\n  full report: {out_path}")
 
-    # IsaacSim 在某些 task / behavior_probe 中断后 simulation_app.close() 会卡死 30+ min
-    # 不依赖正常退出，写完 JSON 就强制 _exit，避免占用 GPU
-    try:
-        simulation_app.close()
-    except Exception as e:
-        print(f"[plane] simulation_app.close() failed: {e}")
-    if is_master:
-        os._exit(0)
+    # IsaacSim simulation_app.close() 会卡死 14+ min 且不抛异常，try/except 兜不住。
+    # 写完 JSON 后跳过 close()，直接 os._exit 立即释放 GPU。
+    # 所有 rank 都强制退出，避免多 GPU 下 non-master 卡 close()。
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":
