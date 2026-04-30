@@ -2,9 +2,10 @@
 
 Builds a teacher env (no policy needed), teleports each env's robot to a
 fixed offset in front of its sub-terrain's obstacle, refreshes sensors, and
-dumps the per-pitch-layer forward-scan distance distribution per
-sub-terrain. Used to verify whether the 6-layer scan can geometrically
-distinguish hurdle (open below the bar) from platform/pit (solid wall).
+dumps the per-channel forward-scan distance distribution per sub-terrain.
+Used to verify whether the hemispherical LiDAR (16 ch × 31 az) can
+geometrically distinguish hurdle (open below the bar) from platform/pit
+(solid wall).
 
 Usage (run separately, results merged manually):
     conda activate env_isaaclab
@@ -163,15 +164,16 @@ def main():
             env.sim.step(render=False)
             env.scene.update(sim_dt)
 
-        # Read each pitch layer's raw distances; post-process per simulated cap
-        # raw_layer[li] shape (N, 21) holds finite depths or +inf for no-hit
-        raw_layer = []
-        for li in range(6):
-            sensor = env.scene.sensors[f"forward_scanner_layer{li}"]
-            rel = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
-            depths = torch.norm(rel, dim=-1)
-            depths = torch.nan_to_num(depths, posinf=float("inf"), neginf=float("inf"), nan=float("inf"))
-            raw_layer.append(depths)
+        # Hemispherical LidarPattern: 16 ch × 31 az, flat layout (ch, az) row-major.
+        # Reshape to (N, NUM_CH, NUM_AZ); central azimuth columns approximate the
+        # ±12° forward cone (old probe used [:, 8:13] of 21 cols at 6° res).
+        sensor = env.scene.sensors["forward_lidar"]
+        rel = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
+        depths = torch.norm(rel, dim=-1)
+        depths = torch.nan_to_num(depths, posinf=float("inf"), neginf=float("inf"), nan=float("inf"))
+        NUM_CH, NUM_AZ = 16, 31
+        depths = depths.reshape(-1, NUM_CH, NUM_AZ)
+        az_lo, az_hi = NUM_AZ // 2 - 2, NUM_AZ // 2 + 3  # ±12° around center
 
         # Aggregate by sub_terrain × simulated_cap
         for sub in sorted(set(col_to_sub)):
@@ -181,11 +183,11 @@ def main():
             for cap in sim_max_caps:
                 key = f"D={distance:.1f}/cap={cap:.1f}/{sub}"
                 entry = {"n_envs": int(mask.sum()), "layers": {}}
-                for li in range(6):
-                    capped = torch.clamp(raw_layer[li], max=cap).cpu().numpy()
-                    d = capped[mask]  # (n_match, 21)
-                    central = d[:, 8:13]
-                    entry["layers"][f"L{li}"] = {
+                capped_all = torch.clamp(depths, max=cap).cpu().numpy()  # (N, 16, 31)
+                for ci in range(NUM_CH):
+                    d = capped_all[mask, ci, :]  # (n_match, 31)
+                    central = d[:, az_lo:az_hi]
+                    entry["layers"][f"C{ci:02d}"] = {
                         "mean": round(float(central.mean()), 3),
                         "min":  round(float(central.min()),  3),
                         "max":  round(float(central.max()),  3),

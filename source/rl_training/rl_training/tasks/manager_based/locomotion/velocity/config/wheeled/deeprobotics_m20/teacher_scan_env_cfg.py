@@ -9,6 +9,7 @@ from isaaclab.utils import configclass
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.sensors import RayCasterCfg, patterns, RayCasterCameraCfg
+from rl_training.sensors import HemisphericalLidarPatternCfg
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
 from rl_training.tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
@@ -67,13 +68,9 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
 
-        # 半球 LidarPattern (Robosense Airy 形态)：单 sensor 16 ch × 31 az = 496 ray
-        SCAN_PATTERN = patterns.LidarPatternCfg(
-            channels=16,
-            vertical_fov_range=(-60.0, 60.0),
-            horizontal_fov_range=(-90.0, 90.0),
-            horizontal_res=6.0,
-        )
+        # 真半球 pattern (匹配 mujoco sim2sim & Robosense Airy)
+        # 单 sensor: 16 polar × 31 azimuth = 496 ray，前 + 后 = 整球
+        SCAN_PATTERN = HemisphericalLidarPatternCfg(num_polar=16, num_azimuth=31)
         SCAN_MESHES = ["/World/ground"]  # 扫描地形1和地形2，捕捉跨栏和坑洞信息
 
         # 前向雷达：朝 +x

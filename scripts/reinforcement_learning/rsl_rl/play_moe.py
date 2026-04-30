@@ -771,19 +771,13 @@ def main():
                 processed_heights = noisy_ele[:187]
 
                 # 3. 雷达扫描距离 (完全 Raw，包含 NaN/Inf)
-                raw_fwd = []
-                raw_bwd = []
-                for i in range(6):
-                    # 前向
-                    f_sens = base_env.scene.sensors[f"forward_scanner_layer{i}"]
-                    f_dist = torch.norm(f_sens.data.ray_hits_w[0] - f_sens.data.pos_w[0], dim=-1)
-                    f_dist = torch.nan_to_num(f_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
-                    raw_fwd.extend(f_dist)
-                    # 后向
-                    b_sens = base_env.scene.sensors[f"backward_scanner_layer{i}"]
-                    b_dist = torch.norm(b_sens.data.ray_hits_w[0] - b_sens.data.pos_w[0], dim=-1)
-                    b_dist = torch.nan_to_num(b_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
-                    raw_bwd.extend(b_dist)
+                # 半球形 LidarPattern: 16 ch × 31 az = 496 rays per direction (front / back)
+                f_sens = base_env.scene.sensors["forward_lidar"]
+                f_dist = torch.norm(f_sens.data.ray_hits_w[0] - f_sens.data.pos_w[0], dim=-1)
+                raw_fwd = torch.nan_to_num(f_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
+                b_sens = base_env.scene.sensors["backward_lidar"]
+                b_dist = torch.norm(b_sens.data.ray_hits_w[0] - b_sens.data.pos_w[0], dim=-1)
+                raw_bwd = torch.nan_to_num(b_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
 
                 log_dict = {
                     "omega": omega, "proj_g": proj_g, "cmd": cmd,

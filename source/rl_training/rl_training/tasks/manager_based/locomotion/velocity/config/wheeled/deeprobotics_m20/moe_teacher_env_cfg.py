@@ -12,6 +12,7 @@ from isaaclab.utils import configclass
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.sensors import RayCasterCfg, patterns, RayCasterCameraCfg
+from rl_training.sensors import HemisphericalLidarPatternCfg
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
 from rl_training.tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
@@ -751,15 +752,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
 
-        # 半球 LidarPattern 模拟 Robosense Airy 的扫描形态
-        # 单 sensor: 16 channels × 31 azimuth = 496 ray
-        # 前 + 后 共 992 ray ≈ k 级，与 Airy hemispherical 输出量级匹配
-        SCAN_PATTERN = patterns.LidarPatternCfg(
-            channels=16,                             # elevation 16 层 (-60° 到 +60°, 8°/层)
-            vertical_fov_range=(-60.0, 60.0),
-            horizontal_fov_range=(-90.0, 90.0),     # 前/后向各覆盖 ±90° 半球
-            horizontal_res=6.0,                      # → 31 azimuth bin
-        )
+        # 真半球 pattern (匹配 mujoco sim2sim & Robosense Airy)
+        # pole = sensor-local +X (boresight)，polar ∈ [0, π/2]，azimuth ∈ [-π, π]
+        # 单 sensor: 16 polar × 31 azimuth = 496 ray
+        # 前 + 后 共 992 ray，覆盖整球
+        SCAN_PATTERN = HemisphericalLidarPatternCfg(num_polar=16, num_azimuth=31)
         SCAN_MESHES = ["/World/ground"]
 
         # 前向雷达：朝 +x，azimuth 中心对齐 +x 方向，无额外旋转
