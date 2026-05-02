@@ -2037,7 +2037,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
     empirical_normalization = False
@@ -2376,7 +2376,7 @@ class BlindMoECfg(RslRlOnPolicyRunnerCfg):
 class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000
     save_interval = 100
     experiment_name = "ele_moe_teacher_parallel" 
     empirical_normalization = False
@@ -2440,7 +2440,7 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000
     save_interval = 100
     experiment_name = "scan_moe_teacher_parallel" 
     empirical_normalization = False
@@ -2569,7 +2569,7 @@ class BaseMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class PlacementMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """T4 精准落足专家配置 - 中等难度的多专家结构"""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000
     save_interval = 100
     experiment_name = "placement_moe_teacher_parallel"
     empirical_normalization = False
@@ -2630,7 +2630,7 @@ class PlacementMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """T6 高台攀爬专家配置 - Scan AE + Elevation AE + Estimator 全开"""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000
     save_interval = 100
     experiment_name = "platform_moe_teacher_parallel"
     empirical_normalization = False
@@ -2694,7 +2694,7 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class GapMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """T7 跨越沟壑专家配置 - Scan AE + Elevation AE + Estimator 全开"""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000
     save_interval = 100
     experiment_name = "gap_moe_teacher_parallel"
     empirical_normalization = False
@@ -2757,7 +2757,7 @@ class GapMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class RailMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """T8 跨栏跳跃专家配置 - Scan AE + Elevation AE + Estimator 全开"""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000
     save_interval = 100
     experiment_name = "rail_moe_teacher_parallel"
     empirical_normalization = False
