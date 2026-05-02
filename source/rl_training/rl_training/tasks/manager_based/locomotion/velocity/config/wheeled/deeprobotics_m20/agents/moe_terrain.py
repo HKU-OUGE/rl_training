@@ -1518,9 +1518,10 @@ class SplitMoEPPO(PPO):
         # 填入附加 Loss
         if not getattr(model, "is_student_mode", False):
             loss_dict["Loss/Load_Balancing"] = avg_lb_loss
-            loss_dict["Loss/Actor_Symmetry_Reg_LR"] = avg_sym_loss_lr
-            loss_dict["Loss/Actor_Symmetry_Reg_FB"] = avg_sym_loss_fb
-            loss_dict["Loss/Actor_Symmetry_Reg"] = avg_sym_loss_lr + avg_sym_loss_fb
+            if getattr(model, "sym_enabled", True):
+                loss_dict["Loss/Actor_Symmetry_Reg_LR"] = avg_sym_loss_lr
+                loss_dict["Loss/Actor_Symmetry_Reg_FB"] = avg_sym_loss_fb
+                loss_dict["Loss/Actor_Symmetry_Reg"] = avg_sym_loss_lr + avg_sym_loss_fb
             if model.estimator is not None:
                 loss_dict["Loss/VAE_Vel_MSE"] = avg_vel_loss
                 loss_dict["Loss/VAE_Recon_MSE"] = avg_recon_loss
@@ -2445,10 +2446,6 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        # 启用对称性增强 (LR + FB sym loss). 0.5 是 sweep 测试得到的最佳折中:
-        # sym 残差 ~0.005-0.007, task tracking 几乎不受影响, 梯度稳定 < clip.
-        # 0.0 → sym MSE 反而上升 (训练让 policy 越学越不对称, 必须有约束).
-        sym_loss_coef=0.5,
 
         blind_vision=False, # 盲视平地训练
         use_elevation_ae=False,
@@ -2639,10 +2636,6 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        # ---- 临时关闭 sym 加速训练 (Plan B' 验证阶段) ----
-        # 0.0 → 不启用 LR/FB sym loss + 不维护镜像 RNN piggyback 层, 单次前向开销减半,
-        # 训练吞吐量上升. 验证 scan history 修复 pit_deep 后再考虑启回.
-        sym_loss_coef=0.0,
 
         blind_vision=False,
         use_elevation_ae=False,
