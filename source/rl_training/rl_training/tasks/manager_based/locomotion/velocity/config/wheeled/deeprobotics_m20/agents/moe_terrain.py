@@ -1985,8 +1985,11 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     num_scan_rays: int = 31      # azimuth bins ±90° / 6°
     # ----- Plan B': scan latent 历史 (双尺度) -----
     # offsets = "几帧前" 列表; [] 表示禁用. 默认: 4 帧 dense (短期 80ms) + 8 帧 sparse stride=5 (长期 800ms)
+    # 默认全局启用 (与模型 __init__ 默认一致); use_multilayer_scan=False 的 cfg 自动禁用.
     # 实例化 SplitMoEActorCritic 时通过 kwargs 透传
-    scan_history_offsets: list = field(default_factory=list)
+    scan_history_offsets: list = field(
+        default_factory=lambda: [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40]
+    )
     scan_history_len: int = 0     # legacy 兼容 (若给非 0 则视作 dense [1..K])
     use_cnn: bool = False
     num_cameras: int = 2
@@ -2655,11 +2658,7 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         use_multilayer_scan=True,
         num_scan_channels=32,
         num_scan_rays=31,
-        # ---- Plan B': 双尺度 scan latent 历史 ----
-        # 短期 dense [1..4] (80ms 噪声 filter) + 长期 sparse [5,10,...,40] (800ms 空间记忆)
-        # 共 12 帧采样, 加上当前帧 = 13×64 = 832 维拼进 actor RNN (替代原 64 维 scan_lat)
-        # 底层 ring buffer = 40 帧
-        scan_history_offsets=[1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40],
+        # Plan B': 双尺度 scan latent 历史走 SplitMoEActorCriticCfg 默认 (12 帧 + 当前 = 13 帧)
 
         actor_obs_normalization=True,
         critic_obs_normalization=True,
