@@ -1974,7 +1974,12 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     use_multilayer_scan: bool = False
     num_scan_channels: int = 32  # 16 fwd + 16 bwd (LidarPattern hemispherical)
     num_scan_rays: int = 31      # azimuth bins ±90° / 6°
-    use_cnn: bool = False           
+    # ----- Plan B': scan latent 历史 (双尺度) -----
+    # offsets = "几帧前" 列表; [] 表示禁用. 默认: 4 帧 dense (短期 80ms) + 8 帧 sparse stride=5 (长期 800ms)
+    # 实例化 SplitMoEActorCritic 时通过 kwargs 透传
+    scan_history_offsets: list = field(default_factory=list)
+    scan_history_len: int = 0     # legacy 兼容 (若给非 0 则视作 dense [1..K])
+    use_cnn: bool = False
     num_cameras: int = 2
     camera_height: int = 58
     camera_width: int = 87
