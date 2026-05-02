@@ -433,6 +433,26 @@ class SplitMoEActorCritic(ActorCritic):
                 for param in self.scan_encoder.parameters(): param.requires_grad = False
                 self.scan_encoder.eval()
 
+        # ===== Plan B': 双尺度 scan latent 历史 (短期 dense + 长期 sparse) =====
+        # scan_history_offsets = "几帧前" 的整数列表; 例如 [1..4] 是 80ms 短期, [5,10,...,40] 是 800ms 长期
+        # 经过 _scan_history_attach 后, 输出 (1+len(offsets)) * scan_out_dim 维拼到 actor RNN 输入
+        # 默认: dense [1,2,3,4] + sparse [5,10,15,20,25,30,35,40] = 12 个 offset, 覆盖 800ms
+        # 底层 ring buffer 大小 = max(offsets), 默认 40 帧
+        default_offsets = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40]
+        self.scan_history_offsets = list(kwargs.get("scan_history_offsets", default_offsets))
+        # 兼容旧 cfg 的 scan_history_len: 若用户只给 K, 默认用 dense [1..K]
+        legacy_K = int(kwargs.get("scan_history_len", 0))
+        if legacy_K > 0 and "scan_history_offsets" not in kwargs:
+            self.scan_history_offsets = list(range(1, legacy_K + 1))
+        self.use_scan_history = self.use_multilayer_scan and len(self.scan_history_offsets) > 0
+        self.scan_history_len = len(self.scan_history_offsets)              # 给 actor 的样本数
+        self.scan_history_buffer_size = max(self.scan_history_offsets) if self.use_scan_history else 0
+        if self.use_scan_history:
+            extra = self.scan_history_len * self.scan_out_dim
+            self.ae_output_dim += extra
+            print(f"[ScanHistory] enabled. offsets={self.scan_history_offsets}  "
+                  f"buffer_size={self.scan_history_buffer_size} frames  +{extra}-dim to actor RNN.")
+
         rnn_input_dim = self.proprio_dim
         critic_rnn_input_dim = self.critic_proprio_dim
 
@@ -505,9 +525,26 @@ class SplitMoEActorCritic(ActorCritic):
         else: ref_tensor = obs
         batch_size = ref_tensor.shape[0]
         device = ref_tensor.device
-        
+
         self.active_hidden_states = self._init_rnn_state(batch_size, device)
         self.active_critic_hidden_states = self._init_rnn_state(batch_size, device)
+
+        # Plan B' 训练侧 buffer: per-env 滚动 N 帧 scan latent (N = max offset).
+        # 约定: buffer[..., -1, :] = 最新 (t-1), buffer[..., 0, :] = 最老 (t-N)
+        # 推理 (act/act_inference) 时滚动 + 写入; PPO update replay 路径 (forward/evaluate) 只读不写
+        if self.use_scan_history:
+            self.register_buffer(
+                "_scan_history_buf",
+                torch.zeros(batch_size, self.scan_history_buffer_size, self.scan_out_dim, device=device),
+                persistent=False,
+            )
+            # 预计算采样索引 (从 buffer 末尾倒数, newest-first)
+            # offsets 用 1..N (1 = t-1 最新, N = t-N 最老), 索引 = buffer_size - offset
+            sample_idx = torch.tensor(
+                [self.scan_history_buffer_size - off for off in self.scan_history_offsets],
+                dtype=torch.long, device=device,
+            )
+            self.register_buffer("_scan_history_sample_idx", sample_idx, persistent=False)
         
         self.latest_weights = {}
         
@@ -556,7 +593,43 @@ class SplitMoEActorCritic(ActorCritic):
             est_input = self._get_estimator_input(obs)
             self.estimator_obs_normalizer.update(est_input)
 
-    def _process_obs(self, x, obs_dict=None, normalizer=None, proprio_dim=None, compute_reconstruction=False):
+    def _scan_history_attach(self, latent_scan: torch.Tensor, scan_history_input: torch.Tensor | None,
+                              update_internal_buf: bool = False) -> torch.Tensor:
+        """把当前 scan_lat 与已采样的 K 帧过去 scan_lat 拼成 (B, (K+1)*scan_out_dim).
+
+        scan_history_input != None (ONNX/deploy 路径): 已采样的 (B, K, D), 直接用.
+        scan_history_input == None (训练路径):
+            从 self._scan_history_buf (B, buffer_size, D) 按 self._scan_history_sample_idx 采样 K 帧.
+            update_internal_buf=True 时滚动写入新 latent (仅 rollout act 路径开启).
+        """
+        if not self.use_scan_history:
+            return latent_scan
+
+        if scan_history_input is not None:
+            # ONNX/deploy: 已经采样好的 (B, K, D), shape 兼容 (B, K*D)
+            history = scan_history_input
+            if history.dim() == 2:
+                history = history.view(-1, self.scan_history_len, self.scan_out_dim)
+        else:
+            B = latent_scan.shape[0]
+            if self._scan_history_buf.shape[0] != B:
+                history = torch.zeros(B, self.scan_history_len, self.scan_out_dim,
+                                       dtype=latent_scan.dtype, device=latent_scan.device)
+            else:
+                # 按预设 sample_idx 从 buffer 抽 K 帧
+                history = self._scan_history_buf[:, self._scan_history_sample_idx, :].clone()
+                if update_internal_buf:
+                    # rollout act: 整个 ring buffer 左移 1, newest 写到末尾
+                    with torch.no_grad():
+                        new_buf = torch.cat([self._scan_history_buf[:, 1:],
+                                              latent_scan.detach().unsqueeze(1)], dim=1)
+                        self._scan_history_buf.copy_(new_buf)
+
+        full = torch.cat([latent_scan.unsqueeze(1), history], dim=1)  # (B, K+1, D)
+        return full.flatten(start_dim=1)
+
+    def _process_obs(self, x, obs_dict=None, normalizer=None, proprio_dim=None, compute_reconstruction=False,
+                      scan_history_input=None, update_scan_history_buf=False):
         if proprio_dim is None: 
             proprio_dim = self.proprio_dim
             
@@ -612,8 +685,20 @@ class SplitMoEActorCritic(ActorCritic):
                     self.scan_encoder.eval()
                     latent_scan, _ = self.scan_encoder(env_raw_scan)
                     self.scan_encoder.train(was_training)
-                    
-                feats.append(latent_scan.detach()) 
+
+                # Plan B: 当 use_scan_history=True 时附加 K 帧过去 latent (合计 K+1 帧)
+                aux_outputs["scan_lat_t"] = latent_scan.detach()
+                # ONNX 路径通过 self._onnx_scan_history_input 透传 (无需改 forward 签名)
+                ext_history = scan_history_input
+                if ext_history is None:
+                    ext_history = getattr(self, "_onnx_scan_history_input", None)
+                scan_feat = self._scan_history_attach(
+                    latent_scan.detach(), ext_history,
+                    update_internal_buf=update_scan_history_buf and ext_history is None,
+                )
+                feats.append(scan_feat)
+                # 暴露给 ONNX wrapper
+                self._last_scan_lat_t = latent_scan.detach()
                 
             env_feat_for_rnn = torch.cat(feats, dim=-1)
             
@@ -816,10 +901,15 @@ class SplitMoEActorCritic(ActorCritic):
     def act(self, obs, masks=None, hidden_state=None, return_aux_loss=False):
         x_raw = self._extract_raw_obs(obs, self.input_keys)
         normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
+        # rollout 路径: 滚动 scan history buffer
         if return_aux_loss:
-            x_in, aux_outputs = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer, compute_reconstruction=True)
+            x_in, aux_outputs = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer,
+                                                    compute_reconstruction=True,
+                                                    update_scan_history_buf=True)
         else:
-            x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer, compute_reconstruction=False)
+            x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer,
+                                      compute_reconstruction=False,
+                                      update_scan_history_buf=True)
         
         current_state = self._prepare_hidden_state(hidden_state, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
@@ -845,7 +935,10 @@ class SplitMoEActorCritic(ActorCritic):
     def act_inference(self, obs, masks=None, hidden_states=None):
         x_raw = self._extract_raw_obs(obs, self.input_keys)
         normalizer = self.actor_obs_normalizer if self.actor_obs_normalization else None
-        x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer, compute_reconstruction=False)
+        # rollout / play 路径: 滚动 scan history buffer
+        x_in = self._process_obs(x_raw, obs_dict=obs, normalizer=normalizer,
+                                  compute_reconstruction=False,
+                                  update_scan_history_buf=True)
 
         current_state = self._prepare_hidden_state(hidden_states, x_in.device)
         if current_state is None: current_state = self._prepare_hidden_state(self.active_hidden_states, x_in.device)
@@ -922,6 +1015,12 @@ class SplitMoEActorCritic(ActorCritic):
             self.active_hidden_states = reset_hidden(self.active_hidden_states, dones)
         if self.active_critic_hidden_states is not None:
             self.active_critic_hidden_states = reset_hidden(self.active_critic_hidden_states, dones)
+
+        # Plan B: 同步清空 done env 的 scan history buffer
+        if getattr(self, "use_scan_history", False) and hasattr(self, "_scan_history_buf"):
+            buf = self._scan_history_buf
+            if buf.shape[0] == dones.shape[0]:
+                buf[dones] = 0.0
 
 # ==============================================================================
 # 4. 蒸馏适配器 (Student-Teacher Adapter for Distillation)
@@ -2523,10 +2622,10 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        # 启用对称性增强 (LR + FB sym loss). 0.5 是 sweep 测试得到的最佳折中:
-        # sym 残差 ~0.005-0.007, task tracking 几乎不受影响, 梯度稳定 < clip.
-        # 0.0 → sym MSE 反而上升 (训练让 policy 越学越不对称, 必须有约束).
-        sym_loss_coef=0.5,
+        # ---- 临时关闭 sym 加速训练 (Plan B' 验证阶段) ----
+        # 0.0 → 不启用 LR/FB sym loss + 不维护镜像 RNN piggyback 层, 单次前向开销减半,
+        # 训练吞吐量上升. 验证 scan history 修复 pit_deep 后再考虑启回.
+        sym_loss_coef=0.0,
 
         blind_vision=False,
         use_elevation_ae=False,
@@ -2542,6 +2641,11 @@ class PlatformMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         use_multilayer_scan=True,
         num_scan_channels=32,
         num_scan_rays=31,
+        # ---- Plan B': 双尺度 scan latent 历史 ----
+        # 短期 dense [1..4] (80ms 噪声 filter) + 长期 sparse [5,10,...,40] (800ms 空间记忆)
+        # 共 12 帧采样, 加上当前帧 = 13×64 = 832 维拼进 actor RNN (替代原 64 维 scan_lat)
+        # 底层 ring buffer = 40 帧
+        scan_history_offsets=[1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40],
 
         actor_obs_normalization=True,
         critic_obs_normalization=True,

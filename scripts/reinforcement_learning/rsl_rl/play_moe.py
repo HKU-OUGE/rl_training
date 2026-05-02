@@ -233,7 +233,12 @@ def get_flat_obs_dim(policy):
     return dim
 
 class UnifiedExportPolicy(nn.Module):
-    """统一导出包装器"""
+    """统一导出包装器.
+
+    若 policy.use_scan_history=True, ONNX 接口扩展:
+      新增输入: scan_history (B, K, scan_out_dim) — 过去 K 帧 ae latent (oldest→newest)
+      新增输出: scan_lat_t (B, scan_out_dim) — 当前帧 ae latent (caller 加进 buffer)
+    """
     def __init__(self, policy):
         super().__init__()
         self.policy = policy
@@ -241,28 +246,52 @@ class UnifiedExportPolicy(nn.Module):
         for param in self.policy.parameters():
             param.requires_grad = False
         self.rnn_type = getattr(policy, "rnn_type", "gru").lower()
+        self.use_scan_history = getattr(policy, "use_scan_history", False)
+        self.scan_history_len = getattr(policy, "scan_history_len", 0)
+        self.scan_out_dim = getattr(policy, "scan_out_dim", 64)
 
-    def forward(self, proprio_and_env, estimator_history, h0, c0=None):
+    def forward(self, proprio_and_env, estimator_history, h0, c0_or_scan_history=None, scan_history=None):
+        # 兼容三种调用 :
+        #   GRU 无 scan_history:  forward(po, eh, h0)
+        #   GRU + scan_history:   forward(po, eh, h0, scan_history)  -> c0_or_scan_history 即 scan_history
+        #   LSTM:                 forward(po, eh, h0, c0)            -> 无 scan_history
+        #   LSTM + scan_history:  forward(po, eh, h0, c0, scan_history)
         if self.rnn_type == "lstm":
-            hidden_states = (h0, c0)
+            hidden_states = (h0, c0_or_scan_history)
+            scan_hist_input = scan_history
         else:
             hidden_states = h0
-            
+            scan_hist_input = c0_or_scan_history if c0_or_scan_history is not None else scan_history
+
         obs_dict = {
             "policy": proprio_and_env[..., :self.policy.proprio_dim],
             "noisy_elevation": proprio_and_env[..., self.policy.proprio_dim:]
         }
         if estimator_history.shape[-1] > 0:
             obs_dict["estimator"] = estimator_history
-            
-        action_mean, _, next_state = self.policy.forward(
-            obs_dict, masks=None, hidden_states=hidden_states, save_dist=False
-        )
-        
+
+        # 若使用 scan_history, 通过 forward 的 _scan_history_input kwarg 传入. policy.forward 不直接接受
+        # 此 kwarg, 借助实例属性临时透传。
+        if self.use_scan_history:
+            self.policy._onnx_scan_history_input = scan_hist_input
+        try:
+            action_mean, _, next_state = self.policy.forward(
+                obs_dict, masks=None, hidden_states=hidden_states, save_dist=False
+            )
+        finally:
+            if hasattr(self.policy, "_onnx_scan_history_input"):
+                del self.policy._onnx_scan_history_input
+
+        # 当前帧 latent: policy 在 _process_obs 中通过 aux_outputs 暴露
+        scan_lat_t = getattr(self.policy, "_last_scan_lat_t", None)
+
         if self.rnn_type == "lstm":
-            return action_mean, next_state[0], next_state[1]
+            outs = [action_mean, next_state[0], next_state[1]]
         else:
-            return action_mean, next_state
+            outs = [action_mean, next_state]
+        if self.use_scan_history and scan_lat_t is not None:
+            outs.append(scan_lat_t)
+        return tuple(outs) if len(outs) > 1 else outs[0]
 
 def resolve_checkpoint_path(root_log_dir, run_name_or_path, checkpoint_pattern):
     run_dir = None
@@ -321,17 +350,33 @@ def export_model_files(policy, log_dir, device):
         dummy_obs = torch.zeros(batch_size, flat_obs_dim, device=device)
         dummy_est = torch.zeros(batch_size, est_dim, device=device)
         
+        use_scan_history = getattr(policy, "use_scan_history", False)
+        scan_history_len = getattr(policy, "scan_history_len", 0)
+        scan_out_dim = getattr(policy, "scan_out_dim", 64)
+
         if rnn_type == "lstm":
             dummy_h0 = torch.zeros(1, batch_size, latent_dim, device=device)
             dummy_c0 = torch.zeros(1, batch_size, latent_dim, device=device)
-            inputs = (dummy_obs, dummy_est, dummy_h0, dummy_c0)
-            input_names = ["proprio_and_env", "estimator_history", "h0", "c0"]
-            output_names = ["action", "next_h0", "next_c0"]
+            if use_scan_history:
+                dummy_scan_hist = torch.zeros(batch_size, scan_history_len, scan_out_dim, device=device)
+                inputs = (dummy_obs, dummy_est, dummy_h0, dummy_c0, dummy_scan_hist)
+                input_names = ["proprio_and_env", "estimator_history", "h0", "c0", "scan_history"]
+                output_names = ["action", "next_h0", "next_c0", "scan_lat_t"]
+            else:
+                inputs = (dummy_obs, dummy_est, dummy_h0, dummy_c0)
+                input_names = ["proprio_and_env", "estimator_history", "h0", "c0"]
+                output_names = ["action", "next_h0", "next_c0"]
         else:
             dummy_h0 = torch.zeros(1, batch_size, latent_dim, device=device)
-            inputs = (dummy_obs, dummy_est, dummy_h0)
-            input_names = ["proprio_and_env", "estimator_history", "h0"]
-            output_names = ["action", "next_h0"]
+            if use_scan_history:
+                dummy_scan_hist = torch.zeros(batch_size, scan_history_len, scan_out_dim, device=device)
+                inputs = (dummy_obs, dummy_est, dummy_h0, dummy_scan_hist)
+                input_names = ["proprio_and_env", "estimator_history", "h0", "scan_history"]
+                output_names = ["action", "next_h0", "scan_lat_t"]
+            else:
+                inputs = (dummy_obs, dummy_est, dummy_h0)
+                input_names = ["proprio_and_env", "estimator_history", "h0"]
+                output_names = ["action", "next_h0"]
             
         onnx_path = os.path.join(exported_dir, "unified_policy.onnx")
         torch.onnx.export(
