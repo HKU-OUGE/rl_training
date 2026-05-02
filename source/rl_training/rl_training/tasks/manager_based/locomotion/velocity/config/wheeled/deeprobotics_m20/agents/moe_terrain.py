@@ -597,45 +597,55 @@ class SplitMoEActorCritic(ActorCritic):
                               update_internal_buf: bool = False) -> torch.Tensor:
         """把当前 scan_lat 与已采样的 K 帧过去 scan_lat 拼成 (B, (K+1)*scan_out_dim).
 
-        scan_history_input != None (ONNX/deploy 路径): 已采样的 (B, K, D), 直接用.
-        scan_history_input == None (训练路径):
-            从 self._scan_history_buf (B, buffer_size, D) 按 self._scan_history_sample_idx 采样 K 帧.
-            update_internal_buf=True 时滚动写入新 latent (仅 rollout act 路径开启).
+        三条路径:
+        - scan_history_input != None  (ONNX/deploy):  已采样的 (B, K, D) 直接用.
+        - latent_scan.dim() == 3       (PPO update):   输入 (T, B, D); 因 rsl_rl 的
+            `split_and_pad_trajectories` 在 done 处切轨迹, 每条 trajectory 起点的真实
+            buffer == 0 (rollout 路径在 done 时清零, 见 reset()), 所以本地从零初始化
+            ring buffer, 沿时间逐步滚动重建——数学上与 rollout 路径完全等价.
+        - latent_scan.dim() == 2       (rollout act):  从 self._scan_history_buf 按
+            self._scan_history_sample_idx 采样 K 帧. update_internal_buf=True 时滚动.
         """
         if not self.use_scan_history:
             return latent_scan
 
-        # RNN update path sends (T, B, D); flatten time into batch, restore after
-        leading_shape = None
-        if latent_scan.dim() == 3:
-            leading_shape = latent_scan.shape[:2]
-            latent_scan = latent_scan.reshape(-1, latent_scan.shape[-1])
-
+        # ---- ONNX/deploy 路径: 已采样好的 history 直接拼 ----
         if scan_history_input is not None:
-            # ONNX/deploy: 已经采样好的 (B, K, D), shape 兼容 (B, K*D)
             history = scan_history_input
             if history.dim() == 2:
                 history = history.view(-1, self.scan_history_len, self.scan_out_dim)
-        else:
-            B = latent_scan.shape[0]
-            if self._scan_history_buf.shape[0] != B:
-                history = torch.zeros(B, self.scan_history_len, self.scan_out_dim,
-                                       dtype=latent_scan.dtype, device=latent_scan.device)
-            else:
-                # 按预设 sample_idx 从 buffer 抽 K 帧
-                history = self._scan_history_buf[:, self._scan_history_sample_idx, :].clone()
-                if update_internal_buf:
-                    # rollout act: 整个 ring buffer 左移 1, newest 写到末尾
-                    with torch.no_grad():
-                        new_buf = torch.cat([self._scan_history_buf[:, 1:],
-                                              latent_scan.detach().unsqueeze(1)], dim=1)
-                        self._scan_history_buf.copy_(new_buf)
+            full = torch.cat([latent_scan.unsqueeze(1), history], dim=1)
+            return full.flatten(start_dim=1)
 
-        full = torch.cat([latent_scan.unsqueeze(1), history], dim=1)  # (B, K+1, D)
-        result = full.flatten(start_dim=1)
-        if leading_shape is not None:
-            result = result.reshape(*leading_shape, -1)
-        return result
+        # ---- PPO update 路径: (T, B, D), 沿 trajectory 逐步重建 ring buffer ----
+        if latent_scan.dim() == 3:
+            T, B, D = latent_scan.shape
+            buf = torch.zeros(B, self.scan_history_buffer_size, D,
+                              dtype=latent_scan.dtype, device=latent_scan.device)
+            outputs = []
+            for t in range(T):
+                cur = latent_scan[t]                                          # (B, D)
+                history = buf[:, self._scan_history_sample_idx, :]            # (B, K, D)
+                attached = torch.cat([cur.unsqueeze(1), history], dim=1)      # (B, K+1, D)
+                outputs.append(attached.flatten(start_dim=1))                 # (B, (K+1)*D)
+                buf = torch.cat([buf[:, 1:, :], cur.unsqueeze(1)], dim=1)
+            return torch.stack(outputs, dim=0)                                # (T, B, (K+1)*D)
+
+        # ---- rollout act 路径: 用 self._scan_history_buf ----
+        B = latent_scan.shape[0]
+        if self._scan_history_buf.shape[0] != B:
+            history = torch.zeros(B, self.scan_history_len, self.scan_out_dim,
+                                   dtype=latent_scan.dtype, device=latent_scan.device)
+        else:
+            history = self._scan_history_buf[:, self._scan_history_sample_idx, :].clone()
+            if update_internal_buf:
+                with torch.no_grad():
+                    new_buf = torch.cat([self._scan_history_buf[:, 1:],
+                                          latent_scan.detach().unsqueeze(1)], dim=1)
+                    self._scan_history_buf.copy_(new_buf)
+
+        full = torch.cat([latent_scan.unsqueeze(1), history], dim=1)
+        return full.flatten(start_dim=1)
 
     def _process_obs(self, x, obs_dict=None, normalizer=None, proprio_dim=None, compute_reconstruction=False,
                       scan_history_input=None, update_scan_history_buf=False):
