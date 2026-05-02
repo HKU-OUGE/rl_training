@@ -2038,7 +2038,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
     max_iterations = 20000
-    save_interval = 200
+    save_interval = 100
     experiment_name = "split_moe_teacher_parallel" 
     empirical_normalization = False
     
