@@ -436,10 +436,8 @@ class SplitMoEActorCritic(ActorCritic):
         # ===== Plan B': 双尺度 scan latent 历史 (短期 dense + 长期 sparse) =====
         # scan_history_offsets = "几帧前" 的整数列表; 例如 [1..4] 是 80ms 短期, [5,10,...,40] 是 800ms 长期
         # 经过 _scan_history_attach 后, 输出 (1+len(offsets)) * scan_out_dim 维拼到 actor RNN 输入
-        # 默认: dense [1,2,3,4] + sparse [5,10,15,20,25,30,35,40] = 12 个 offset, 覆盖 800ms
-        # 底层 ring buffer 大小 = max(offsets), 默认 40 帧
-        default_offsets = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40]
-        self.scan_history_offsets = list(kwargs.get("scan_history_offsets", default_offsets))
+        # 默认禁用 ([]); 想启用时在对应 cfg 里显式覆盖 scan_history_offsets=[1,2,3,4] 等
+        self.scan_history_offsets = list(kwargs.get("scan_history_offsets", []))
         # 兼容旧 cfg 的 scan_history_len: 若用户只给 K, 默认用 dense [1..K]
         legacy_K = int(kwargs.get("scan_history_len", 0))
         if legacy_K > 0 and "scan_history_offsets" not in kwargs:
