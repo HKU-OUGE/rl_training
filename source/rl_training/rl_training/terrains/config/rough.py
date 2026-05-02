@@ -355,21 +355,23 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
 # 运动模态：大落差攀爬和降落
 # Pit 地形：机器人从底部出生，学习向上攀爬 (训练上高台)
 # Box 地形：机器人从顶部出生，学习向下降落 (训练下高台)
+# 比例: pit 70% / box 30% — 攀爬比降落显著困难, 给 pit 更多采样
+# (box_tall 与 box_high 参数完全相同, 已删除)
 PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
         "pit_shallow": pit_cfg.replace(
-            proportion=0.2,
+            proportion=0.25,
             pit_depth_range=(0.05, 0.8),
             double_pit=True,
         ),
         "pit_deep": pit_cfg.replace(
-            proportion=0.15,
+            proportion=0.25,
             pit_depth_range=(0.05, 0.8),
             double_pit=True,
         ),
         "pit_single": pit_cfg.replace(
-            proportion=0.15,
+            proportion=0.20,
             pit_depth_range=(0.05, 0.8),
             double_pit=False,
         ),
@@ -380,11 +382,6 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         "box_high": box_cfg.replace(
             proportion=0.15,
-            box_height_range=(0.05, 0.8),
-            double_box=True,
-        ),
-        "box_tall": box_cfg.replace(
-            proportion=0.2,
             box_height_range=(0.05, 0.8),
             double_box=True,
         ),
