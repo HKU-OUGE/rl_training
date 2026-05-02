@@ -236,7 +236,14 @@ STUDENT_TERRAINS_CFG = TerrainGeneratorCfg(
     }
 )
 
-# 详细版：每种地形类型有多个参数变体，更丰富的训练多样性
+# MoE Teacher 多模态训练: 高台 / 楼梯 / 斜坡 / gap / crawl / rail (合计 18/18 = 1.0)
+# - 高台 4/18: pit (上爬) + box (下落), 双向训练
+# - 楼梯 4/18: pyramid + inverted, 两种 step_width
+# - 斜坡 2/18: slope + slope_inv
+# - gap 2/18:  从原 1/18 提升 (gap 是关键运动模态)
+# - rail 2/18: 跨栏 (保持)
+# - crawl 3/18: hurdle ×3 不同高度/厚度
+# - 基础 1/18: random_rough 鲁棒性
 STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
@@ -248,17 +255,31 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
     use_cache=False,
     curriculum=True,
     sub_terrains={
-        # --- T1 盲视基础 (3/18) ---
+        # --- 基础鲁棒性 (1/18) ---
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=1.0/18, noise_range=(0.02, 0.16), noise_step=0.02, border_width=0.25
         ),
+        # --- 斜坡 (2/18) ---
         "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
             proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=4.0, border_width=0.25
         ),
         "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
             proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=4.0, border_width=0.25
         ),
-        # --- T2 大动作跨越 (8/18) ---
+        # --- 高台 (4/18) - 上爬 (pit) + 下落 (box), 双向训练 ---
+        "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=2.0/18,
+            pit_depth_range=(0.05, 0.8),
+            double_pit=True,
+            platform_width=4.0,
+        ),
+        "box": terrain_gen.trimesh.mesh_terrains_cfg.MeshBoxTerrainCfg(
+            proportion=2.0/18,
+            box_height_range=(0.05, 0.8),
+            double_box=True,
+            platform_width=4.0,
+        ),
+        # --- 楼梯 (4/18) ---
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=1.0/18,
             step_height_range=(0.05, 0.25),
@@ -291,19 +312,15 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             border_width=1.0,
             holes=False,
         ),
+        # --- gap (2/18) ---
         "gaps": MeshGapTerrainCfg(
-            proportion=1.0/18, gap_width_range=(0.3, 0.8), platform_width=4.0, gap_depth=0.5
+            proportion=2.0/18, gap_width_range=(0.3, 0.8), platform_width=4.0, gap_depth=0.5
         ),
+        # --- rail (2/18) ---
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
             proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.4), platform_width=4.0
         ),
-        "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
-            proportion=1.0/18,
-            pit_depth_range=(0.05, 0.8),
-            double_pit=True,
-            platform_width=4.0,
-        ),
-        # --- T3 低姿钻越 (3/18) ---
+        # --- crawl / hurdle (3/18) ---
         "hurdle": MeshSquareHurdleTerrainCfg(
             proportion=1.0/18,
             hurdle_height_range=(0.25, 0.6),
@@ -327,26 +344,6 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             platform_width=4.0,
             bar_width=0.05,
             mode="crawl",
-        ),
-        # --- T4 精准落足 (3/18) ---
-        "stepping_stones": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=1.0/18,
-            stone_height_max=0.01,
-            stone_width_range=(1.5, 1.5),
-            stone_distance_range=(0.1, 0.8),
-            holes_depth=-0.65,
-            platform_width=4.0,
-        ),
-        "stepping_stones2": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=1.0/18,
-            stone_height_max=0.01,
-            stone_width_range=(1.5, 1.5),
-            stone_distance_range=(0.1, 0.8),
-            holes_depth=-0.35,
-            platform_width=4.0,
-        ),
-        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=1.0/18, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=4.0
         ),
     },
 )
