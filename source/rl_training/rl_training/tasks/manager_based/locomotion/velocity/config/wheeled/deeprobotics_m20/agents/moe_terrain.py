@@ -2003,12 +2003,10 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     num_scan_channels: int = 32  # 16 fwd + 16 bwd (LidarPattern hemispherical)
     num_scan_rays: int = 31      # azimuth bins ±90° / 6°
     # ----- Plan B': scan latent 历史 (双尺度) -----
-    # offsets = "几帧前" 列表; [] 表示禁用. 默认: 4 帧 dense (短期 80ms) + 8 帧 sparse stride=5 (长期 800ms)
-    # 默认全局启用 (与模型 __init__ 默认一致); use_multilayer_scan=False 的 cfg 自动禁用.
-    # 实例化 SplitMoEActorCritic 时通过 kwargs 透传
-    scan_history_offsets: list = field(
-        default_factory=lambda: [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40]
-    )
+    # offsets = "几帧前" 列表; [] 表示禁用. 默认禁用 — 12 帧 dense+sparse 在两个 4-GPU run
+    # 上引发 PPO 优化震荡 (noise std 单调上升, illegal_contact 震荡 0→1→0→1).
+    # 单 cfg 想启用时显式覆盖 scan_history_offsets=[...] 即可.
+    scan_history_offsets: list = field(default_factory=list)
     scan_history_len: int = 0     # legacy 兼容 (若给非 0 则视作 dense [1..K])
     use_cnn: bool = False
     num_cameras: int = 2
