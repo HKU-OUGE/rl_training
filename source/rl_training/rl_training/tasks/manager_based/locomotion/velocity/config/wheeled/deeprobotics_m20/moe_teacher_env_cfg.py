@@ -787,12 +787,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         bwd_sensor.update_period = 0.1
         self.scene.backward_lidar = bwd_sensor
         # Rewards
-        self.rewards.is_terminated.weight = 0
-        self.rewards.lin_vel_z_l2.weight = -2.0
+        self.rewards.is_terminated.weight = -100
+        self.rewards.lin_vel_z_l2.weight = -0.03
         self.rewards.ang_vel_xy_l2.weight = -0.05
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_roll_l2.weight = -10.0
-        self.rewards.base_height_l2.weight = -0.5
+        self.rewards.base_height_l2.weight = 0.0
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
@@ -849,7 +849,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
         self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params["threshold"] = 0.25
+        self.rewards.feet_air_time.params["threshold"] = 0.2
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_air_time_long.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
@@ -869,7 +869,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        self.rewards.upward.weight = 0.08
+        self.rewards.upward.weight = 0.0
 
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()
@@ -891,9 +891,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             heading_control_stiffness=0.5,
             debug_vis=False,
             ranges=mdp.UniformVelocityCommandCfg.Ranges(
-                lin_vel_x=(-1.5, 1.5),
+                lin_vel_x=(-1.0, 1.0),
                 lin_vel_y=(-0.0, 0.0),
-                ang_vel_z=(-1.5, 1.5),
+                ang_vel_z=(-1.0, 1.0),
                 heading=(-math.pi, math.pi),
             ),
         )
