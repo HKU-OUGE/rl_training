@@ -531,7 +531,8 @@ class SplitMoEActorCritic(ActorCritic):
 
         # Plan B' 训练侧 buffer: per-env 滚动 N 帧 scan latent (N = max offset).
         # 约定: buffer[..., -1, :] = 最新 (t-1), buffer[..., 0, :] = 最老 (t-N)
-        # 推理 (act/act_inference) 时滚动 + 写入; PPO update replay 路径 (forward/evaluate) 只读不写
+        # 仅 rollout act/act_inference (2D 输入) 滚动并写入; PPO update (3D 输入) 走 _scan_history_attach
+        # 内的 trajectory-local 重建分支, 不读不写本 buffer.
         if self.use_scan_history:
             self.register_buffer(
                 "_scan_history_buf",
@@ -791,8 +792,10 @@ class SplitMoEActorCritic(ActorCritic):
                     self.estimator.train(was_training)
                 
                 if self.feed_estimator:
-                    vae_latent_for_rnn = z.detach() 
-                    vel_pred_for_rnn = vel_pred.detach() 
+                    # rollout 路径 estimator 处于 eval 模式 (z=mu); update 路径若用随机 z 会与 rollout 不一致
+                    # 导致 PPO ratio 在 epoch1 即偏移. 统一用 mu, recon/KL 仍用随机 z.
+                    vae_latent_for_rnn = mu.detach()
+                    vel_pred_for_rnn = vel_pred.detach()
                 
         elif self.estimator is not None and obs_dict is None:
             if self.feed_estimator:
@@ -885,9 +888,12 @@ class SplitMoEActorCritic(ActorCritic):
             wheel_act_sum += expert(latent) * w_wheel[..., i].unsqueeze(-1)
         total_action = torch.cat([leg_act_sum, wheel_act_sum], dim=-1)
 
-        with torch.no_grad():
-            def flat_mean(w): return w.reshape(-1, w.shape[-1]).mean(dim=0).detach()
-            self.latest_weights = {"leg": flat_mean(w_leg), "wheel": flat_mean(w_wheel)}
+        # 仅在 rollout (model.eval) 时记录 gate 权重; PPO update 一个 iter 会调用 20 次 minibatch + 镜像 obs,
+        # 让 wandb 上的 Gate/* 反映最后一个 minibatch 而不是 rollout 真实分布
+        if not self.training:
+            with torch.no_grad():
+                def flat_mean(w): return w.reshape(-1, w.shape[-1]).mean(dim=0).detach()
+                self.latest_weights = {"leg": flat_mean(w_leg), "wheel": flat_mean(w_wheel)}
             
         # 显式返回 Loss，不挂载到 self 上
         if return_aux_loss:
@@ -1889,16 +1895,18 @@ class SymmetricMoEDistillation(Distillation):
             obs_mirrored["estimator"] = e[..., est_swap_idx] * est_neg_mask
 
         if "noisy_elevation" in obs_mirrored.keys():
+            # self.policy 是 SplitMoEStudentTeacher 包装器; AE 配置在 .student 上
+            student = getattr(self.policy, "student", self.policy)
             env_raw = obs_mirrored["noisy_elevation"].clone()
-            if self.policy.use_elevation_ae:
-                elev = env_raw[..., :self.policy.elevation_dim]
-                elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], self.policy.elevation_dim)
-                env_raw[..., :self.policy.elevation_dim] = elev_mirrored
-            if getattr(self.policy, "use_multilayer_scan", False):
-                scan_start = self.policy.elevation_dim if self.policy.use_elevation_ae else 0
-                scan = env_raw[..., scan_start : scan_start + self.policy.scan_dim]
-                scan_mirrored = scan.view(*scan.shape[:-1], self.policy.num_scan_channels, self.policy.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], self.policy.scan_dim)
-                env_raw[..., scan_start : scan_start + self.policy.scan_dim] = scan_mirrored
+            if getattr(student, "use_elevation_ae", False):
+                elev = env_raw[..., :student.elevation_dim]
+                elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).view(*elev.shape[:-1], student.elevation_dim)
+                env_raw[..., :student.elevation_dim] = elev_mirrored
+            if getattr(student, "use_multilayer_scan", False):
+                scan_start = student.elevation_dim if student.use_elevation_ae else 0
+                scan = env_raw[..., scan_start : scan_start + student.scan_dim]
+                scan_mirrored = scan.view(*scan.shape[:-1], student.num_scan_channels, student.num_scan_rays).flip(dims=[-1]).view(*scan.shape[:-1], student.scan_dim)
+                env_raw[..., scan_start : scan_start + student.scan_dim] = scan_mirrored
             obs_mirrored["noisy_elevation"] = env_raw
         return obs_mirrored
 
