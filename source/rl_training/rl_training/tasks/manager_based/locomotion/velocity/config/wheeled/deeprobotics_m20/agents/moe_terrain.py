@@ -605,6 +605,12 @@ class SplitMoEActorCritic(ActorCritic):
         if not self.use_scan_history:
             return latent_scan
 
+        # RNN update path sends (T, B, D); flatten time into batch, restore after
+        leading_shape = None
+        if latent_scan.dim() == 3:
+            leading_shape = latent_scan.shape[:2]
+            latent_scan = latent_scan.reshape(-1, latent_scan.shape[-1])
+
         if scan_history_input is not None:
             # ONNX/deploy: 已经采样好的 (B, K, D), shape 兼容 (B, K*D)
             history = scan_history_input
@@ -626,7 +632,10 @@ class SplitMoEActorCritic(ActorCritic):
                         self._scan_history_buf.copy_(new_buf)
 
         full = torch.cat([latent_scan.unsqueeze(1), history], dim=1)  # (B, K+1, D)
-        return full.flatten(start_dim=1)
+        result = full.flatten(start_dim=1)
+        if leading_shape is not None:
+            result = result.reshape(*leading_shape, -1)
+        return result
 
     def _process_obs(self, x, obs_dict=None, normalizer=None, proprio_dim=None, compute_reconstruction=False,
                       scan_history_input=None, update_scan_history_buf=False):
