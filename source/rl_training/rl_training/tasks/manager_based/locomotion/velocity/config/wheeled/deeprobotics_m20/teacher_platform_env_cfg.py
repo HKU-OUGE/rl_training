@@ -27,13 +27,24 @@ class PlatformRewardsCfg(DeeproboticsM20RewardsCfg):
         },
     )
 
-    # 惩罚 base_link、hipx、hipy、knee 的 collision —— 强制策略用 wheel 接触台面,
-    # 抑制"半身在台、膝盖/大腿拖着另一半"的捷径解.
+    # 惩罚 base_link、hipx、hipy 的 collision —— 强制策略用 wheel 接触台面,
+    # 抑制"半身在台、大腿拖着另一半"的捷径解.
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-0.3,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*_hipx", ".*_hipy", ".*_knee"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*_hipx", ".*_hipy"]),
+            "threshold": 1.0,
+        }
+    )
+
+    # 单独把 knee 接触惩罚从 -0.3 降到 -0.1: 爬 30-60cm 高台时膝盖蹭平台边缘当杠杆是合理姿态,
+    # 重罚会迫使 policy 走捷径绕开高台.
+    undesired_contacts_knee = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-0.1,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_knee"]),
             "threshold": 1.0,
         }
     )

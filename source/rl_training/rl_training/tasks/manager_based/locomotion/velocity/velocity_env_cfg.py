@@ -343,8 +343,9 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "stiffness_distribution_params": (0.85, 1.15),
-            "damping_distribution_params": (0.85, 1.15),
+            # ±30% (was ±15%): 真机电机参数差异 + 温度漂移 + 老化, 让 policy 学到不依赖最大控制权威的爬升策略
+            "stiffness_distribution_params": (0.7, 1.3),
+            "damping_distribution_params": (0.7, 1.3),
             "operation": "scale",
             "distribution": "uniform",
         },
