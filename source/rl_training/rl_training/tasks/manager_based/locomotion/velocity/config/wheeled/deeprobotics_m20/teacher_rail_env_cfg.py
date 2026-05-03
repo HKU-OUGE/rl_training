@@ -189,9 +189,7 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-        self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
-        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
-        self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        # friction/restitution 沿用父类 [0.4, 1.4] (sim2real 拓宽); 删除此处 [0.6, 1.2] override
 
         if hasattr(self, "disable_zero_weight_rewards"):
             self.disable_zero_weight_rewards()

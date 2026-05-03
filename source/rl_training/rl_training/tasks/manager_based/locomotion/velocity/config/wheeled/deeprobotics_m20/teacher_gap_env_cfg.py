@@ -16,23 +16,33 @@ class GapRewardsCfg(DeeproboticsM20RewardsCfg):
     # 放宽 Roll/Pitch 惩罚
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.01)
 
-    # 鼓励长腾空时间：跨沟需要大步跨越
+    # 鼓励长腾空时间：跨沟需要大步跨越. threshold 0.3 → 0.4 鼓励 fully-committed jump
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_curriculum,
         weight=1.5,
         params={
             "command_name": "base_velocity",
-            "threshold": 0.3,
+            "threshold": 0.4,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel"),
         },
     )
 
-    # 严惩非轮接触：避免用身体刮蹭沟壑边缘
+    # 严惩 base/hipx/hipy 非轮接触：避免用身体刮蹭沟壑边缘
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-0.3,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base_link", ".*_hipx", ".*_hipy"]),
+            "threshold": 1.0,
+        }
+    )
+
+    # knee 单独轻惩 (-0.1, vs 主项 -0.3): knee 蹭石头边缘当杠杆是合理姿态; 与 PlatformRewardsCfg 保持一致
+    undesired_contacts_knee = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-0.1,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_knee"]),
             "threshold": 1.0,
         }
     )
@@ -132,12 +142,12 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.feet_height.weight = 0
         self.rewards.feet_height.params["target_height"] = 0.3
         self.rewards.feet_height.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_height_body.weight = 0
-        self.rewards.feet_height_body.params["target_height"] = -0.48  # was -0.4 (默认站姿实测 -0.44)
+        self.rewards.feet_height_body.weight = -0.1  # 轻微抑制匍匐 (was 0)
+        self.rewards.feet_height_body.params["target_height"] = -0.48  # 默认站姿实测 -0.44
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        self.rewards.upward.weight = 0.08
+        self.rewards.upward.weight = 0  # 跨大 hole 时身体会 pitch, "保持竖直"是反向信号 (was 0.08)
         self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
         self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
         self.rewards.joint_mirror_lr.weight = 0.0
@@ -175,9 +185,7 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-        self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.6, 1.2]
-        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.6, 1.2]
-        self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        # friction/restitution 沿用父类 [0.4, 1.4] (sim2real 拓宽); 删除此处 [0.6, 1.2] override
 
         if hasattr(self, "disable_zero_weight_rewards"):
             self.disable_zero_weight_rewards()
