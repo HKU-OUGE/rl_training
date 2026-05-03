@@ -312,9 +312,14 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             border_width=1.0,
             holes=False,
         ),
-        # --- gap (2/18) ---
-        "gaps": MeshGapTerrainCfg(
-            proportion=2.0/18, gap_width_range=(0.3, 0.8), platform_width=4.0, gap_depth=0.5
+        # --- gap (2/18) - 用 stepping_stones 实现, 多次跨越信号密度高于单一 MeshGap, 经验证效果更好 ---
+        "stepping_stones": terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=2.0/18,
+            stone_height_max=0.01,
+            stone_width_range=(1.5, 1.5),       # 大平台 (1.5m × 1.5m), 不需精准落足
+            stone_distance_range=(0.1, 0.8),    # difficulty 0→1 时 hole 宽度 0.1m → 0.8m
+            holes_depth=-0.65,
+            platform_width=4.0,
         ),
         # --- rail (2/18) ---
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
@@ -386,35 +391,44 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 )
 
 # [Teacher 7] 跨越沟壑专家 (Gap Crossing)
-# 运动模态：跨越宽沟 (需要高程+扫描感知)
-# 使用自定义 MeshGapTerrainCfg，gap_depth 参数确保沟底有实际地面 (非虚空)
-# gap_width_range 控制沟壑宽度，难度越高沟越宽
+# 运动模态：跨越多段连续沟 (需要高程+扫描感知)
+# 用 HfSteppingStonesTerrainCfg 代替 MeshGapTerrainCfg: 1.5m × 1.5m 大平台 + 0.1-0.8m 间距 hole,
+# 单 episode 多次跨越, 信号密度远高于单沟. 经验证 stepping_stones 训练 gap 行为效果更佳.
+# 4 个 sub-terrain 沿 holes_depth 提供难度梯度 (从 -0.35m 到 -0.8m).
 GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "gap_shallow": MeshGapTerrainCfg(
+        "stones_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
-            gap_width_range=(0.1, 0.8),
+            stone_height_max=0.01,
+            stone_width_range=(1.5, 1.5),
+            stone_distance_range=(0.1, 0.8),
+            holes_depth=-0.35,
             platform_width=4.0,
-            gap_depth=0.35,
         ),
-        "gap_mid": MeshGapTerrainCfg(
+        "stones_mid": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
-            gap_width_range=(0.1, 0.8),
+            stone_height_max=0.01,
+            stone_width_range=(1.5, 1.5),
+            stone_distance_range=(0.1, 0.8),
+            holes_depth=-0.5,
             platform_width=4.0,
-            gap_depth=0.5,
         ),
-        "gap_deep": MeshGapTerrainCfg(
+        "stones_deep": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
-            gap_width_range=(0.1, 0.8),
+            stone_height_max=0.01,
+            stone_width_range=(1.5, 1.5),
+            stone_distance_range=(0.1, 0.8),
+            holes_depth=-0.65,
             platform_width=4.0,
-            gap_depth=0.65,
         ),
-        "gap_very_deep": MeshGapTerrainCfg(
+        "stones_very_deep": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
-            gap_width_range=(0.1, 0.8),
+            stone_height_max=0.01,
+            stone_width_range=(1.5, 1.5),
+            stone_distance_range=(0.1, 0.8),
+            holes_depth=-0.8,
             platform_width=4.0,
-            gap_depth=0.8,
         ),
     }
 )
