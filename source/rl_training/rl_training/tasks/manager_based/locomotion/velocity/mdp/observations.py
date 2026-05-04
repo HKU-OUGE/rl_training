@@ -39,10 +39,15 @@ def phase(env: ManagerBasedRLEnv, cycle_time: float) -> torch.Tensor:
 # rl_training/source/rl_training/rl_training/tasks/manager_based/locomotion/velocity/mdp/observations.py
 
 def terrain_level_normalized(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """提取归一化的地形等级作为特权信息 (-1.0 到 1.0)"""
+    """提取归一化的地形等级作为特权信息 (0.0 到 1.0).
+
+    动态读 terrain.cfg.num_rows, 适配不同 task 的 num_rows 设定 (e.g. GAP=20, Platform/Scan=30).
+    若读不到 num_rows (旧版本或 None), 回退到 30.0.
+    """
     if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_levels"):
         levels = env.scene.terrain.terrain_levels.float().unsqueeze(1)
-        normalized_levels = levels / 30.0 
-        return normalized_levels
+        num_rows = getattr(getattr(env.scene.terrain, "cfg", None), "num_rows", None) or 30
+        max_level = max(int(num_rows) - 1, 1)
+        return levels / max_level
     else:
         return torch.zeros((env.num_envs, 1), device=env.device)
