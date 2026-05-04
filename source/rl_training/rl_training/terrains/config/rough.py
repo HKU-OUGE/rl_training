@@ -313,10 +313,11 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             holes=False,
         ),
         # --- gap (2/18) - 用 stepping_stones 实现, 多次跨越信号密度高于单一 MeshGap, 经验证效果更好 ---
+        # 8m 子地形: stone 2m + platform 4m → 正向 (8-4)/2=2m, 模态曝光约 1 次跨越; 多次跨越交给 GAP specialist (16m)
         "stepping_stones": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=2.0/18,
             stone_height_max=0.01,
-            stone_width_range=(1.5, 1.5),       # 大平台 (1.5m × 1.5m), 不需精准落足
+            stone_width_range=(2.0, 2.0),       # 大平台 (2m × 2m), 不需精准落足
             stone_distance_range=(0.1, 0.8),    # difficulty 0→1 时 hole 宽度 0.1m → 0.8m
             holes_depth=-0.65,
             platform_width=4.0,
@@ -396,12 +397,14 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 # 单 episode 多次跨越, 信号密度远高于单沟. 经验证 stepping_stones 训练 gap 行为效果更佳.
 # 4 个 sub-terrain 沿 holes_depth 提供难度梯度 (从 -0.35m 到 -0.8m).
 GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
-    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    # size 12→16, stone 1.5→2.0, platform 保持 4: 正向可用区 (16-4)/2=6m, 周期 ~2.4m → 2-3 次跨越; spawn 在 4m 平台中心安全
+    # num_rows 30→20: size 加大后 trimesh 面数翻倍, 减行数降总面数避免物理/碰撞失败
+    size=(16.0, 16.0), border_width=20.0, num_rows=20, num_cols=10, curriculum=True,
     sub_terrains={
         "stones_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
             stone_height_max=0.01,
-            stone_width_range=(1.5, 1.5),
+            stone_width_range=(2.0, 2.0),
             stone_distance_range=(0.1, 0.8),
             holes_depth=-0.35,
             platform_width=4.0,
@@ -409,7 +412,7 @@ GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         "stones_mid": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
             stone_height_max=0.01,
-            stone_width_range=(1.5, 1.5),
+            stone_width_range=(2.0, 2.0),
             stone_distance_range=(0.1, 0.8),
             holes_depth=-0.5,
             platform_width=4.0,
@@ -417,7 +420,7 @@ GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         "stones_deep": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
             stone_height_max=0.01,
-            stone_width_range=(1.5, 1.5),
+            stone_width_range=(2.0, 2.0),
             stone_distance_range=(0.1, 0.8),
             holes_depth=-0.65,
             platform_width=4.0,
@@ -425,7 +428,7 @@ GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
         "stones_very_deep": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
             stone_height_max=0.01,
-            stone_width_range=(1.5, 1.5),
+            stone_width_range=(2.0, 2.0),
             stone_distance_range=(0.1, 0.8),
             holes_depth=-0.8,
             platform_width=4.0,
