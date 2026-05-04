@@ -397,9 +397,9 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 # 单 episode 多次跨越, 信号密度远高于单沟. 经验证 stepping_stones 训练 gap 行为效果更佳.
 # 4 个 sub-terrain 沿 holes_depth 提供难度梯度 (从 -0.35m 到 -0.8m).
 GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
-    # size 12→16, stone 1.5→2.0, platform 保持 4: 正向可用区 (16-4)/2=6m, 周期 ~2.4m → 2-3 次跨越; spawn 在 4m 平台中心安全
-    # num_rows 30→20: size 加大后 trimesh 面数翻倍, 减行数降总面数避免物理/碰撞失败
-    size=(16.0, 16.0), border_width=20.0, num_rows=20, num_cols=10, curriculum=True,
+    # size 保持 12 (move_up 阈值 6m, 易于升级); stone 1.5→2.0, platform 4: 正向可用区 (12-4)/2=4m, 周期 ~2.4m → 1-2 次跨越
+    # num_rows 30→20: 配合 size 减面数, 避免物理失败
+    size=(12.0, 12.0), border_width=20.0, num_rows=20, num_cols=10, curriculum=True,
     sub_terrains={
         "stones_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
             proportion=0.25,
