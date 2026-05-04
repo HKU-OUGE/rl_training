@@ -64,9 +64,9 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
 
         # 2. 速度指令 (2.5D 闭环纠偏)
         if self.commands.base_velocity is not None:
-            self.commands.base_velocity.rel_heading_envs = 1.0
+            self.commands.base_velocity.rel_heading_envs = 0.85
             self.commands.base_velocity.heading_command = True
-            self.commands.base_velocity.heading_control_stiffness = 0.5
+            self.commands.base_velocity.heading_control_stiffness = 1.0
             self.commands.base_velocity.ranges.heading = (0.0, 0.0)
             self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)

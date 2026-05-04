@@ -113,9 +113,9 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             asset_name="robot",
             resampling_time_range=(10.0, 10.0),
             rel_standing_envs=0.05,
-            rel_heading_envs=1.0,
+            rel_heading_envs=0.85,
             heading_command=True,
-            heading_control_stiffness=0.5,
+            heading_control_stiffness=1.0,
             debug_vis=False,
             ranges=mdp.UniformThresholdVelocityCommandCfg.Ranges(
                 lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
@@ -126,13 +126,12 @@ class DeeproboticsM20TeacherScanEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         # 3. 强制 2.5D 运动模式 (基于 Heading 的闭环纠偏)
         # ---------------------------------------------------------
         if self.commands.base_velocity is not None:
-            # 1. 开启 100% 的 Heading 控制
-            self.commands.base_velocity.rel_heading_envs = 1.0 
+            # 1. 开启 85% 的 Heading 控制 (留 15% 直接采样 wz, 让 actor 见过大 yaw 纠偏场景)
+            self.commands.base_velocity.rel_heading_envs = 0.85
             self.commands.base_velocity.heading_command = True
-            
-            # P控制器的刚度，0.5是一个很好的默认值。
-            # 如果发现机器人纠偏太慢，可以稍微调大到 1.0
-            self.commands.base_velocity.heading_control_stiffness = 0.5 
+
+            # P 控制器的刚度: 0.5 → 1.0 (提高 wz_cmd 振幅, 高过 IMU 噪声地板)
+            self.commands.base_velocity.heading_control_stiffness = 1.0
 
             # 2. 锁定目标参数
             # 目标航向角永远是 0 (面朝正前方跑道)

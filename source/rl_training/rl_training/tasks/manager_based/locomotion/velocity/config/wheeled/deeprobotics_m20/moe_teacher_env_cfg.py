@@ -348,7 +348,7 @@ class DeeproboticsM20ObservationsCfg:
         )
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
-            noise=Unoise(n_min=-0.2, n_max=0.2),
+            noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-100.0, 100.0),
             scale=0.25, 
         )
@@ -409,7 +409,7 @@ class DeeproboticsM20ObservationsCfg:
         base_lin_vel = None
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
-            noise=Unoise(n_min=-0.2, n_max=0.2),
+            noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-100.0, 100.0),
             scale=0.25, 
         )
@@ -502,11 +502,11 @@ class DeeproboticsM20ObservationsCfg:
 
     @configclass
     class EstimatorCfg(ObsGroup):
-        history_length = 15  
-        flatten_history_dim = True 
+        history_length = 15
+        flatten_history_dim = True
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
-            noise=Unoise(n_min=-0.2, n_max=0.2),
+            noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-100.0, 100.0),
             scale=0.25, 
         )
@@ -557,7 +557,7 @@ class DeeproboticsM20ObservationsCfg:
         )
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
-            noise=Unoise(n_min=-0.2, n_max=0.2),
+            noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
@@ -887,9 +887,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             asset_name="robot",
             resampling_time_range=(10.0, 10.0),
             rel_standing_envs=0.02,
-            rel_heading_envs=1.0,
+            rel_heading_envs=0.85,
             heading_command=True,
-            heading_control_stiffness=0.5,
+            heading_control_stiffness=1.0,
             debug_vis=False,
             ranges=mdp.UniformVelocityCommandCfg.Ranges(
                 lin_vel_x=(-1.0, 1.0),
