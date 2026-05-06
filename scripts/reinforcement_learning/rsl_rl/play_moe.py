@@ -32,6 +32,9 @@ parser.add_argument("--keyboard", action="store_true", default=False, help="Whet
 parser.add_argument("--export", action="store_true", default=True, help="Whether to export ONNX/TorchScript and Configs.")
 parser.add_argument("--joystick", action="store_true", default=False, help="Whether to use joystick/gamepad.")
 parser.add_argument("--logbag", type=str, default="", help="Path to save offline test logbag (e.g. logbag.jsonl)")
+parser.add_argument("--vis-scan-obs", action="store_true", default=False,
+                    help="Visualize post-augmentation LiDAR scan obs as 3D markers (env 0). "
+                         "绿球=valid, 红球=blind/dropout. 与 Isaac Sim Scene Debug 里的 forward/backward_lidar 原始点对照看.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app_launcher = AppLauncher(args)
@@ -796,10 +799,136 @@ def main():
         cur_difficulty = base_env.scene.terrain.terrain_levels[0].item()
     if hasattr(base_env.scene.terrain, "terrain_types"):
         cur_subterrain = base_env.scene.terrain.terrain_types[0].item()
+
+    # ===== Scan obs 可视化 (post-augmentation, 4 色分类) =====
+    # 绿 (valid)     : obs 没被增强干掉, 落在策略真实"看到"的位置 (含 noise+latency 偏移)
+    # 黄 (ramp)      : obs blind 且 raw_depth ∈ [0, 0.35]m → 距离渐变盲区干掉的
+    # 紫 (random)    : obs blind 且 raw_depth ∈ [0.35, 2.4]m → 30-50% 随机 dropout 干掉的
+    # 红 (no_return) : obs blind 且 raw 无 hit / >2.4m → 真无回波 (天空/超量程, 真机也是这样)
+    # 黄/紫/红 都画在距 sensor 2.5m 的射线方向上 (= 策略的 "max_distance 球壳" 认知)
+    scan_vis_markers = None
+    if args.vis_scan_obs:
+        import isaaclab.sim as sim_utils
+        from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+        scan_vis_cfg = VisualizationMarkersCfg(
+            prim_path="/Visuals/scan_obs_pts",
+            markers={
+                "valid": sim_utils.SphereCfg(
+                    radius=0.04,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                ),
+                "ramp": sim_utils.SphereCfg(
+                    radius=0.028,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.95, 0.0)),
+                ),
+                "random": sim_utils.SphereCfg(
+                    radius=0.028,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.65, 0.0, 1.0)),
+                ),
+                "no_return": sim_utils.SphereCfg(
+                    radius=0.018,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                ),
+            },
+        )
+        scan_vis_markers = VisualizationMarkers(scan_vis_cfg)
+        print("[ScanVis] post-aug scan markers enabled (env 0). 绿=valid, 黄=ramp, 紫=random_dropout, 红=true_no_return.")
+        print("[ScanVis] 诊断日志写入 /tmp/scan_vis_diag.log — 另开终端 `tail -f /tmp/scan_vis_diag.log` 查看")
+        # 清空旧日志
+        try:
+            with open("/tmp/scan_vis_diag.log", "w") as _f:
+                _f.write("# ScanVis diagnostic log\n")
+        except Exception:
+            pass
+
+    _scan_vis_diag = {"step": 0, "ramp_seen": 0, "last_print": -1}
+
+    def _update_scan_obs_markers(env_obs_dict, env_idx=0):
+        """4 色分类: 区分 valid / ramp / random_dropout / true_no_return."""
+        if "noisy_elevation" not in env_obs_dict:
+            return
+        noisy = env_obs_dict["noisy_elevation"][env_idx]  # (992,)
+        pts_list, idx_list = [], []
+        # 收集诊断
+        diag_counts = [0, 0, 0, 0]   # valid, ramp, random, no_return
+        diag_raw_min = float("inf")
+        diag_raw_close_count = 0      # 当前帧 raw_d < 0.35 的射线数
+
+        for sname, slc in [("forward_lidar", slice(0, 496)), ("backward_lidar", slice(496, 992))]:
+            sensor = base_env.scene.sensors[sname]
+            # 用 _ray_starts_w (真实射线起点, 含 offset) 而非 data.pos_w (= base_link).
+            ray_starts = sensor._ray_starts_w[env_idx]          # (496, 3) — 每条射线的世界起点
+            hits = sensor.data.ray_hits_w[env_idx]              # (496, 3)
+            vec = hits - ray_starts
+            raw_d = vec.norm(dim=-1)                            # (496,) — 真正的 sensor→hit 深度
+            ray_dir = torch.nan_to_num(
+                vec / raw_d.clamp(min=1e-3).unsqueeze(-1),
+                nan=0.0, posinf=0.0, neginf=0.0,
+            )
+
+            obs_norm = noisy[slc]
+            obs_depth = (obs_norm * 2.5).clamp(0.0, 2.5)
+            obs_blind = obs_norm > 0.95
+            raw_finite = torch.isfinite(raw_d)
+            raw_clean = torch.where(raw_finite, raw_d, torch.full_like(raw_d, 99.0))
+
+            # 分类 (默认 0=valid)
+            idx = torch.zeros_like(obs_blind, dtype=torch.long)
+            no_return = obs_blind & ((~raw_finite) | (raw_clean > 2.4))
+            ramp = obs_blind & (~no_return) & (raw_clean < 0.35)
+            random_drop = obs_blind & (~no_return) & (raw_clean >= 0.35)
+            idx = torch.where(ramp, torch.full_like(idx, 1), idx)
+            idx = torch.where(random_drop, torch.full_like(idx, 2), idx)
+            idx = torch.where(no_return, torch.full_like(idx, 3), idx)
+
+            # 位置: valid → obs 深度 (含噪/延迟); blind 三类 → 2.5m 球壳 (策略的"max_dist 认知")
+            # 起点用 ray_starts (真实 sensor 位置), 不是 base_link
+            depth_for_vis = torch.where(obs_blind, torch.full_like(obs_depth, 2.5), obs_depth)
+            new_pts = ray_starts + ray_dir * depth_for_vis.unsqueeze(-1)
+
+            pts_list.append(new_pts)
+            idx_list.append(idx)
+
+            # 累计诊断
+            diag_counts[0] += int((idx == 0).sum().item())
+            diag_counts[1] += int((idx == 1).sum().item())
+            diag_counts[2] += int((idx == 2).sum().item())
+            diag_counts[3] += int((idx == 3).sum().item())
+            if raw_finite.any():
+                diag_raw_min = min(diag_raw_min, float(raw_clean[raw_finite].min().item()))
+            diag_raw_close_count += int((raw_finite & (raw_d < 0.35)).sum().item())
+
+        all_pts = torch.cat(pts_list, dim=0).cpu().numpy()
+        all_idx = torch.cat(idx_list, dim=0).cpu().numpy().tolist()
+        scan_vis_markers.visualize(translations=all_pts, marker_indices=all_idx)
+
+        # ---- 诊断打印 ----
+        s = _scan_vis_diag
+        s["step"] += 1
+        if diag_counts[1] > 0:
+            s["ramp_seen"] += 1
+        # 触发条件: 每 60 帧 (~1.2s) 打印一次, 或 raw_d 出现 < 0.35 的射线时强制打印
+        force = diag_raw_close_count > 0 and s["last_print"] != s["step"]
+        periodic = (s["step"] % 60 == 0)
+        if force or periodic:
+            s["last_print"] = s["step"]
+            line = (f"[ScanVis step={s['step']:5d}] "
+                    f"green={diag_counts[0]:3d}  yellow={diag_counts[1]:3d}  "
+                    f"purple={diag_counts[2]:3d}  red={diag_counts[3]:3d}  "
+                    f"| raw_min={diag_raw_min:.2f}m  raw<0.35: {diag_raw_close_count} rays  "
+                    f"| ramp_seen_total={s['ramp_seen']}/{s['step']}\n")
+            try:
+                with open("/tmp/scan_vis_diag.log", "a") as _f:
+                    _f.write(line)
+            except Exception:
+                pass
+
     step = 0
     with torch.inference_mode():
         while simulation_app.is_running():
             obs_dict = base_env.obs_buf
+            if scan_vis_markers is not None:
+                _update_scan_obs_markers(obs_dict, env_idx=0)
             log_dict = None
             if args.logbag and step > 0: # step 0 的 last_action 是空的，跳过
                 robot = base_env.scene["robot"]

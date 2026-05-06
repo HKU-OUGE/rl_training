@@ -4,8 +4,23 @@
 # Copyright (c) 2024-2025 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 import math
+import os
 import torch # Added torch for depth calculation
 import torch.nn.functional as F
+
+# ==============================================================================
+# Scan sim2real augmentation toggle
+# ==============================================================================
+# 控制 multi_layer_scan 的增强 (距离 ramp / 随机 dropout / latency / 噪声放大).
+# bug 修复 (sensor._ray_starts_w 替代 data.pos_w) **始终生效** — 那是正确性修复, 不可关闭.
+#   SCAN_AUG=1 (默认): 全部增强 + 噪声 ±0.02
+#   SCAN_AUG=0       : 原始逻辑 (hard <0.3m 截断, 无 dropout/latency, 噪声 ±0.005)
+# 用法:
+#   python train_moe.py ...                    # 默认开增强
+#   SCAN_AUG=0 python train_moe.py ...         # 控制变量, baseline
+SCAN_AUG_ENABLED = os.environ.get("SCAN_AUG", "1") == "1"
+_SCAN_NOISE_AMP = 0.02 if SCAN_AUG_ENABLED else 0.005
+print(f"[moe_teacher_env_cfg] SCAN_AUG_ENABLED = {SCAN_AUG_ENABLED}  (noise=±{_SCAN_NOISE_AMP})")
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -93,25 +108,82 @@ def student_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normal
     depths = img.flatten(start_dim=1)
     return process_lidar_data(depths, is_student=True)
 def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """处理多层雷达扫描，输出归一化的距离数组 (严格区分安全区与盲区)"""
-    sensor = env.scene.sensors[sensor_cfg.name]
-    
-    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
-    depths = torch.norm(rel_vec, dim=-1)
+    """半球 LiDAR scan + sim2real 增强 (匹配真机 lidar_to_scan.cpp 行为).
 
-    # 将 NaN 和 inf 视为安全距离 (2.5m)
+    增强项:
+      1) 距离渐变盲区: depth ≤ 0.1m P=1, 0.1-0.35m 线性概率, ≥ 0.35m P=0
+      2) 随机 bin dropout: per-env [0.3, 0.5] 概率, 每 bin 独立采样
+         (模拟 Robosense Airy Lissajous 扫描密度不均, 真机大量 bin 是 no-hit)
+      3) per-episode 随机延迟 0-200ms (50Hz → 0-10 步), reset 重采样
+      4) 归一化 [0, 1], 盲区/no-hit = 1.0 (= 真机 max_distance 2.5m)
+    输出后 ObsTerm 还会叠加 Unoise (在归一化空间)。
+    """
+    sensor = env.scene.sensors[sensor_cfg.name]
+    # 用 _ray_starts_w (真实射线起点世界坐标, 含 OffsetCfg 偏移), 而不是 data.pos_w (= base_link).
+    # 验证脚本 verify_lidar_extrinsics.py 证实 data.pos_w 报的是父 prim, 用它会让深度系统性大 ~0.32m,
+    # 与真机 lidar_to_scan.cpp (从 sensor offset 计算) 之间产生 sim2real 偏差。
+    rel_vec = sensor.data.ray_hits_w - sensor._ray_starts_w
+    depths = torch.norm(rel_vec, dim=-1)
     depths = torch.nan_to_num(depths, posinf=2.5, neginf=2.5, nan=2.5)
 
-    # 归一化：[0, 2.5] 映射到 [0.0, 1.0] —— 近场聚焦：robot 长 2m，主要交互 < 2.5m
-    normalized_depths = torch.clip(depths / 2.5, 0.0, 1.0)
+    # ===== SCAN_AUG=0 baseline 路径: 原始逻辑 (硬 <0.3m 盲区, 无 dropout/latency) =====
+    if not SCAN_AUG_ENABLED:
+        normalized = torch.clip(depths / 2.5, 0.0, 1.0)
+        normalized = torch.where(depths < 0.3, torch.ones_like(normalized), normalized)
+        return normalized
 
-    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 2.5m)
-    normalized_depths = torch.where(
-        depths < 0.3,
-        torch.full_like(normalized_depths, 1.0),
-        normalized_depths
-    )
-    return normalized_depths
+    num_envs, num_rays = depths.shape
+    device = depths.device
+
+    # --- 1. 距离渐变盲区 (替代原 <0.3m 硬阈值) ---
+    blind_prob_dist = torch.clamp((0.35 - depths) / (0.35 - 0.1), 0.0, 1.0)
+    mask_dist = torch.rand_like(depths) < blind_prob_dist
+
+    # --- 2. 随机 bin dropout (per-env 30-50% rate) ---
+    rate = 0.3 + 0.2 * torch.rand((num_envs, 1), device=device)
+    mask_random = torch.rand_like(depths) < rate
+
+    # 合并盲区 → 填 max_distance (2.5m)
+    blind_mask = mask_dist | mask_random
+    depths = torch.where(blind_mask, torch.full_like(depths, 2.5), depths)
+
+    # --- 3. 0-200ms per-episode 延迟 (50Hz → 0-10 步, head 指针式环形 buffer) ---
+    MAX_LATENCY = 10  # 200ms @ step_dt=0.02s
+    BUF_LEN = MAX_LATENCY + 1
+    buf_attr = f"_scan_buf_{sensor_cfg.name}"
+    head_attr = f"_scan_head_{sensor_cfg.name}"
+    delay_attr = f"_scan_delay_{sensor_cfg.name}"
+
+    if not hasattr(env, buf_attr):
+        setattr(env, buf_attr, depths.unsqueeze(1).repeat(1, BUF_LEN, 1).clone())
+        setattr(env, head_attr, 0)
+        setattr(env, delay_attr, torch.randint(0, BUF_LEN, (num_envs,), device=device))
+
+    buf = getattr(env, buf_attr)
+    head = getattr(env, head_attr)
+    delay = getattr(env, delay_attr)
+
+    # 写入当前帧 → head 槽位
+    buf[:, head, :] = depths
+
+    # 读 (head - delay) mod BUF_LEN
+    read_idx = (head - delay) % BUF_LEN
+    env_arange = torch.arange(num_envs, device=device)
+    delayed = buf[env_arange, read_idx, :].clone()
+
+    # 推进 head
+    setattr(env, head_attr, (head + 1) % BUF_LEN)
+
+    # reset 处理: 清空对应行的 buffer + 重采样 delay + 输出当前帧
+    if hasattr(env, "reset_buf"):
+        reset_idx = torch.where(env.reset_buf > 0)[0]
+        if reset_idx.numel() > 0:
+            buf[reset_idx] = depths[reset_idx].unsqueeze(1).repeat(1, BUF_LEN, 1)
+            delay[reset_idx] = torch.randint(0, BUF_LEN, (reset_idx.numel(),), device=device)
+            delayed[reset_idx] = depths[reset_idx]
+
+    # --- 4. 归一化到 [0, 1] ---
+    return torch.clip(delayed / 2.5, 0.0, 1.0)
 
 def height_scan_sim2real(
     env, 
@@ -397,8 +469,9 @@ class DeeproboticsM20ObservationsCfg:
         # height_scan 已禁用 —— 真机 elevation map sim2real gap 太大，改用半球 LIDAR 代替
         height_scan = None
         # --- 前后两个半球 LidarPattern sensor (16 ch × 31 az = 496/sensor, 共 992) ---
-        forward_scan = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_lidar")}, noise=Unoise(n_min=-0.005, n_max=0.005))
-        backward_scan = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_lidar")}, noise=Unoise(n_min=-0.005, n_max=0.005))
+        # 噪声幅度由 SCAN_AUG 环境变量控制 (±0.02 增强 / ±0.005 baseline)
+        forward_scan = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_lidar")}, noise=Unoise(n_min=-_SCAN_NOISE_AMP, n_max=_SCAN_NOISE_AMP))
+        backward_scan = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_lidar")}, noise=Unoise(n_min=-_SCAN_NOISE_AMP, n_max=_SCAN_NOISE_AMP))
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
