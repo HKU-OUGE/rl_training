@@ -397,40 +397,28 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 # 单 episode 多次跨越, 信号密度远高于单沟. 经验证 stepping_stones 训练 gap 行为效果更佳.
 # 4 个 sub-terrain 沿 holes_depth 提供难度梯度 (从 -0.35m 到 -0.8m).
 GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
-    # size 保持 12 (move_up 阈值 6m, 易于升级); stone 1.5→2.0, platform 4: 正向可用区 (12-4)/2=4m, 周期 ~2.4m → 1-2 次跨越
-    # num_rows 30→20: 配合 size 减面数, 避免物理失败
+    # size 保持 12 (move_up 阈值 6m, 易于升级); stone 2m, platform 4: 正向 (12-4)/2=4m, 周期 ~2.4m → 1-2 次跨越
+    # num_rows 20: 配合 size 减面数, 避免物理失败
+    # horizontal_scale 0.1→0.2: hf cell 数从 120²→60² (4× mesh 减小, raycast 加速)
+    #   配套: stone_distance_range[0] 0.1→0.2 (0.1m / 0.2scale = 0 cell, 会变成无 gap)
+    # sub_terrains 4→2: 课程聚焦 stone_distance 推进, holes_depth 只 2 档 (shallow/deep)
     size=(12.0, 12.0), border_width=20.0, num_rows=20, num_cols=10, curriculum=True,
+    horizontal_scale=0.2,
     sub_terrains={
         "stones_shallow": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.25,
+            proportion=0.5,
             stone_height_max=0.01,
             stone_width_range=(2.0, 2.0),
-            stone_distance_range=(0.1, 0.8),
-            holes_depth=-0.35,
-            platform_width=4.0,
-        ),
-        "stones_mid": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.25,
-            stone_height_max=0.01,
-            stone_width_range=(2.0, 2.0),
-            stone_distance_range=(0.1, 0.8),
-            holes_depth=-0.5,
+            stone_distance_range=(0.2, 0.8),
+            holes_depth=-0.4,
             platform_width=4.0,
         ),
         "stones_deep": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.25,
+            proportion=0.5,
             stone_height_max=0.01,
             stone_width_range=(2.0, 2.0),
-            stone_distance_range=(0.1, 0.8),
-            holes_depth=-0.65,
-            platform_width=4.0,
-        ),
-        "stones_very_deep": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.25,
-            stone_height_max=0.01,
-            stone_width_range=(2.0, 2.0),
-            stone_distance_range=(0.1, 0.8),
-            holes_depth=-0.8,
+            stone_distance_range=(0.2, 0.8),
+            holes_depth=-0.7,
             platform_width=4.0,
         ),
     }
