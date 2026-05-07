@@ -22,7 +22,7 @@ class GapRewardsCfg(DeeproboticsM20RewardsCfg):
         weight=1.5,
         params={
             "command_name": "base_velocity",
-            "threshold": 0.4,
+            "threshold": 0.3,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel"),
         },
     )
@@ -67,7 +67,7 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             self.commands.base_velocity.rel_heading_envs = 0.85
             self.commands.base_velocity.heading_command = True
             self.commands.base_velocity.heading_control_stiffness = 1.0
-            self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+            self.commands.base_velocity.ranges.heading = (-math.pi, math.pi),
             self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
             self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
             self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
@@ -157,8 +157,8 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.terminations.bad_orientation_2 = None
 
         # 5. 课程学习
-        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (1.0, 1.0)
-        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (1.0, 1.0)
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.1, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.5, 1.0)
 
         # 6. 随机化 (yaw 固定为 0)
         self.events.randomize_reset_base.params = {
@@ -168,7 +168,7 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
                 "z": (0.0, 0.0),
                 "roll": (-0.3, 0.3),
                 "pitch": (-0.3, 0.3),
-                "yaw": (0.0, 0.0),
+                "yaw": (-3.14, 3.14),
             },
             "velocity_range": {
                 "x": (-0.2, 0.2),
