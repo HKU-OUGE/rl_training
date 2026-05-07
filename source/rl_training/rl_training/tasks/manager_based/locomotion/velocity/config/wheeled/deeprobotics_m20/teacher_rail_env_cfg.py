@@ -5,7 +5,6 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 import math
 import rl_training.tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab.sensors import ContactSensorCfg
 
 
 @configclass
@@ -54,17 +53,11 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        # 1. 地形
+        # 1. 地形: RAIL_TEACHER_TERRAINS_CFG 自带栏杆 + 平台 + 地面 (一体 trimesh, 单一 /World/ground)
+        # 优势: 栏杆已经在 /World/ground 内, lidar 默认 mesh_prim_paths 就能 raycast, 也不需要
+        # 处理 per-env replication / env_origin 偏移 / PhysX filter count 等麻烦事。
+        # rail height 5cm-40cm 由 sub_terrain 的 rail_height_range + curriculum=True 控制。
         self.scene.terrain.terrain_generator = RAIL_TEACHER_TERRAINS_CFG
-
-        # 2. 障碍物碰撞传感器
-        self.scene.obstacle_sensor = ContactSensorCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/.*",
-            filter_prim_paths_expr=["/World/ground/.*"],
-            update_period=0.02,
-            debug_vis=True,
-            force_threshold=2.0,
-        )
 
         # 3. 速度指令 (2.5D 闭环纠偏)
         if self.commands.base_velocity is not None:
@@ -156,8 +149,11 @@ class DeeproboticsM20TeacherRailEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.track_lin_vel_xy_exp.func = mdp.track_lin_vel_xy_exp_curriculum
         self.rewards.track_ang_vel_z_exp.func = mdp.track_ang_vel_z_exp_curriculum
 
-        # 5. 终止条件
-        self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name]
+        # 5. 终止条件: illegal_contact 监控所有非轮子部件
+        # 任何非轮子 link (base/hipx/hipy/knee/...) 触碰任何东西 → reset
+        # 这覆盖: 摔倒, 撞栏 (身体接触栏杆), 腿擦地; 唯一漏: 轮子单纯接触栏杆
+        # 但物理上只有当机器人无法跨越时身体才会撞栏 → 所有"失败"案例都被覆盖
+        self.terminations.illegal_contact.params["sensor_cfg"].body_names = ["^(?!.*_wheel).*"]
         self.terminations.bad_orientation_2 = None
 
         # 6. 课程学习

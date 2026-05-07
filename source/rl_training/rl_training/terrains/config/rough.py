@@ -4,7 +4,7 @@ import isaaclab.terrains as terrain_gen
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 from isaaclab.terrains import FlatPatchSamplingCfg, TerrainImporter, TerrainImporterCfg
 
-from rl_training.terrains import MeshGapTerrainCfg, MeshSquareHurdleTerrainCfg
+from rl_training.terrains import MeshGapTerrainCfg, MeshRailsOnlyTerrainCfg, MeshSquareHurdleTerrainCfg
 
 # ==============================================================================
 # 1. 基础配置参数
@@ -457,6 +457,43 @@ RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
             platform_width=4.0,
         ),
     }
+)
+
+# [Teacher 8 — alt] Rail teacher 平地版 (与 RAIL_ONLY_TERRAINS_CFG 配套使用)
+# 这版专门为 "two TerrainImporterCfg" 模式设计:
+#   /World/ground (本 cfg, 平地)  + /World/rails (RAIL_ONLY_TERRAINS_CFG, 栏杆-only)
+# 拆分到不同 prim path 让 ContactSensor 用 filter 区分 wheel→ground vs link→rail
+# 注意: noise_step 必须 >= vertical_scale (默认 0.005), 否则 random_uniform_terrain 量化后 /0
+RAIL_FLAT_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(12.0, 12.0), border_width=20.0,
+    num_rows=10, num_cols=10, curriculum=False,
+    horizontal_scale=0.2,
+    vertical_scale=0.005,
+    sub_terrains={
+        "flat": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=1.0,
+            noise_range=(0.0, 0.005),  # 0~5mm 高度噪声 (本质就是平地)
+            noise_step=0.005,           # 1 cell 步长
+            border_width=0.25,
+        ),
+    },
+)
+
+# [Teacher 8 — alt rails] 只生成栏杆 mesh, 不带 ground box, 配合 RAIL_FLAT_TERRAINS_CFG 用
+# Curriculum: rail_height 5cm → 40cm 随 terrain_level 推进
+# **layout 必须严格对齐 RAIL_FLAT_TERRAINS_CFG** (size/num_rows/num_cols/border_width 一致),
+# 否则 env_origins 不重合, rails 的某些 row 在 ground 之外 → 机器人下方无地面
+RAIL_ONLY_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(12.0, 12.0), border_width=20.0,
+    num_rows=10, num_cols=10, curriculum=True,
+    sub_terrains={
+        "rails": MeshRailsOnlyTerrainCfg(
+            proportion=1.0,
+            rail_thickness_range=(0.05, 0.05),
+            rail_height_range=(0.05, 0.4),  # 5cm → 40cm
+            platform_width=4.0,             # 中央 4×4m 留空给机器人活动
+        ),
+    },
 )
 
 # 向后兼容别名

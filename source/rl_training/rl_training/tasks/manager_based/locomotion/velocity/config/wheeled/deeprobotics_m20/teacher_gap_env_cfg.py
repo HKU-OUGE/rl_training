@@ -69,7 +69,7 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
             self.commands.base_velocity.heading_control_stiffness = 1.0
             self.commands.base_velocity.ranges.heading = (-math.pi, math.pi)
             self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
-            self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+            self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
             self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
 
         # 3. 奖励

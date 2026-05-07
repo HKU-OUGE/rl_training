@@ -55,3 +55,25 @@ class MeshGapTerrainCfg(SubTerrainBaseCfg):
     gap_depth: float | None = 0.5
     """Depth of the gap floor below the walking surface (m).
     ``None`` gives an infinite-depth gap (no floor mesh)."""
+
+
+@configclass
+class MeshRailsOnlyTerrainCfg(SubTerrainBaseCfg):
+    """Rails-only terrain (no ground box). Use with separate /World/ground plane.
+
+    Identical to IsaacLab's :class:`MeshRailsTerrainCfg` but skips the 1m ground
+    box generation. Designed for two-importer scenes where the ground plane is at
+    a different prim path (e.g. /World/ground) and a ContactSensor filter on the
+    rails prim must NOT match wheel-ground contacts.
+    """
+
+    function = custom_terrains.mesh_rails_only_terrain
+
+    rail_thickness_range: tuple[float, float] = MISSING
+    """Inner and outer rail bar thickness (m), pair like (0.05, 0.06)."""
+
+    rail_height_range: tuple[float, float] = MISSING
+    """Rail bar height range at difficulty (0, 1) (m)."""
+
+    platform_width: float = 1.0
+    """Width of the central clear platform (m), no rails inside this region."""

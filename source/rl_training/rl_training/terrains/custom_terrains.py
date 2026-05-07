@@ -6,7 +6,7 @@ import numpy as np
 import trimesh
 
 if TYPE_CHECKING:
-    from .custom_terrains_cfg import MeshGapTerrainCfg, MeshSquareHurdleTerrainCfg
+    from .custom_terrains_cfg import MeshGapTerrainCfg, MeshRailsOnlyTerrainCfg, MeshSquareHurdleTerrainCfg
 
 
 def square_hurdle_terrain(
@@ -107,6 +107,48 @@ def gap_terrain(
         )
 
     origin = np.array([center_x, center_y, 0.0])
+    return meshes_list, origin
+
+
+def mesh_rails_only_terrain(
+    difficulty: float, cfg: MeshRailsOnlyTerrainCfg
+) -> tuple[list[trimesh.Trimesh], np.ndarray]:
+    """Same as IsaacLab's MeshRailsTerrainCfg but **without the ground box**.
+
+    The original :class:`isaaclab.terrains.trimesh.MeshRailsTerrainCfg` generates
+    rails AND a 1m-thick ground box under them. When placed at a non-ground prim
+    path, wheel-ground contact would still be reported (and trigger any contact
+    filter on that prim path). This variant emits ONLY the rail meshes; pair it
+    with a separate flat ground plane at /World/ground.
+    """
+    rail_height = cfg.rail_height_range[0] + difficulty * (
+        cfg.rail_height_range[1] - cfg.rail_height_range[0]
+    )
+    rail_1_thickness, rail_2_thickness = cfg.rail_thickness_range
+    rail_center = (0.5 * cfg.size[0], 0.5 * cfg.size[1], rail_height * 0.5)
+    rail_2_ratio = 0.6
+
+    meshes_list: list[trimesh.Trimesh] = []
+
+    # 内框 rails (close to the central platform)
+    rail_1_inner_size = (cfg.platform_width, cfg.platform_width)
+    rail_1_outer_size = (
+        cfg.platform_width + 2.0 * rail_1_thickness,
+        cfg.platform_width + 2.0 * rail_1_thickness,
+    )
+    meshes_list += _make_border(rail_1_outer_size, rail_1_inner_size, rail_height, rail_center)
+
+    # 外框 rails (between inner rail and terrain border)
+    rail_2_inner_x = cfg.platform_width + (cfg.size[0] - cfg.platform_width) * rail_2_ratio
+    rail_2_inner_y = cfg.platform_width + (cfg.size[1] - cfg.platform_width) * rail_2_ratio
+    rail_2_inner_size = (rail_2_inner_x, rail_2_inner_y)
+    rail_2_outer_size = (
+        rail_2_inner_x + 2.0 * rail_2_thickness,
+        rail_2_inner_y + 2.0 * rail_2_thickness,
+    )
+    meshes_list += _make_border(rail_2_outer_size, rail_2_inner_size, rail_height, rail_center)
+
+    origin = np.array([0.5 * cfg.size[0], 0.5 * cfg.size[1], 0.0])
     return meshes_list, origin
 
 
