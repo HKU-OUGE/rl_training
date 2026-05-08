@@ -238,10 +238,61 @@ def main():
         print(f"[Info] Using device: {device}")
 
     env_cfg = parse_env_cfg(args.task, device=device, num_envs=args.num_envs)
-    
+
     if args.seed is not None:
         env_cfg.seed = args.seed + local_rank
-    
+
+    # ===== Per-rank terrain dispatch (异构地形多卡训练) =====
+    # 每张卡跑不同 terrain, 共享同一 reward/network, DDP 平均梯度 → 通用 generalist policy
+    # 须配合 Rough-MoE-Teacher-Deeprobotics-M20-v0 这种统一 reward 的 task 用
+    # 用户指定 rank 映射 (1-indexed in user's spec, 这里 0-indexed):
+    #   rank 0 (1st): FLAT             — 纯平地
+    #   rank 1 (2nd): STAIR_SLOPE      — 楼梯+斜坡 (上下两向, 最高 30cm 阶 / 45° 坡)
+    #   rank 2 (3rd): PLATFORM (PIT/BOX) — 高台爬降
+    #   rank 3 (4th): SCAN (HURDLE)    — 跨栏/挡板
+    #   rank 4 (5th): GAP              — 跨沟
+    #   rank 5 (6th): RAIL             — 跳栏 (0-40cm)
+    #   rank 6 (7th): NOISE            — 随机起伏 (官方 ROUGH 默认参数)
+    #   rank 7 (8th): GRID             — Mesh 离散方格 (官方 ROUGH 默认参数)
+    if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1":
+        import isaaclab.terrains as _terrain_gen
+        from isaaclab.terrains import TerrainGeneratorCfg as _TGC
+        from rl_training.terrains.config.rough import (
+            STAIR_SLOPE_TEACHER_TERRAINS_CFG,
+            PLATFORM_TEACHER_TERRAINS_CFG,
+            SCAN_TEACHER_TERRAINS_CFG,
+            GAP_TEACHER_TERRAINS_CFG,
+            RAIL_TEACHER_TERRAINS_CFG,
+            NOISE_TEACHER_TERRAINS_CFG,
+            GRID_TEACHER_TERRAINS_CFG,
+        )
+        # 平地 cfg (rank 0 专属): curriculum=False, 单 sub_terrain
+        _FLAT_TERRAINS_CFG = _TGC(
+            size=(12.0, 12.0), border_width=20.0,
+            num_rows=10, num_cols=10, curriculum=False,
+            sub_terrains={"flat": _terrain_gen.MeshPlaneTerrainCfg(proportion=1.0)},
+        )
+        # rank → terrain 映射 (跟 PER_RANK_NAMES 默认顺序对齐)
+        _RANK_TERRAIN_MAP = [
+            _FLAT_TERRAINS_CFG,                  # rank 0: FLAT
+            STAIR_SLOPE_TEACHER_TERRAINS_CFG,    # rank 1: STAIR_SLOPE
+            PLATFORM_TEACHER_TERRAINS_CFG,       # rank 2: PLATFORM (pit/box)
+            SCAN_TEACHER_TERRAINS_CFG,           # rank 3: SCAN (hurdle)
+            GAP_TEACHER_TERRAINS_CFG,            # rank 4: GAP
+            RAIL_TEACHER_TERRAINS_CFG,           # rank 5: RAIL (0-40cm)
+            NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
+            GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
+        ]
+        if local_rank < len(_RANK_TERRAIN_MAP):
+            chosen = _RANK_TERRAIN_MAP[local_rank]
+            env_cfg.scene.terrain.terrain_generator = chosen
+            print(f"[rank={local_rank}] terrain → "
+                  f"{list(chosen.sub_terrains.keys())} "
+                  f"(num_rows={chosen.num_rows}, curriculum={chosen.curriculum})")
+        else:
+            print(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range, "
+                  f"using default terrain from task cfg")
+
     render_mode = "rgb_array" if args.video else None
     env = gym.make(args.task, cfg=env_cfg, render_mode=render_mode)
 
@@ -338,6 +389,84 @@ def main():
     env = RslRlVecEnvWrapper(env, clip_actions=clip_actions)
 
     runner = OnPolicyRunner(env, train_cfg_dict, log_dir=log_dir, device=device)
+
+    # ===== Per-rank logging hook (monkey-patch runner.log) =====
+    # 仅在 distributed + 启用 PER_RANK_TERRAIN 时挂载
+    if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1":
+        import torch.distributed as dist
+        # rank 0..N-1 → terrain 名字, 跟 PER_RANK_TERRAIN 派发顺序保持一致
+        RANK_NAMES = os.environ.get(
+            "PER_RANK_NAMES",
+            "FLAT,STAIR_SLOPE,PLATFORM,SCAN,GAP,RAIL,NOISE,GRID",
+        ).split(",")
+
+        # 找到 base env (穿过 wrappers)
+        _base_env = env
+        while hasattr(_base_env, "env"):
+            _base_env = _base_env.env
+        # RslRlVecEnvWrapper 包了原 gym env, 实际访问 .unwrapped
+        if hasattr(_base_env, "unwrapped"):
+            _base_env = _base_env.unwrapped
+
+        _original_log = runner.log
+
+        def _per_rank_log(locs, *a, **kw):
+            ret = _original_log(locs, *a, **kw)
+            try:
+                it = locs.get("it", runner.current_learning_iteration)
+                # ---- 收集本 rank 的关键 metrics ----
+                local_metrics = {}
+                # terrain curriculum
+                if hasattr(_base_env, "scene") and hasattr(_base_env.scene, "terrain") \
+                   and hasattr(_base_env.scene.terrain, "terrain_levels"):
+                    tl = _base_env.scene.terrain.terrain_levels.float()
+                    local_metrics["terrain_level_mean"] = tl.mean()
+                    local_metrics["terrain_level_max"] = tl.max()
+                # episode reward / length (从 rewbuffer/lenbuffer)
+                if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
+                    local_metrics["ep_reward"] = torch.tensor(
+                        sum(locs["rewbuffer"]) / len(locs["rewbuffer"]),
+                        device=device, dtype=torch.float32,
+                    )
+                if locs.get("lenbuffer") and len(locs["lenbuffer"]) > 0:
+                    local_metrics["ep_length"] = torch.tensor(
+                        sum(locs["lenbuffer"]) / len(locs["lenbuffer"]),
+                        device=device, dtype=torch.float32,
+                    )
+                # termination 占比 (从 ep_infos 里 Episode_Termination/* 字段平均)
+                if locs.get("ep_infos"):
+                    term_keys = [k for k in locs["ep_infos"][0].keys()
+                                 if k.startswith("Episode_Termination/")]
+                    for k in term_keys:
+                        vals = [ep[k] for ep in locs["ep_infos"] if k in ep]
+                        if vals:
+                            avg = sum(v.item() if hasattr(v, "item") else float(v)
+                                      for v in vals) / len(vals)
+                            local_metrics[k.replace("Episode_Termination/", "term_")] = \
+                                torch.tensor(avg, device=device, dtype=torch.float32)
+
+                # ---- all_gather 到所有 rank, 只 master 写 wandb ----
+                world = int(os.environ.get("WORLD_SIZE", "1"))
+                for key, val in local_metrics.items():
+                    tensor = val.detach().to(device).float().contiguous()
+                    if tensor.dim() == 0:
+                        tensor = tensor.unsqueeze(0)
+                    gathered = [torch.zeros_like(tensor) for _ in range(world)]
+                    dist.all_gather(gathered, tensor)
+                    if is_master and runner.writer is not None:
+                        for r, g_val in enumerate(gathered):
+                            name = RANK_NAMES[r] if r < len(RANK_NAMES) else f"rank{r}"
+                            runner.writer.add_scalar(
+                                f"PerRank/{key}/{name}", g_val.item(), it,
+                            )
+            except Exception as e:
+                if is_master:
+                    print(f"[per_rank_log] failed: {e}")
+            return ret
+
+        runner.log = _per_rank_log
+        if is_master:
+            print(f"[INFO] PerRank logging enabled. RANK_NAMES = {RANK_NAMES}")
 
     if resume_path:
         loaded_dict = torch.load(resume_path, map_location=device)

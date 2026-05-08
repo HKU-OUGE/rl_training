@@ -9,7 +9,7 @@ from rl_training.terrains import MeshGapTerrainCfg, MeshRailsOnlyTerrainCfg, Mes
 # ==============================================================================
 # 1. 基础配置参数
 # ==============================================================================
-TERRAIN_SIZE = (12.0, 12.0)
+TERRAIN_SIZE = (8.0, 8.0)
 NUM_ROWS = 30
 NUM_COLS = 18
 
@@ -25,28 +25,28 @@ random_rough_cfg = terrain_gen.HfRandomUniformTerrainCfg(
 )
 
 pyramid_slope_cfg = terrain_gen.HfPyramidSlopedTerrainCfg(
-    proportion=1.0, slope_range=(0.0, 0.4), platform_width=4.0, border_width=0.25
+    proportion=1.0, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
 )
 
 pyramid_stairs_cfg = terrain_gen.MeshPyramidStairsTerrainCfg(
     proportion=1.0, 
     step_height_range=(0.05, 0.25), 
     step_width=0.3, 
-    platform_width=5.0,
+    platform_width=2.0,
     border_width=1.0
 )
 
 gap_cfg = MeshGapTerrainCfg(
-    proportion=1.0, gap_width_range=(0.3, 0.8), platform_width=4.0, gap_depth=0.5
+    proportion=1.0, gap_width_range=(0.3, 0.8), platform_width=2.0, gap_depth=0.5
 )
 
 boxes_cfg = terrain_gen.MeshRandomGridTerrainCfg(
-    proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=4.0
+    proportion=1.0, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
 )
 
 # -- [极端挑战类]
 pit_cfg = terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
-    proportion=1.0, pit_depth_range=(0.05, 0.8), double_pit=True, platform_width=4.0
+    proportion=1.0, pit_depth_range=(0.05, 0.8), double_pit=True, platform_width=2.0
 )
 
 
@@ -54,7 +54,7 @@ inverted_stairs_cfg = terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
     proportion=1.0, 
     step_height_range=(0.05, 0.25), 
     step_width=0.3, 
-    platform_width=5.0,
+    platform_width=2.0,
     border_width=1.0
 )
 
@@ -62,18 +62,18 @@ rails_cfg = terrain_gen.MeshRailsTerrainCfg(
     proportion=1.0,
     rail_thickness_range=(0.05, 0.1),  # 栏杆的厚度（较薄，逼真模拟跨栏）
     rail_height_range=(0.2, 0.45),      # 栏杆的高度（根据机器人的极限跳跃能力调整）
-    platform_width=4.0
+    platform_width=2.0
 )
 
 box_cfg = terrain_gen.trimesh.mesh_terrains_cfg.MeshBoxTerrainCfg(
-    proportion=1.0, box_height_range=(0.1, 0.4), platform_width=4.0, double_box=True
+    proportion=1.0, box_height_range=(0.1, 0.4), platform_width=2.0, double_box=True
 )
 
 square_hurdle_cfg = MeshSquareHurdleTerrainCfg(
     proportion=1.0,
     hurdle_height_range=(0.25, 0.6),
     bar_thickness=0.2,
-    platform_width=4.0,
+    platform_width=3.0,                    # hurdle 平台 3m (其他地形仍 2m)
     bar_width=0.05,
     mode="crawl",
 )
@@ -261,30 +261,30 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
         ),
         # --- 斜坡 (2/18) ---
         "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=4.0, border_width=0.25
+            proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
         ),
         "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
-            proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=4.0, border_width=0.25
+            proportion=1.0/18, slope_range=(0.0, 0.55), platform_width=2.0, border_width=0.25
         ),
         # --- 高台 (4/18) - 上爬 (pit) + 下落 (box), 双向训练 ---
         "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
             proportion=2.0/18,
             pit_depth_range=(0.05, 0.8),
             double_pit=True,
-            platform_width=4.0,
+            platform_width=2.0,
         ),
         "box": terrain_gen.trimesh.mesh_terrains_cfg.MeshBoxTerrainCfg(
             proportion=2.0/18,
             box_height_range=(0.05, 0.8),
             double_box=True,
-            platform_width=4.0,
+            platform_width=2.0,
         ),
         # --- 楼梯 (4/18) ---
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=1.0/18,
             step_height_range=(0.05, 0.25),
             step_width=0.3,
-            platform_width=5.0,
+            platform_width=2.0,
             border_width=1.0,
             holes=False,
         ),
@@ -292,7 +292,7 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             proportion=1.0/18,
             step_height_range=(0.05, 0.25),
             step_width=0.2,
-            platform_width=5.0,
+            platform_width=2.0,
             border_width=1.0,
             holes=False,
         ),
@@ -300,7 +300,7 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             proportion=1.0/18,
             step_height_range=(0.05, 0.25),
             step_width=0.3,
-            platform_width=5.0,
+            platform_width=2.0,
             border_width=1.0,
             holes=False,
         ),
@@ -308,7 +308,7 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             proportion=1.0/18,
             step_height_range=(0.05, 0.25),
             step_width=0.2,
-            platform_width=5.0,
+            platform_width=2.0,
             border_width=1.0,
             holes=False,
         ),
@@ -320,18 +320,18 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             stone_width_range=(2.0, 2.0),       # 大平台 (2m × 2m), 不需精准落足
             stone_distance_range=(0.1, 0.8),    # difficulty 0→1 时 hole 宽度 0.1m → 0.8m
             holes_depth=-0.65,
-            platform_width=4.0,
+            platform_width=2.0,
         ),
         # --- rail (2/18) ---
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
-            proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.4), platform_width=4.0
+            proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.4), platform_width=2.0
         ),
         # --- crawl / hurdle (3/18) ---
         "hurdle": MeshSquareHurdleTerrainCfg(
             proportion=1.0/18,
             hurdle_height_range=(0.25, 0.6),
             bar_thickness=0.2,
-            platform_width=4.0,
+            platform_width=2.0,
             bar_width=0.05,
             mode="crawl",
         ),
@@ -339,7 +339,7 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             proportion=1.0/18,
             hurdle_height_range=(0.2, 0.5),
             bar_thickness=0.15,
-            platform_width=4.0,
+            platform_width=2.0,
             bar_width=0.05,
             mode="crawl",
         ),
@@ -347,7 +347,7 @@ STUDENT_TERRAINS_CFG2 = TerrainGeneratorCfg(
             proportion=1.0/18,
             hurdle_height_range=(0.15, 0.4),
             bar_thickness=0.1,
-            platform_width=4.0,
+            platform_width=2.0,
             bar_width=0.05,
             mode="crawl",
         ),
@@ -399,11 +399,10 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.3),
         "gap": terrain_gen.MeshGapTerrainCfg(
-            proportion=0.7,
+            proportion=1.0,                  # rank 0 已专训 flat, 这里去掉 flat sub_terrain
             gap_width_range=(0.0, 1.0),
-            platform_width=4.0,
+            platform_width=2.0,
         ),
     }
 )
@@ -412,31 +411,14 @@ GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 # 运动模态：跳跃跨越栏杆 (需要高程+扫描感知前方障碍)
 # 不同高度和厚度的栏杆组合，难度递增
 RAIL_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
-    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    # 跳栏需要更长助跑空间, size 8→10m, platform 2→3m
+    size=(10.0, 10.0), border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "rail_low": rails_cfg.replace(
-            proportion=0.25,
+        "rail": rails_cfg.replace(
+            proportion=1.0,                       # 之前 4 个 sub_terrain 完全相同, 简化为 1
             rail_thickness_range=(0.01, 0.06),
-            rail_height_range=(0.05, 0.4),
-            platform_width=4.0,
-        ),
-        "rail_mid": rails_cfg.replace(
-            proportion=0.25,
-            rail_thickness_range=(0.01, 0.06),
-            rail_height_range=(0.05, 0.4),
-            platform_width=4.0,
-        ),
-        "rail_high": rails_cfg.replace(
-            proportion=0.25,
-            rail_thickness_range=(0.01, 0.06),
-            rail_height_range=(0.05, 0.4),
-            platform_width=4.0,
-        ),
-        "rail_thick": rails_cfg.replace(
-            proportion=0.25,
-            rail_thickness_range=(0.01, 0.06),
-            rail_height_range=(0.05, 0.4),
-            platform_width=4.0,
+            rail_height_range=(0.0, 0.4),         # 0-40cm: difficulty=0 时无栏 (≈平地), 上限 40cm
+            platform_width=3.0,                   # 平台 3m (跟 stair 对齐)
         ),
     }
 )
@@ -473,9 +455,91 @@ RAIL_ONLY_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=1.0,
             rail_thickness_range=(0.05, 0.05),
             rail_height_range=(0.05, 0.4),  # 5cm → 40cm
-            platform_width=4.0,             # 中央 4×4m 留空给机器人活动
+            platform_width=2.0,             # 中央 4×4m 留空给机器人活动
         ),
     },
+)
+
+# =====================================================================
+# Per-rank distributed training 专用 (rank 1, 6, 7)
+# =====================================================================
+
+# [Rank 1] Stair + Slope (含正反向)
+# size 8m × 8m, platform 3m, stair 最高 30cm, slope 最高 45° (tan=1.0)
+# border_width=0.5 增加 sub_terrain 内部边界 (相邻 tile 间累计 1m 平地缓冲, 让机器人有空间恢复)
+# 4 sub_terrain 各占 25%: 上楼梯 / 下楼梯 / 上坡 / 下坡
+# stair 实际可用区: (8-3-1)/2 = 2m, ~6 阶 × 0.3m
+STAIR_SLOPE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(8.0, 8.0), border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "stairs_up": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.25,
+            step_height_range=(0.05, 0.30),       # 最高 30cm
+            step_width=0.3,
+            platform_width=3.0,                    # 平台 3m
+            border_width=0.5,                      # 边界 0.5m (相邻 tile 间累计 1m 平地)
+        ),
+        "stairs_down": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.25,
+            step_height_range=(0.05, 0.30),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=0.5,
+        ),
+        "slope_up": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=0.25,
+            slope_range=(0.0, 1.0),                # tan(45°) = 1.0, 最大 45°
+            platform_width=2.0,                    # slope 平台 2m (stair 保持 3m)
+            border_width=0.5,
+        ),
+        "slope_down": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+            proportion=0.25,
+            slope_range=(0.0, 1.0),
+            platform_width=2.0,
+            border_width=0.5,
+        ),
+    }
+)
+
+# [Rank 6] Random Uniform Noise — 3 档难度 (col-based)
+# 注意: IsaacLab 的 random_uniform_terrain **忽略 difficulty 参数**, curriculum 对它无视觉效果。
+# 改用 col-based 分档: 不同列 (3 组) 噪声强度不同, 让 env 之间训练到不同强度
+NOISE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "noise_light": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=0.33,
+            noise_range=(0.02, 0.06),     # 2-6cm 轻微
+            noise_step=0.02,
+            border_width=0.25,
+        ),
+        "noise_med": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=0.33,
+            noise_range=(0.06, 0.12),     # 6-12cm 中等
+            noise_step=0.02,
+            border_width=0.25,
+        ),
+        "noise_strong": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=0.34,
+            noise_range=(0.12, 0.22),     # 12-22cm 明显
+            noise_step=0.02,
+            border_width=0.25,
+        ),
+    }
+)
+
+# [Rank 7] Mesh Random Grid (参考 IsaacLab 官方 ROUGH_TERRAINS_CFG 默认参数)
+# grid_width=0.45, grid_height_range=(0.05, 0.20), platform 2m
+GRID_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "random_grid": terrain_gen.MeshRandomGridTerrainCfg(
+            proportion=1.0,
+            grid_width=0.45,
+            grid_height_range=(0.05, 0.20),
+            platform_width=2.0,
+        ),
+    }
 )
 
 # 向后兼容别名
