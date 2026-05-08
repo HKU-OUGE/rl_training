@@ -283,15 +283,36 @@ def main():
             NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
             GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
         ]
+        # 每 rank 把自己的 dispatch info append 到共享文件 (不 print 到 stdout, 避免被 8x 刷屏)
+        _DISPATCH_FILE = "/tmp/per_rank_dispatch.txt"
+        if local_rank == 0:
+            # rank 0 启动时清空文件 (其他 rank 接着 append)
+            with open(_DISPATCH_FILE, "w") as _f:
+                _f.write(f"# Per-rank terrain dispatch ({int(os.environ.get('WORLD_SIZE', '1'))} ranks)\n")
         if local_rank < len(_RANK_TERRAIN_MAP):
             chosen = _RANK_TERRAIN_MAP[local_rank]
             env_cfg.scene.terrain.terrain_generator = chosen
-            print(f"[rank={local_rank}] terrain → "
-                  f"{list(chosen.sub_terrains.keys())} "
-                  f"(num_rows={chosen.num_rows}, curriculum={chosen.curriculum})")
+            with open(_DISPATCH_FILE, "a") as _f:
+                _f.write(f"[rank={local_rank}] terrain → "
+                         f"{list(chosen.sub_terrains.keys())} "
+                         f"(size={chosen.size}, num_rows={chosen.num_rows}, "
+                         f"curriculum={chosen.curriculum})\n")
         else:
-            print(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range, "
-                  f"using default terrain from task cfg")
+            with open(_DISPATCH_FILE, "a") as _f:
+                _f.write(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range\n")
+        # rank 0 等其他 rank 写完, 一次性打印汇总
+        if is_master:
+            import time as _time
+            _time.sleep(2)  # 等其他 rank 完成 dispatch
+            print("\n" + "=" * 80)
+            print("PER-RANK TERRAIN DISPATCH (8 卡映射汇总)")
+            print("=" * 80)
+            try:
+                with open(_DISPATCH_FILE, "r") as _f:
+                    print(_f.read(), end="")
+            except Exception as _e:
+                print(f"  (failed to read {_DISPATCH_FILE}: {_e})")
+            print("=" * 80 + "\n", flush=True)
 
     render_mode = "rgb_array" if args.video else None
     env = gym.make(args.task, cfg=env_cfg, render_mode=render_mode)
@@ -390,83 +411,108 @@ def main():
 
     runner = OnPolicyRunner(env, train_cfg_dict, log_dir=log_dir, device=device)
 
-    # ===== Per-rank logging hook (monkey-patch runner.log) =====
-    # 仅在 distributed + 启用 PER_RANK_TERRAIN 时挂载
+    # ===== Per-rank wandb logging via 双层 hook =====
+    # 1. 每 rank hook alg.update() (所有 rank 都调) → 写自己的 jsonl 文件
+    # 2. master 在 runner.log() 里读所有 rank 的文件 → 写 wandb
+    # 不用 dist.all_gather, 避免 master-only log 导致的 collective 死锁
     if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1":
-        import torch.distributed as dist
-        # rank 0..N-1 → terrain 名字, 跟 PER_RANK_TERRAIN 派发顺序保持一致
+        import json as _json
         RANK_NAMES = os.environ.get(
             "PER_RANK_NAMES",
             "FLAT,STAIR_SLOPE,PLATFORM,SCAN,GAP,RAIL,NOISE,GRID",
         ).split(",")
+        _world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        _rank_name = RANK_NAMES[local_rank] if local_rank < len(RANK_NAMES) else f"rank{local_rank}"
+        _per_rank_path = lambda r: (
+            f"/tmp/per_rank_train_"
+            f"{RANK_NAMES[r] if r < len(RANK_NAMES) else f'rank{r}'}"
+            f"_rank{r}.jsonl"
+        )
+        # 每 rank 启动时清空自己的文件
+        with open(_per_rank_path(local_rank), "w") as _f:
+            pass
 
         # 找到 base env (穿过 wrappers)
         _base_env = env
         while hasattr(_base_env, "env"):
             _base_env = _base_env.env
-        # RslRlVecEnvWrapper 包了原 gym env, 实际访问 .unwrapped
         if hasattr(_base_env, "unwrapped"):
             _base_env = _base_env.unwrapped
 
-        _original_log = runner.log
+        # ----- Hook 1: alg.update (每 rank 都调) → 写自己 jsonl -----
+        # 用 closure 维护 iter 计数 (alg.update 没有 it 参数)
+        _iter_counter = [0]
+        _original_update = runner.alg.update
 
-        def _per_rank_log(locs, *a, **kw):
-            ret = _original_log(locs, *a, **kw)
+        def _update_with_dump(*a, **kw):
+            result = _original_update(*a, **kw)
             try:
-                it = locs.get("it", runner.current_learning_iteration)
-                # ---- 收集本 rank 的关键 metrics ----
-                local_metrics = {}
-                # terrain curriculum
+                it = _iter_counter[0]
+                _iter_counter[0] += 1
+                m = {"iter": it, "rank": local_rank, "name": _rank_name}
                 if hasattr(_base_env, "scene") and hasattr(_base_env.scene, "terrain") \
                    and hasattr(_base_env.scene.terrain, "terrain_levels"):
                     tl = _base_env.scene.terrain.terrain_levels.float()
-                    local_metrics["terrain_level_mean"] = tl.mean()
-                    local_metrics["terrain_level_max"] = tl.max()
-                # episode reward / length (从 rewbuffer/lenbuffer)
-                if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
-                    local_metrics["ep_reward"] = torch.tensor(
-                        sum(locs["rewbuffer"]) / len(locs["rewbuffer"]),
-                        device=device, dtype=torch.float32,
-                    )
-                if locs.get("lenbuffer") and len(locs["lenbuffer"]) > 0:
-                    local_metrics["ep_length"] = torch.tensor(
-                        sum(locs["lenbuffer"]) / len(locs["lenbuffer"]),
-                        device=device, dtype=torch.float32,
-                    )
-                # termination 占比 (从 ep_infos 里 Episode_Termination/* 字段平均)
-                if locs.get("ep_infos"):
-                    term_keys = [k for k in locs["ep_infos"][0].keys()
-                                 if k.startswith("Episode_Termination/")]
-                    for k in term_keys:
-                        vals = [ep[k] for ep in locs["ep_infos"] if k in ep]
-                        if vals:
-                            avg = sum(v.item() if hasattr(v, "item") else float(v)
-                                      for v in vals) / len(vals)
-                            local_metrics[k.replace("Episode_Termination/", "term_")] = \
-                                torch.tensor(avg, device=device, dtype=torch.float32)
-
-                # ---- all_gather 到所有 rank, 只 master 写 wandb ----
-                world = int(os.environ.get("WORLD_SIZE", "1"))
-                for key, val in local_metrics.items():
-                    tensor = val.detach().to(device).float().contiguous()
-                    if tensor.dim() == 0:
-                        tensor = tensor.unsqueeze(0)
-                    gathered = [torch.zeros_like(tensor) for _ in range(world)]
-                    dist.all_gather(gathered, tensor)
-                    if is_master and runner.writer is not None:
-                        for r, g_val in enumerate(gathered):
-                            name = RANK_NAMES[r] if r < len(RANK_NAMES) else f"rank{r}"
-                            runner.writer.add_scalar(
-                                f"PerRank/{key}/{name}", g_val.item(), it,
-                            )
+                    m["terrain_level_mean"] = float(tl.mean().item())
+                    m["terrain_level_max"] = float(tl.max().item())
+                # episode 长度 / 奖励直接读 env (alg.update 此时还有 rollout 数据)
+                # episode_sums / lenbuffer 数据保存在 runner 自己的 deque, 不能从 alg 拿到
+                # → 这里只写 terrain_level. ep_reward / ep_length 走 hook 2 (master 自己有)
+                with open(_per_rank_path(local_rank), "a") as f:
+                    f.write(_json.dumps(m) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
             except Exception as e:
-                if is_master:
-                    print(f"[per_rank_log] failed: {e}")
-            return ret
+                print(f"[per_rank dump rank {local_rank}] failed: {e}", flush=True)
+            return result
 
-        runner.log = _per_rank_log
+        runner.alg.update = _update_with_dump
+
+        # ----- Hook 2: master 的 log() → 读所有 rank 的 jsonl, 写 wandb -----
         if is_master:
-            print(f"[INFO] PerRank logging enabled. RANK_NAMES = {RANK_NAMES}")
+            _original_log = runner.log
+
+            def _log_with_per_rank(locs, *a, **kw):
+                ret = _original_log(locs, *a, **kw)
+                try:
+                    it = locs.get("it", runner.current_learning_iteration)
+                    # 读每 rank 最新一行
+                    for r in range(_world_size):
+                        name = RANK_NAMES[r] if r < len(RANK_NAMES) else f"rank{r}"
+                        path = _per_rank_path(r)
+                        try:
+                            with open(path, "r") as f:
+                                lines = f.readlines()
+                            if not lines:
+                                continue
+                            last = _json.loads(lines[-1])
+                            for k, v in last.items():
+                                if k in ("iter", "rank", "name"):
+                                    continue
+                                if isinstance(v, (int, float)) and runner.writer is not None:
+                                    runner.writer.add_scalar(f"PerRank/{k}/{name}", v, it)
+                        except Exception:
+                            continue
+                    # master 自己还能 dump 一些只它有的 metrics (rewbuffer/lenbuffer/ep_infos)
+                    # 这部分作为 master rank 的"代理 per-rank metric", 写到 PerRank/<master_name>/
+                    master_name = RANK_NAMES[0] if 0 < len(RANK_NAMES) else "rank0"
+                    if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
+                        v = float(sum(locs["rewbuffer"]) / len(locs["rewbuffer"]))
+                        if runner.writer is not None:
+                            runner.writer.add_scalar(f"PerRank/ep_reward/{master_name}", v, it)
+                    if locs.get("lenbuffer") and len(locs["lenbuffer"]) > 0:
+                        v = float(sum(locs["lenbuffer"]) / len(locs["lenbuffer"]))
+                        if runner.writer is not None:
+                            runner.writer.add_scalar(f"PerRank/ep_length/{master_name}", v, it)
+                except Exception as e:
+                    print(f"[per_rank log master] failed: {e}", flush=True)
+                return ret
+
+            runner.log = _log_with_per_rank
+
+        if is_master:
+            print(f"[INFO] PerRank logging: each rank → /tmp/per_rank_train_<NAME>_rank<N>.jsonl")
+            print(f"       master 读所有 → wandb 'PerRank/*/*' panels")
 
     if resume_path:
         loaded_dict = torch.load(resume_path, map_location=device)
