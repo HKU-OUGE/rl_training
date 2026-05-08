@@ -392,35 +392,17 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
 )
 
 # [Teacher 7] 跨越沟壑专家 (Gap Crossing)
-# 运动模态：跨越多段连续沟 (需要高程+扫描感知)
-# 用 HfSteppingStonesTerrainCfg 代替 MeshGapTerrainCfg: 1.5m × 1.5m 大平台 + 0.1-0.8m 间距 hole,
-# 单 episode 多次跨越, 信号密度远高于单沟. 经验证 stepping_stones 训练 gap 行为效果更佳.
-# 4 个 sub-terrain 沿 holes_depth 提供难度梯度 (从 -0.35m 到 -0.8m).
+# 运动模态：跨越单沟 (使用 IsaacLab 内置 MeshGapTerrainCfg) + 平地基础
+# - gap 是无限深, 掉下去 = terrain_out_of_bounds 立刻终止, 失败信号干净
+# - 加 flat sub_terrain 比例 0.3, 让策略保留平地行走能力, 不至于"忘记走路"
+# - gap sub_terrain curriculum: gap_width 0.0 → 1.0m 渐进 (level 0 = 无 gap = 等价平地)
 GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
-    # size 12 (move_up 阈值 6m); stone 2m, platform 4: 正向 (12-4)/2=4m, 周期 ~2.4-2.8m → 1-2 次跨越
-    # num_rows 20, num_cols 10
-    # horizontal_scale=0.1: 量化最小步长 10cm (允许 0/10/20/.../80cm 8 真档位 gap 渐进, 量化代价: mesh ~5.76M tris)
-    # 2 sub_terrains 区分 stone_height_max 维度 (curriculum 不直接控制 height):
-    #   stones_flat (50%): height=0, holes=-0.4m  → level 0 完全平地, 入门
-    #   stones_bumpy (50%): height=±5cm, holes=-0.5m → 同时学高度起伏
-    # 两个 sub_terrain 内 row(level) 控制 stone_distance 0→80cm
-    size=(12.0, 12.0), border_width=20.0, num_rows=20, num_cols=10, curriculum=True,
-    horizontal_scale=0.1,
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
     sub_terrains={
-        "stones_flat": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.5,
-            stone_height_max=0.0,
-            stone_width_range=(2.0, 2.0),
-            stone_distance_range=(0.0, 0.8),
-            holes_depth=-0.4,
-            platform_width=4.0,
-        ),
-        "stones_bumpy": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.5,
-            stone_height_max=0.05,
-            stone_width_range=(2.0, 2.0),
-            stone_distance_range=(0.0, 0.8),
-            holes_depth=-0.5,
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.3),
+        "gap": terrain_gen.MeshGapTerrainCfg(
+            proportion=0.7,
+            gap_width_range=(0.0, 1.0),
             platform_width=4.0,
         ),
     }
