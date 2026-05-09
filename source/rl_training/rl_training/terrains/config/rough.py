@@ -407,6 +407,23 @@ GAP_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     }
 )
 
+# [Teacher 5 — alt] Stepping Stones (复用通才 rough.py 中 stepping_stones 定义)
+# 与 MeshGap 单一裂缝相比, stepping_stones 把 (8-4)/2=2m 跨越距离切成多次小 hole,
+# 跨越信号密度更高, 实测比纯 GAP 更易学; 这里 proportion=1.0 让 rank 4 专训该模态.
+STEPPING_STONES_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "stepping_stones": terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=1.0,
+            stone_height_max=0.01,
+            stone_width_range=(2.0, 2.0),       # 大平台 (2m × 2m), 不需精准落足
+            stone_distance_range=(0.1, 0.8),    # difficulty 0→1 时 hole 宽度 0.1m → 0.8m
+            holes_depth=-0.65,
+            platform_width=2.0,
+        ),
+    }
+)
+
 # [Teacher 8] 跨栏跳跃专家 (Rail Jumping)
 # 运动模态：跳跃跨越栏杆 (需要高程+扫描感知前方障碍)
 # 不同高度和厚度的栏杆组合，难度递增

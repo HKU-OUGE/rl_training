@@ -262,6 +262,7 @@ def main():
             PLATFORM_TEACHER_TERRAINS_CFG,
             SCAN_TEACHER_TERRAINS_CFG,
             GAP_TEACHER_TERRAINS_CFG,
+            STEPPING_STONES_TEACHER_TERRAINS_CFG,
             RAIL_TEACHER_TERRAINS_CFG,
             NOISE_TEACHER_TERRAINS_CFG,
             GRID_TEACHER_TERRAINS_CFG,
@@ -278,7 +279,7 @@ def main():
             STAIR_SLOPE_TEACHER_TERRAINS_CFG,    # rank 1: STAIR_SLOPE
             PLATFORM_TEACHER_TERRAINS_CFG,       # rank 2: PLATFORM (pit/box)
             SCAN_TEACHER_TERRAINS_CFG,           # rank 3: SCAN (hurdle)
-            GAP_TEACHER_TERRAINS_CFG,            # rank 4: GAP
+            STEPPING_STONES_TEACHER_TERRAINS_CFG, # rank 4: GAP→Stepping Stones (复用通才 rough.py 定义)
             RAIL_TEACHER_TERRAINS_CFG,           # rank 5: RAIL (0-40cm)
             NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
             GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
@@ -419,7 +420,7 @@ def main():
         import json as _json
         RANK_NAMES = os.environ.get(
             "PER_RANK_NAMES",
-            "FLAT,STAIR_SLOPE,PLATFORM,SCAN,GAP,RAIL,NOISE,GRID",
+            "FLAT,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,GRID",
         ).split(",")
         _world_size = int(os.environ.get("WORLD_SIZE", "1"))
         _rank_name = RANK_NAMES[local_rank] if local_rank < len(RANK_NAMES) else f"rank{local_rank}"

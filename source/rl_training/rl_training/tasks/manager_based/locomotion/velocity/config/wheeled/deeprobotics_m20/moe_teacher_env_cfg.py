@@ -398,6 +398,14 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
         weight=0.0,
         params={"asset_cfg": SceneEntityCfg("robot")}
     )
+    undesired_contacts_knee = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=0.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_knee"),
+            "threshold": 1.0,
+        },
+    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
@@ -891,9 +899,9 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
         self.rewards.stand_still.weight = -2.0
         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.hipx_joint_pos_penalty.weight = -0.6
+        self.rewards.hipx_joint_pos_penalty.weight = -0.5
         self.rewards.hipx_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipx_joint_names
-        self.rewards.hipy_joint_pos_penalty.weight = -0.3
+        self.rewards.hipy_joint_pos_penalty.weight = -0.25
         self.rewards.hipy_joint_pos_penalty.params["asset_cfg"].joint_names = self.hipy_joint_names
         self.rewards.knee_joint_pos_penalty.weight = -0.1
         self.rewards.knee_joint_pos_penalty.params["asset_cfg"].joint_names = self.knee_joint_names
@@ -912,18 +920,20 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
         self.rewards.action_rate_l2.weight = -0.01
 
-        self.rewards.undesired_contacts.weight = -0.1
-        self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [f"^(?!.*{self.foot_link_name}).*"]
+        self.rewards.undesired_contacts.weight = -0.3
+        self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [self.base_link_name, ".*_hipx", ".*_hipy"]
+        self.rewards.undesired_contacts_knee.weight = -0.1
+        self.rewards.undesired_contacts_knee.params["sensor_cfg"].body_names = [".*_knee"]
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 3.0 # 1.8
-        self.rewards.track_ang_vel_z_exp.weight = 2.0 # 1.2
+        self.rewards.track_lin_vel_xy_exp.weight = 4.0 # 1.8 -> 3.0 -> 4.0 (对齐 PLATFORM)
+        self.rewards.track_ang_vel_z_exp.weight = 3.0 # 1.2 -> 2.0 -> 3.0 (对齐 PLATFORM)
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
         self.rewards.feet_air_time.weight = 1.0
-        self.rewards.feet_air_time.params["threshold"] = 0.2
+        self.rewards.feet_air_time.params["threshold"] = 0.3
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_air_time_long.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
@@ -967,8 +977,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ranges=mdp.UniformVelocityCommandCfg.Ranges(
                 lin_vel_x=(-1.0, 1.0),
                 lin_vel_y=(-1.0, 1.0),
-                ang_vel_z=(-1.5, 1.5),
-                heading=(-math.pi, math.pi),
+                ang_vel_z=(-1.0, 1.0),
+                heading=(0.0, 0.0),
             ),
         )
         # ------------------------------Commands------------------------------
