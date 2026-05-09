@@ -874,7 +874,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.ang_vel_xy_l2.weight = -0.05
         self.rewards.flat_orientation_l2.weight = 0
         self.rewards.base_roll_l2.weight = -10.0
-        self.rewards.base_height_l2.weight = 0.0
+        self.rewards.base_height_l2.weight = -0.3   # 0 → -0.3 (姿态回弹: flat 上 cost≈0, rough 上轻度激活)
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
@@ -948,12 +948,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_height.weight = 0
         self.rewards.feet_height.params["target_height"] = 0.3
         self.rewards.feet_height.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_height_body.weight = 0
+        self.rewards.feet_height_body.weight = -0.2   # 0 → -0.2 (站姿回弹, 防止 knee 在 flat 上残余弯曲)
         self.rewards.feet_height_body.params["target_height"] = -0.48  # was -0.4 (默认站姿实测 -0.44, 取 -0.48 略偏站直)
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("fl_wheel", "hr_wheel"), ("fr_wheel", "hl_wheel"))
-        self.rewards.upward.weight = 0.0
+        self.rewards.upward.weight = 0.05   # 0.0 → 0.05 (轻度保持 z 朝上, 防止 pitch/roll 漂移)
 
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg":
             self.disable_zero_weight_rewards()

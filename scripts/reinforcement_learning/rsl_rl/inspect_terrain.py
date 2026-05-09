@@ -171,12 +171,12 @@ RANK_TERRAIN_MAP = [
     STAIR_SLOPE_TEACHER_TERRAINS_CFG,   # 1
     PLATFORM_TEACHER_TERRAINS_CFG,      # 2
     SCAN_TEACHER_TERRAINS_CFG,          # 3
-    STEPPING_STONES_TEACHER_TERRAINS_CFG, # 4 (was GAP, 临时替换为通才 stepping_stones)
+    _FLAT_CFG,                          # 4 (was GAP/STONES, 训练失败, 暂用 FLAT)
     RAIL_TEACHER_TERRAINS_CFG,          # 5
     NOISE_TEACHER_TERRAINS_CFG,         # 6
     GRID_TEACHER_TERRAINS_CFG,          # 7
 ]
-RANK_NAMES = ["FLAT", "STAIR_SLOPE", "PLATFORM", "SCAN", "STONES", "RAIL", "NOISE", "GRID"]
+RANK_NAMES = ["FLAT", "STAIR_SLOPE", "PLATFORM", "SCAN", "FLAT2", "RAIL", "NOISE", "GRID"]
 
 
 def main():
