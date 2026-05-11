@@ -1995,7 +1995,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     sym_loss_coef: float = 0.0
 
     blind_vision: bool = False       
-    use_elevation_ae: bool = False  # ELE AE 已弃用，由半球 LIDAR scan AE 替代
+    use_elevation_ae: bool = False  # default off; enabled via SplitMoEPPOCfg below
     elevation_dim: int = 187      
     use_multilayer_scan: bool = False
     num_scan_channels: int = 32  # 16 fwd + 16 bwd (LidarPattern hemispherical)

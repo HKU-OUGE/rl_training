@@ -553,22 +553,7 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        height_scan = ObsTerm(
-            func=height_scan_sim2real,
-            params={
-                "sensor_cfg": SceneEntityCfg("height_scanner"),
-                "offset": 0.5,
-                "mask_prob": 0.15,
-                "min_latency": 1,
-                "max_latency": 3,
-                "smooth_kernel_size": 3,
-                "max_drift_pixels": 2,
-                "grid_length": 17,
-                "min_noise_amp": 0.1,
-            },
-            noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=(-1.0, 1.0),
-        )
+        height_scan = None  # blind by design — no elevation map
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -729,22 +714,7 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        height_scan = ObsTerm(
-            func=height_scan_sim2real,
-            params={
-                "sensor_cfg": SceneEntityCfg("height_scanner"),
-                "offset": 0.5,
-                "mask_prob": 0.15,
-                "min_latency": 1,
-                "max_latency": 3,
-                "smooth_kernel_size": 3,
-                "max_drift_pixels": 2,
-                "grid_length": 17,
-                "min_noise_amp": 0.1,
-            },
-            noise=Unoise(n_min=-0.05, n_max=0.05),
-            clip=(-1.0, 1.0),
-        )
+        height_scan = None  # blind by design — pretrain group has no elevation map
 
         def __post_init__(self):
             self.enable_corruption = True
