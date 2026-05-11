@@ -464,19 +464,12 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         height_scan = ObsTerm(
-            func=height_scan_sim2real,
+            func=mdp.height_scan,
             params={
                 "sensor_cfg": SceneEntityCfg("height_scanner"),
                 "offset": 0.5,
-                "mask_prob": 0.15,
-                "min_latency": 1,
-                "max_latency": 3,
-                "smooth_kernel_size": 3,
-                "max_drift_pixels": 2,
-                "grid_length": 17,
-                "min_noise_amp": 0.1,
             },
-            noise=Unoise(n_min=-0.05, n_max=0.05),
+            noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-1.0, 1.0),
         )
         base_lin_vel = None
@@ -489,19 +482,12 @@ class DeeproboticsM20ObservationsCfg:
     class NoisyElevationCfg(ObsGroup):
         """提供给 ScanAE 的环境感知组（elevation map + LIDAR 双流）"""
         height_scan = ObsTerm(
-            func=height_scan_sim2real,
+            func=mdp.height_scan,
             params={
                 "sensor_cfg": SceneEntityCfg("height_scanner"),
                 "offset": 0.5,
-                "mask_prob": 0.15,
-                "min_latency": 1,
-                "max_latency": 3,
-                "smooth_kernel_size": 3,
-                "max_drift_pixels": 2,
-                "grid_length": 17,
-                "min_noise_amp": 0.1,
             },
-            noise=Unoise(n_min=-0.05, n_max=0.05),
+            noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-1.0, 1.0),
         )
         # --- 前后两个半球 LidarPattern sensor (16 ch × 31 az = 496/sensor, 共 992) ---
@@ -585,19 +571,12 @@ class DeeproboticsM20ObservationsCfg:
             scale=1.0,
         )
         height_scan = ObsTerm(
-            func=height_scan_sim2real,
+            func=mdp.height_scan,
             params={
                 "sensor_cfg": SceneEntityCfg("height_scanner"),
                 "offset": 0.5,
-                "mask_prob": 0.15,
-                "min_latency": 1,
-                "max_latency": 3,
-                "smooth_kernel_size": 3,
-                "max_drift_pixels": 2,
-                "grid_length": 17,
-                "min_noise_amp": 0.1,
             },
-            noise=Unoise(n_min=-0.05, n_max=0.05),
+            noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-1.0, 1.0),
         )
         joint_pos = ObsTerm(
