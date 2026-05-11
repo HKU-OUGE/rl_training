@@ -2048,7 +2048,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         init_noise_legs=0.6,
         init_noise_wheels=1.5,
-        actor_hidden_dims=[256, 128, 128], 
+        actor_hidden_dims=[256, 128, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
@@ -2057,9 +2057,9 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        
+
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=False,
+        use_elevation_ae=True,
         elevation_dim=187,
         use_cnn=False, 
         
