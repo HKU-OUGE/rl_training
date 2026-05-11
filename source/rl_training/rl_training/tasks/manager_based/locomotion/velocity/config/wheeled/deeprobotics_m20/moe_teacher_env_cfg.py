@@ -788,7 +788,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "z": (0.0, 0.0),
                 "roll": (-0.3, 0.3),
                 "pitch": (-0.3, 0.3),
-                "yaw": (-3.14, 3.14),
+                "yaw": (0.0, 0.0),
             },
             "velocity_range": {
                 "x": (-0.2, 0.2),
@@ -989,7 +989,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             debug_vis=False,
             ranges=mdp.UniformVelocityCommandCfg.Ranges(
                 lin_vel_x=(-1.0, 1.0),
-                lin_vel_y=(-1.0, 1.0),
+                lin_vel_y=(0.0, 0.0),
                 ang_vel_z=(-1.0, 1.0),
                 heading=(0.0, 0.0),
             ),
