@@ -68,36 +68,81 @@ class ASTSourceChecks(unittest.TestCase):
         self.assertNotIn('"FLAT,STAIR_SLOPE,PLATFORM,SCAN,FLAT2,RAIL,NOISE,GRID"', src,
                          "Stale FLAT2 default must be replaced")
 
-    def test_train_moe_termination_override_dict_present(self):
+    @staticmethod
+    def _ast_numeric_value(node):
+        """Unwrap an ast node into a Python numeric value.
+
+        Negative literals like `-0.01` parse as UnaryOp(USub, Constant(0.01)),
+        NOT as Constant(-0.01). This helper handles both.
+        """
+        if isinstance(node, ast.Constant):
+            return node.value
+        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
+                and isinstance(node.operand, ast.Constant)):
+            return -node.operand.value
+        raise TypeError(f"Expected Constant or -Constant, got {ast.dump(node)}")
+
+    def test_train_moe_reward_override_dict_present(self):
+        """Nested dict _RANK_REWARD_WEIGHT_OVERRIDES with rank 2/3/4 must exist."""
         tree = load_ast(TRAIN_MOE)
-        dict_node = find_assignment_value(tree, "_RANK_IS_TERMINATED_WEIGHT_OVERRIDE")
+        dict_node = find_assignment_value(tree, "_RANK_REWARD_WEIGHT_OVERRIDES")
         self.assertIsNotNone(dict_node,
-                             "_RANK_IS_TERMINATED_WEIGHT_OVERRIDE not found in train_moe.py")
-        self.assertIsInstance(dict_node, ast.Dict)
-        found_4 = False
+                             "_RANK_REWARD_WEIGHT_OVERRIDES not found in train_moe.py")
+        self.assertIsInstance(dict_node, ast.Dict,
+                              "_RANK_REWARD_WEIGHT_OVERRIDES must be a dict literal")
+
+        # Build {rank: inner_dict} for assertions
+        rank_to_inner = {}
         for k, v in zip(dict_node.keys, dict_node.values):
-            self.assertIsInstance(k, ast.Constant, f"non-Constant key {ast.dump(k)}")
-            if k.value == 4:
-                found_4 = True
-                self.assertIsInstance(v, ast.Constant,
-                                      f"override value for rank 4 is {ast.dump(v)}, expected Constant")
-                self.assertEqual(v.value, 0.0,
-                                 f"rank 4 override = {v.value}, expected 0.0")
-        self.assertTrue(found_4,
-                        "rank 4 missing from _RANK_IS_TERMINATED_WEIGHT_OVERRIDE")
+            rank_val = self._ast_numeric_value(k)
+            self.assertIsInstance(v, ast.Dict,
+                                  f"rank {rank_val} value must be a dict, got {ast.dump(v)}")
+            inner = {}
+            for ik, iv in zip(v.keys, v.values):
+                self.assertIsInstance(ik, ast.Constant)
+                inner[ik.value] = self._ast_numeric_value(iv)
+            rank_to_inner[rank_val] = inner
+
+        # rank 4 (STONES): preserves is_terminated=0 from commit 46238ac
+        self.assertIn(4, rank_to_inner, "rank 4 missing from override dict")
+        self.assertEqual(rank_to_inner[4].get("is_terminated"), 0.0,
+                         f"rank 4 is_terminated = {rank_to_inner[4].get('is_terminated')}, expected 0.0")
+
+        # rank 2 (PLATFORM): must contain platform-specific overrides
+        self.assertIn(2, rank_to_inner, "rank 2 (PLATFORM) missing")
+        self.assertEqual(rank_to_inner[2].get("ang_vel_xy_l2"), -0.01)
+        self.assertEqual(rank_to_inner[2].get("base_height_l2"), 0.0)
+        self.assertEqual(rank_to_inner[2].get("feet_air_time"), 1.5)
+        self.assertEqual(rank_to_inner[2].get("feet_height_body"), -0.5)
+        self.assertEqual(rank_to_inner[2].get("upward"), 0.0)
+
+        # rank 3 (SCAN): must contain scan-specific overrides
+        self.assertIn(3, rank_to_inner, "rank 3 (SCAN) missing")
+        self.assertEqual(rank_to_inner[3].get("lin_vel_z_l2"), -2.0)
+        self.assertEqual(rank_to_inner[3].get("base_height_l2"), -0.5)
+        self.assertEqual(rank_to_inner[3].get("feet_air_time"), 0.0)
+        self.assertEqual(rank_to_inner[3].get("feet_height_body"), 0.0)
+        self.assertEqual(rank_to_inner[3].get("upward"), 0.08)
 
     def test_train_moe_override_is_actually_applied(self):
-        """The dict alone is dead code unless it's read and assigned. Verify both sides."""
+        """Dict declared but unused = dead code. Verify both the lookup and the assignment."""
         src = TRAIN_MOE.read_text()
         self.assertIn(
-            "_RANK_IS_TERMINATED_WEIGHT_OVERRIDE.get(local_rank)",
+            "_RANK_REWARD_WEIGHT_OVERRIDES.get(local_rank",
             src,
             "override dict declared but never looked up"
         )
+        # Must iterate over the inner dict and assign on env_cfg.rewards.<name>.weight
         self.assertIn(
-            "env_cfg.rewards.is_terminated.weight = _term_weight_override",
+            "_term.weight = _new_w",
             src,
-            "override value never assigned to env_cfg.rewards.is_terminated.weight"
+            "loop body never writes back the new weight"
+        )
+        # Must use getattr to look up the term by name (safe against disable_zero_weight_rewards)
+        self.assertIn(
+            "getattr(env_cfg.rewards, _term_name, None)",
+            src,
+            "must use getattr (term may have been pruned by disable_zero_weight_rewards)"
         )
 
     def test_inspect_terrain_rank4_is_stepping_stones(self):
@@ -170,56 +215,158 @@ class TerrainCfgImportChecks(unittest.TestCase):
 
 
 class SimulatedOverrideBehavior(unittest.TestCase):
-    """Replicate the dispatch logic on a mock env_cfg, verify behavior."""
+    """Replicate the nested-dict dispatch logic on a mock env_cfg, verify behavior."""
+
+    # Mirror the same dict that lives in train_moe.py. If this drifts,
+    # test_train_moe_reward_override_dict_present will catch the source side;
+    # this dict here is only for testing the dispatch *behavior*.
+    _OVERRIDES = {
+        2: {
+            "ang_vel_xy_l2":          -0.01,
+            "base_height_l2":          0.0,
+            "feet_air_time":           1.5,
+            "feet_height_body":       -0.5,
+            "upward":                  0.0,
+        },
+        3: {
+            "lin_vel_z_l2":           -2.0,
+            "base_height_l2":         -0.5,
+            "hipx_joint_pos_penalty": -0.6,
+            "hipy_joint_pos_penalty": -0.3,
+            "feet_air_time":           0.0,
+            "feet_height_body":        0.0,
+            "upward":                  0.08,
+            "undesired_contacts":     -0.1,
+        },
+        4: {"is_terminated": 0.0},
+    }
+
+    # Base weights (mirrored from moe_teacher_env_cfg.py) — used to verify
+    # un-overridden ranks keep these.
+    _BASE_WEIGHTS = {
+        "is_terminated":          -100.0,
+        "lin_vel_z_l2":           -0.03,
+        "ang_vel_xy_l2":          -0.05,
+        "base_height_l2":         -0.3,
+        "base_roll_l2":           -10.0,
+        "hipx_joint_pos_penalty": -0.5,
+        "hipy_joint_pos_penalty": -0.25,
+        "knee_joint_pos_penalty": -0.1,
+        "feet_air_time":           1.0,
+        "feet_height_body":       -0.2,
+        "upward":                  0.05,
+        "undesired_contacts":     -0.3,
+    }
 
     def _make_mock_env_cfg(self):
-        # Minimal mock with the attributes that the override touches
-        class _IsTerm:
-            weight = -100.0
+        """Build a mock env_cfg whose rewards holds every term in _BASE_WEIGHTS."""
+        class _Term:
+            def __init__(self, w):
+                self.weight = w
         class _Rewards:
-            is_terminated = _IsTerm()
+            pass
         class _Terrain:
             terrain_generator = None
         class _Scene:
             terrain = _Terrain()
         class _EnvCfg:
-            scene = _Scene()
-            rewards = _Rewards()
-        return _EnvCfg()
-
-    def _simulate_dispatch(self, local_rank: int, num_ranks: int):
-        """Run a minimal port of the dispatch logic. Returns (env_cfg, chosen_marker)."""
-        env_cfg = self._make_mock_env_cfg()
-        terrain_map = ["FLAT", "STAIR", "PLAT", "SCAN", "STONES", "RAIL", "NOISE", "GRID"]
-        override_map = {4: 0.0}
-
-        if local_rank < num_ranks:
-            chosen = terrain_map[local_rank]
-            env_cfg.scene.terrain.terrain_generator = chosen
-            override = override_map.get(local_rank)
-            if override is not None:
-                env_cfg.rewards.is_terminated.weight = override
+            pass
+        env_cfg = _EnvCfg()
+        env_cfg.scene = _Scene()
+        env_cfg.rewards = _Rewards()
+        for name, w in self._BASE_WEIGHTS.items():
+            setattr(env_cfg.rewards, name, _Term(w))
         return env_cfg
 
-    def test_rank_4_gets_zero_termination_weight(self):
-        env_cfg = self._simulate_dispatch(local_rank=4, num_ranks=8)
-        self.assertEqual(env_cfg.rewards.is_terminated.weight, 0.0,
-                         "rank 4 should have is_terminated.weight overridden to 0.0")
-        self.assertEqual(env_cfg.scene.terrain.terrain_generator, "STONES")
+    def _simulate_dispatch(self, local_rank: int):
+        """Run a faithful port of the nested-dispatch logic."""
+        env_cfg = self._make_mock_env_cfg()
+        terrain_map = ["FLAT", "STAIR", "PLAT", "SCAN", "STONES", "RAIL", "NOISE", "GRID"]
+        if local_rank < len(terrain_map):
+            env_cfg.scene.terrain.terrain_generator = terrain_map[local_rank]
+            overrides = self._OVERRIDES.get(local_rank, {})
+            for term_name, new_w in overrides.items():
+                term = getattr(env_cfg.rewards, term_name, None)
+                if term is not None and hasattr(term, "weight"):
+                    term.weight = new_w
+        return env_cfg
 
-    def test_other_ranks_keep_default_termination_weight(self):
-        for r in [0, 1, 2, 3, 5, 6, 7]:
-            env_cfg = self._simulate_dispatch(local_rank=r, num_ranks=8)
+    def test_rank_2_platform_overrides_applied(self):
+        env_cfg = self._simulate_dispatch(local_rank=2)
+        self.assertEqual(env_cfg.scene.terrain.terrain_generator, "PLAT")
+        # Overridden:
+        self.assertEqual(env_cfg.rewards.ang_vel_xy_l2.weight, -0.01)
+        self.assertEqual(env_cfg.rewards.base_height_l2.weight, 0.0)
+        self.assertEqual(env_cfg.rewards.feet_air_time.weight, 1.5)
+        self.assertEqual(env_cfg.rewards.feet_height_body.weight, -0.5)
+        self.assertEqual(env_cfg.rewards.upward.weight, 0.0)
+        # Non-platform overrides kept at base:
+        self.assertEqual(env_cfg.rewards.is_terminated.weight, -100.0)
+        self.assertEqual(env_cfg.rewards.lin_vel_z_l2.weight, -0.03)
+
+    def test_rank_3_scan_overrides_applied(self):
+        env_cfg = self._simulate_dispatch(local_rank=3)
+        self.assertEqual(env_cfg.scene.terrain.terrain_generator, "SCAN")
+        self.assertEqual(env_cfg.rewards.lin_vel_z_l2.weight, -2.0)
+        self.assertEqual(env_cfg.rewards.base_height_l2.weight, -0.5)
+        self.assertEqual(env_cfg.rewards.hipx_joint_pos_penalty.weight, -0.6)
+        self.assertEqual(env_cfg.rewards.hipy_joint_pos_penalty.weight, -0.3)
+        self.assertEqual(env_cfg.rewards.feet_air_time.weight, 0.0)
+        self.assertEqual(env_cfg.rewards.feet_height_body.weight, 0.0)
+        self.assertEqual(env_cfg.rewards.upward.weight, 0.08)
+        self.assertEqual(env_cfg.rewards.undesired_contacts.weight, -0.1)
+        # is_terminated NOT in scan overrides → base value
+        self.assertEqual(env_cfg.rewards.is_terminated.weight, -100.0)
+
+    def test_rank_4_keeps_only_is_terminated_override(self):
+        env_cfg = self._simulate_dispatch(local_rank=4)
+        self.assertEqual(env_cfg.scene.terrain.terrain_generator, "STONES")
+        self.assertEqual(env_cfg.rewards.is_terminated.weight, 0.0)
+        # All other weights stay at base
+        for name, base_w in self._BASE_WEIGHTS.items():
+            if name == "is_terminated":
+                continue
             self.assertEqual(
-                env_cfg.rewards.is_terminated.weight, -100.0,
-                f"rank {r} should keep default -100.0 (got {env_cfg.rewards.is_terminated.weight})"
+                getattr(env_cfg.rewards, name).weight, base_w,
+                f"rank 4: rewards.{name}.weight = {getattr(env_cfg.rewards, name).weight}, expected {base_w}"
             )
 
+    def test_untouched_ranks_keep_full_base_weights(self):
+        for rank in [0, 1, 5, 6, 7]:
+            env_cfg = self._simulate_dispatch(local_rank=rank)
+            for name, base_w in self._BASE_WEIGHTS.items():
+                self.assertEqual(
+                    getattr(env_cfg.rewards, name).weight, base_w,
+                    f"rank {rank}: rewards.{name}.weight = {getattr(env_cfg.rewards, name).weight}, expected base {base_w}"
+                )
+
+    def test_missing_term_is_skipped_safely(self):
+        """A reward term pruned by disable_zero_weight_rewards must not crash dispatch."""
+        env_cfg = self._make_mock_env_cfg()
+        # Pretend `upward` was pruned (e.g. by disable_zero_weight_rewards)
+        delattr(env_cfg.rewards, "upward")
+        # Apply rank 2 overrides (which include "upward") — should not raise.
+        overrides = self._OVERRIDES[2]
+        for term_name, new_w in overrides.items():
+            term = getattr(env_cfg.rewards, term_name, None)
+            if term is not None and hasattr(term, "weight"):
+                term.weight = new_w
+        # Confirm other overrides still applied (upward absent doesn't block the rest)
+        self.assertEqual(env_cfg.rewards.feet_air_time.weight, 1.5)
+        self.assertEqual(env_cfg.rewards.feet_height_body.weight, -0.5)
+        # Confirm upward truly doesn't exist (i.e. the override didn't accidentally create it)
+        self.assertFalse(hasattr(env_cfg.rewards, "upward"))
+
     def test_out_of_range_rank_does_nothing(self):
-        # rank 8+ on a single-node setup: no terrain swap, no override.
-        env_cfg = self._simulate_dispatch(local_rank=8, num_ranks=8)
-        self.assertIsNone(env_cfg.scene.terrain.terrain_generator)
-        self.assertEqual(env_cfg.rewards.is_terminated.weight, -100.0)
+        """rank 8+ → terrain_map index OOB: no terrain swap, no override applied."""
+        env_cfg = self._simulate_dispatch(local_rank=8)
+        self.assertIsNone(env_cfg.scene.terrain.terrain_generator,
+                          "rank 8 should not have a terrain assigned")
+        # All weights stay at base since the override dict has no entry for rank 8
+        # (and even if it did, the terrain-map index would fail first)
+        for name, base_w in self._BASE_WEIGHTS.items():
+            self.assertEqual(getattr(env_cfg.rewards, name).weight, base_w,
+                             f"rank 8: rewards.{name}.weight changed unexpectedly")
 
 
 if __name__ == "__main__":

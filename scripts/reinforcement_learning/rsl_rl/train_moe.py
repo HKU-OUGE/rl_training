@@ -284,19 +284,53 @@ def main():
             NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
             GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
         ]
-        # rank → is_terminated 权重重写
-        # 通才默认 is_terminated.weight = -100 (摔倒严罚, 保证基本生存).
-        # 但在某些"必须跳跃才能完成"的专门地形上, -100 会让 policy 学到
-        # "不敢尝试", 反而完全卡死. 这些 rank 单独把权重设 0 (或更小)
-        # 让 policy 敢冒险.
+        # rank → {reward_term_name: new_weight}
+        # =====================================================================
+        # Per-rank reward weight overrides
+        # =====================================================================
+        # 每个 rank 跑不同地形, reward landscape 应该不同. 共享 critic 时这
+        # 不可行 (V* 偏); SplitMoEPPO 现在已经做 per-rank critic
+        # (commit eb2145d), 所以放心在这里给每个 rank 设独立 reward weight.
         #
-        # 注意: 这是 per-rank, terrain-specific 的解决方案; 替代了之前
-        # 71ee668 的 "is_terminated_terrain_excluded" 设计 — 那个设计
-        # 用通才布局的列号, 在 per-rank 切换 terrain_generator 后列号
-        # 错位, 已被 rollback. 在 per-rank 模式下这种"整 rank 一刀切"
-        # 的覆盖更简洁也更安全.
-        _RANK_IS_TERMINATED_WEIGHT_OVERRIDE = {
-            4: 0.0,   # STONES: 跳跃失败不毒打, 否则 policy 不敢尝试跨 gap
+        # 下面 rank 2 / rank 3 的 weight 直接镜像自专才 env_cfg:
+        #   - rank 2 (PLATFORM)  ← teacher_platform_env_cfg.py
+        #   - rank 3 (SCAN/hurdle) ← teacher_scan_env_cfg.py
+        # 仅 mirror "与通才 base cfg 不同的 weight". params / functions 不动.
+        #
+        # rank 4 (STONES) 沿用之前 commit 46238ac 的 is_terminated=0; 后续可
+        # 按 teacher_gap_env_cfg.py (commit d5ae4f4) 把 base_roll_l2 +
+        # feet_height_body 也归零, 当前先保守.
+        #
+        # 注意: 只能 override 已经存在的 reward term. 如果某 term 被
+        # disable_zero_weight_rewards() 在 base cfg 里已经删了, getattr
+        # 拿不到, 会被 dispatch log 警告并跳过.
+        # =====================================================================
+        _RANK_REWARD_WEIGHT_OVERRIDES = {
+            # rank 2: PLATFORM (pit/box) — 攀爬大落差, 需要放宽 roll/pitch、
+            # 关掉 base_height_l2、抑制蹲走 (feet_height_body 加重)、关掉 upward
+            2: {
+                "ang_vel_xy_l2":          -0.01,   # base -0.05 → 放宽
+                "base_height_l2":          0.0,   # base -0.3  → 攀爬时身高变化是必要的
+                "feet_air_time":           1.5,   # base 1.0   → 鼓励大幅抬腿
+                "feet_height_body":       -0.5,   # base -0.2  → 抑制蹲走 (was -0.2 here -0.5)
+                "upward":                  0.0,   # base 0.05  → 攀爬必然 pitch, 这个反向信号
+            },
+            # rank 3: SCAN (hurdle) — 跨栏需要明确"先跳后蹲"信号, 关闭 air_time
+            # 让 policy 学站姿冲撞而非反复跳, 同时强化 z 速度惩罚 (跨栏不能弹)
+            3: {
+                "lin_vel_z_l2":           -2.0,   # base -0.03 → SCAN: 跳栏不要"弹跳", 严罚 z 速度
+                "base_height_l2":         -0.5,   # base -0.3  → 强化身高 (站直冲栏)
+                "hipx_joint_pos_penalty": -0.6,   # base -0.5  → 略紧 hipx
+                "hipy_joint_pos_penalty": -0.3,   # base -0.25 → 略紧 hipy
+                "feet_air_time":           0.0,   # base 1.0   → 不奖励抬腿 (蹲伏冲栏)
+                "feet_height_body":        0.0,   # base -0.2  → SCAN 蹲伏过栏杆是任务本身
+                "upward":                  0.08,  # base 0.05  → 鼓励保持竖直
+                "undesired_contacts":     -0.1,   # base -0.3  → 放宽; 栏杆轻触 ok
+            },
+            # rank 4: STONES (gap-crossing)
+            4: {
+                "is_terminated":           0.0,   # base -100  → 跳跃失败不毒打 (commit 46238ac 原 dict 那项)
+            },
         }
         # 每 rank 把自己的 dispatch info append 到共享文件 (不 print 到 stdout, 避免被 8x 刷屏)
         _DISPATCH_FILE = "/tmp/per_rank_dispatch.txt"
@@ -307,19 +341,27 @@ def main():
         if local_rank < len(_RANK_TERRAIN_MAP):
             chosen = _RANK_TERRAIN_MAP[local_rank]
             env_cfg.scene.terrain.terrain_generator = chosen
-            # Apply per-rank is_terminated weight override
-            _term_weight_override = _RANK_IS_TERMINATED_WEIGHT_OVERRIDE.get(local_rank)
-            if _term_weight_override is not None:
-                _prev_weight = env_cfg.rewards.is_terminated.weight
-                env_cfg.rewards.is_terminated.weight = _term_weight_override
+            # Apply per-rank reward weight overrides (if any for this rank)
+            _reward_overrides = _RANK_REWARD_WEIGHT_OVERRIDES.get(local_rank, {})
+            _applied = []    # list of (name, prev_w, new_w)
+            _skipped = []    # list of names that don't exist in env_cfg.rewards
+            for _term_name, _new_w in _reward_overrides.items():
+                _term = getattr(env_cfg.rewards, _term_name, None)
+                if _term is None or not hasattr(_term, "weight"):
+                    _skipped.append(_term_name)
+                    continue
+                _prev_w = _term.weight
+                _term.weight = _new_w
+                _applied.append((_term_name, _prev_w, _new_w))
             with open(_DISPATCH_FILE, "a") as _f:
                 _f.write(f"[rank={local_rank}] terrain → "
                          f"{list(chosen.sub_terrains.keys())} "
                          f"(size={chosen.size}, num_rows={chosen.num_rows}, "
                          f"curriculum={chosen.curriculum})\n")
-                if _term_weight_override is not None:
-                    _f.write(f"[rank={local_rank}] is_terminated.weight: "
-                             f"{_prev_weight} → {_term_weight_override}\n")
+                for _name, _prev, _new in _applied:
+                    _f.write(f"[rank={local_rank}] rewards.{_name}.weight: {_prev} → {_new}\n")
+                for _name in _skipped:
+                    _f.write(f"[rank={local_rank}] WARN: rewards.{_name} not found, override skipped\n")
         else:
             with open(_DISPATCH_FILE, "a") as _f:
                 _f.write(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range\n")
