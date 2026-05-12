@@ -537,19 +537,23 @@ class SimulatedOverrideBehavior(unittest.TestCase):
 
     # ---- New: per-rank reward function override ----
 
-    def test_rank_0_flat_swaps_feet_air_time_func(self):
-        env_cfg = self._simulate_dispatch(local_rank=0)
-        self.assertIs(env_cfg.rewards.feet_air_time.func, _ang_z_feet_air_func,
-                      "rank 0: feet_air_time.func should be the including_ang_z variant")
-        self.assertEqual(env_cfg.rewards.feet_air_time.func.__name__,
-                         "feet_air_time_including_ang_z")
+    def test_all_ranks_swap_feet_air_time_func(self):
+        """All 8 ranks should now use the ang-z variant (no curriculum gate).
 
-    def test_non_flat_ranks_keep_feet_air_time_func(self):
-        for rank in [1, 2, 3, 4, 5, 6, 7]:
+        Even rank 3 (SCAN, weight=0) gets the swap; it's a no-op behaviorally
+        (0 × reward = 0) but keeps the override schema uniform.
+        """
+        for rank in range(8):
             env_cfg = self._simulate_dispatch(local_rank=rank)
             with self.subTest(rank=rank):
-                self.assertIs(env_cfg.rewards.feet_air_time.func, _base_feet_air_func,
-                              f"rank {rank}: feet_air_time.func should stay at base (curriculum-gated)")
+                self.assertIs(
+                    env_cfg.rewards.feet_air_time.func, _ang_z_feet_air_func,
+                    f"rank {rank}: feet_air_time.func should be the including_ang_z variant"
+                )
+                self.assertEqual(
+                    env_cfg.rewards.feet_air_time.func.__name__,
+                    "feet_air_time_including_ang_z",
+                )
 
     def test_out_of_range_rank_does_nothing(self):
         """rank 8+ → terrain_map index OOB: no terrain swap, no override applied."""
@@ -577,8 +581,10 @@ _ang_z_feet_air_func.__name__ = "feet_air_time_including_ang_z"
 
 
 # Module-level dispatch dict (referenced by SimulatedOverrideBehavior._simulate_dispatch)
+# Mirrors train_moe.py: all 8 ranks swap feet_air_time func to ang-z variant.
 _FUNC_OVERRIDES = {
-    0: {"feet_air_time": _ang_z_feet_air_func},
+    r: {"feet_air_time": _ang_z_feet_air_func}
+    for r in range(8)
 }
 
 

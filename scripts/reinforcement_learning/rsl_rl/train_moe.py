@@ -335,21 +335,24 @@ def main():
         # =====================================================================
         # Per-rank Reward function (not weight) overrides
         # =====================================================================
-        # Some rewards use a curriculum-gated function that returns 0 on flat
-        # terrain (e.g. feet_air_time_curriculum has scale = clamp(level/5, 0, 1)
-        # which is 0 at terrain level 0). On rank 0 (FLAT, level always 0), this
-        # silently neuters the feet_air_time reward → robot learns pure skid-steer
-        # turning. For pure-yaw command, we want the robot to *lift feet* and step
-        # around, not roll. Swap rank 0's feet_air_time func to
-        # feet_air_time_including_ang_z which:
-        #   - has NO curriculum scale (works on flat)
-        #   - triggers on ang_vel commands too (not just lin_vel)
+        # feet_air_time uses mdp.feet_air_time_curriculum (scale=clamp(level/5,0,1))
+        # which silently zeros the reward at low terrain levels. This means:
+        #   * rank 0 FLAT (level always 0) → reward永远=0 → robot 学 skid-steer 转向
+        #   * rank 1-7 在课程早期 (level 0~5) 也是 ≈0 → 早期都是 skid-steer
+        # 即使每 rank 后期 level 升上去开始给抬腿奖励, 此时 actor 已经被早期的
+        # "纯轮式" 行为塑造定型, 很难再扭转.
+        #
+        # 解决: 全 8 rank 都 swap 到 feet_air_time_including_ang_z, 它:
+        #   - 无 curriculum scale (任何 level 都给奖励)
+        #   - 触发条件含 ang_vel 命令 (纯转向也奖励抬腿)
+        #
+        # rank 3 (SCAN) 因 _RANK_REWARD_WEIGHT_OVERRIDES 里 weight=0, swap 是
+        # no-op (0 × reward = 0), 但保持代码统一更易读.
         # =====================================================================
         import rl_training.tasks.manager_based.locomotion.velocity.mdp as _mdp
         _RANK_REWARD_FUNC_OVERRIDES = {
-            0: {  # FLAT: enable step-turn instead of skid-steer
-                "feet_air_time": _mdp.feet_air_time_including_ang_z,
-            },
+            r: {"feet_air_time": _mdp.feet_air_time_including_ang_z}
+            for r in range(8)
         }
 
         _RANK_REWARD_WEIGHT_OVERRIDES = {
