@@ -289,7 +289,7 @@ class SplitMoEActorCritic(ActorCritic):
             "feed_estimator_to_policy", "feed_ae_to_policy",
             "use_multilayer_scan", "num_scan_channels", "num_scan_rays", "teacher_is_mlp",
             "use_cnn", "num_cameras", "camera_height", "camera_width",
-            "sym_loss_coef"
+            "sym_loss_coef", "sym_loss_lr_coef", "sym_loss_fb_coef"
         ]}
 
         super().__init__(obs, obs_groups, num_actions, actor_hidden_dims=actor_hidden_dims, 
@@ -482,10 +482,20 @@ class SplitMoEActorCritic(ActorCritic):
         self.latent_dim = latent_dim
         self.rnn_type = rnn_type.lower()
         self.aux_loss_coef = aux_loss_coef
-        self.sym_loss_coef = kwargs.get("sym_loss_coef", 1.0)
-        # sym_loss_coef<=0 时禁用对称性增强, 避免 rollout 2x 前向与更新阶段镜像 MSE 的额外开销,
-        # 同时让 RNN 隐状态只用 1 层 (正常路径), 不再维护镜像 piggyback 层.
-        self.sym_enabled = bool(self.sym_loss_coef > 0.0)
+        # ------ Symmetry loss coefficients ------
+        # 历史上只有一个 sym_loss_coef, LR 和 FB 共用同一系数. 拆成两个独立系数后:
+        #   sym_loss_lr_coef: 左右对称 (FL↔FR, HL↔HR), 主要约束 yaw/hip 不偏
+        #   sym_loss_fb_coef: 前后对称 (FL↔HL, FR↔HR), 主要约束步态周期对称
+        # 默认 LR=1.0 FB=0.5 — FB 在 wheel-leg 混合机器人上是软约束 (前轮跟后腿
+        # 不对应), 太强会过度限制策略.
+        # 兼容旧 cfg: 如果只给了 sym_loss_coef, 两个都 fallback 到它.
+        _legacy = float(kwargs.get("sym_loss_coef", 1.0))
+        self.sym_loss_lr_coef = float(kwargs.get("sym_loss_lr_coef", _legacy))
+        self.sym_loss_fb_coef = float(kwargs.get("sym_loss_fb_coef", _legacy))
+        # 旧字段保留 (供旧代码 getattr 读取, 取两者平均作 sanity)
+        self.sym_loss_coef = (self.sym_loss_lr_coef + self.sym_loss_fb_coef) / 2.0
+        # sym_enabled 当任一系数 > 0 即启用 (有任一对称损失需要镜像 piggyback)
+        self.sym_enabled = bool(self.sym_loss_lr_coef > 0.0 or self.sym_loss_fb_coef > 0.0)
         self.num_leg_actions = num_leg_actions
         self.num_wheel_actions = num_actions - num_leg_actions
 
@@ -1541,7 +1551,7 @@ class SplitMoEPPO(PPO):
             )
 
             sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions)
-            loss = loss + getattr(model, 'sym_loss_coef', 1.0) * sym_loss
+            loss = loss + getattr(model, 'sym_loss_lr_coef', getattr(model, 'sym_loss_coef', 1.0)) * sym_loss
             avg_sym_loss_lr += sym_loss.item()
 
             # -----------------------------------------------------------------
@@ -1564,7 +1574,7 @@ class SplitMoEPPO(PPO):
             )
 
             sym_loss_fb = torch.nn.functional.mse_loss(pred_fb_actions, target_mirrored_fb_actions)
-            loss = loss + getattr(model, 'sym_loss_coef', 1.0) * sym_loss_fb
+            loss = loss + getattr(model, 'sym_loss_fb_coef', getattr(model, 'sym_loss_coef', 1.0)) * sym_loss_fb
             avg_sym_loss_fb += sym_loss_fb.item()
 
             # -----------------------------------------------------------------
@@ -2097,10 +2107,12 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     latent_dim: int = 256
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
-    sym_loss_coef: float = 0.0
+    sym_loss_coef: float = 0.0       # legacy fallback (旧 cfg 兼容)
+    sym_loss_lr_coef: float = 0.0    # 左右对称损失系数 (FL↔FR, HL↔HR with hipx negation)
+    sym_loss_fb_coef: float = 0.0    # 前后对称损失系数 (FL↔HL, FR↔HR)
 
-    blind_vision: bool = False       
-    use_elevation_ae: bool = False  # ELE AE 已弃用，由半球 LIDAR scan AE 替代
+    blind_vision: bool = False
+    use_elevation_ae: bool = False  # default off; enabled via SplitMoEPPOCfg below
     elevation_dim: int = 187      
     use_multilayer_scan: bool = False
     num_scan_channels: int = 32  # 16 fwd + 16 bwd (LidarPattern hemispherical)
@@ -2162,15 +2174,19 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-        
+
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=False,
+        use_elevation_ae=True,   # 187-dim height_scan → ElevationAE CNN encoder → 64-dim latent → actor RNN
         elevation_dim=187,
-        use_cnn=False, 
-        
+        use_cnn=False,
+
+        # 对称性 — LR=1.0 / FB=0.5 (相比单一 sym_loss_coef 更精细)
+        sym_loss_lr_coef=1.0,
+        sym_loss_fb_coef=0.5,
+
         estimator_output_dim=3,
         estimator_hidden_dims=[128, 64],
-        estimator_target_indices=[0, 1, 2], 
+        estimator_target_indices=[0, 1, 2],
         estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
         estimator_obs_normalization=True,
 
