@@ -1995,7 +1995,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     sym_loss_coef: float = 0.0
 
     blind_vision: bool = False       
-    use_elevation_ae: bool = False  # default off; enabled via SplitMoEPPOCfg below
+    use_elevation_ae: bool = False  # ELE AE 已弃用，由半球 LIDAR scan AE 替代
     elevation_dim: int = 187      
     use_multilayer_scan: bool = False
     num_scan_channels: int = 32  # 16 fwd + 16 bwd (LidarPattern hemispherical)
@@ -2048,7 +2048,7 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         init_noise_legs=0.6,
         init_noise_wheels=1.5,
-        actor_hidden_dims=[256, 128, 128],
+        actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
         num_wheel_experts=3,
@@ -2057,9 +2057,9 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         latent_dim=256,
         rnn_type="gru",
         aux_loss_coef=0.01,
-
+        
         blind_vision=False, # 盲视平地训练
-        use_elevation_ae=True,
+        use_elevation_ae=False,
         elevation_dim=187,
         use_cnn=False, 
         

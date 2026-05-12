@@ -463,15 +463,8 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={
-                "sensor_cfg": SceneEntityCfg("height_scanner"),
-                "offset": 0.5,
-            },
-            noise=Unoise(n_min=-0.1, n_max=0.1),
-            clip=(-1.0, 1.0),
-        )
+        # 高程图已彻底移出！交给独立的 noisy_elevation 处理
+        height_scan = None 
         base_lin_vel = None
         def __post_init__(self):
             # Teacher Actor 使用完全无噪声的本体感觉，以追求性能上限
@@ -480,16 +473,9 @@ class DeeproboticsM20ObservationsCfg:
 
     @configclass
     class NoisyElevationCfg(ObsGroup):
-        """提供给 ScanAE 的环境感知组（elevation map + LIDAR 双流）"""
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={
-                "sensor_cfg": SceneEntityCfg("height_scanner"),
-                "offset": 0.5,
-            },
-            noise=Unoise(n_min=-0.1, n_max=0.1),
-            clip=(-1.0, 1.0),
-        )
+        """提供给 ScanAE 的环境感知组（已切除 elevation map，纯 LIDAR）"""
+        # height_scan 已禁用 —— 真机 elevation map sim2real gap 太大，改用半球 LIDAR 代替
+        height_scan = None
         # --- 前后两个半球 LidarPattern sensor (16 ch × 31 az = 496/sensor, 共 992) ---
         # 噪声幅度由 SCAN_AUG 环境变量控制 (±0.02 增强 / ±0.005 baseline)
         forward_scan = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_lidar")}, noise=Unoise(n_min=-_SCAN_NOISE_AMP, n_max=_SCAN_NOISE_AMP))
@@ -539,7 +525,7 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        height_scan = None  # blind by design — no elevation map
+        height_scan = None
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -570,15 +556,9 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={
-                "sensor_cfg": SceneEntityCfg("height_scanner"),
-                "offset": 0.5,
-            },
-            noise=Unoise(n_min=-0.1, n_max=0.1),
-            clip=(-1.0, 1.0),
-        )
+        # 同样去除高程图，Critic 的环境感知将通过 `noisy_elevation` 提供
+        height_scan = None
+        
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
@@ -591,7 +571,7 @@ class DeeproboticsM20ObservationsCfg:
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True)},
             noise=Unoise(n_min=0.0, n_max=0.0),
             clip=(-100.0, 100.0),
-            scale=0.05,
+            scale=0.05, 
         )
         terrain_level = ObsTerm(
             func=mdp.terrain_level_normalized,
@@ -693,7 +673,13 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-100.0, 100.0),
             scale=1.0,
         )
-        height_scan = None  # blind by design — pretrain group has no elevation map
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            clip=(-1.0, 1.0),
+            scale=1.0,
+        )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -742,8 +728,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         super().__post_init__()
         
         self.scene.robot = DEEPROBOTICS_M20_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        # height_scanner: fix prim_path for M20 (base_link, not base)
-        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # height_scanner (187-dim grid for elevation map) 已禁用 — 由半球 LIDAR scan 替代
+        self.scene.height_scanner = None
         # height_scanner_base (9-pt grid for base height reward) 仍保留
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
         obs_groups_to_process = [
@@ -774,6 +760,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.pretraincfg.joint_pos.scale = 1.0
         self.observations.pretraincfg.joint_vel.scale = 0.05
         self.observations.pretraincfg.base_lin_vel = None
+        self.observations.pretraincfg.height_scan = None
         self.actions.joint_pos.scale = {".*_hipx_joint": 0.125, "^(?!.*_hipx_joint).*": 0.25}
         self.actions.joint_vel.scale = 5.0
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
@@ -788,7 +775,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "z": (0.0, 0.0),
                 "roll": (-0.3, 0.3),
                 "pitch": (-0.3, 0.3),
-                "yaw": (0.0, 0.0),
+                "yaw": (-3.14, 3.14),
             },
             "velocity_range": {
                 "x": (-0.2, 0.2),
@@ -989,7 +976,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             debug_vis=False,
             ranges=mdp.UniformVelocityCommandCfg.Ranges(
                 lin_vel_x=(-1.0, 1.0),
-                lin_vel_y=(0.0, 0.0),
+                lin_vel_y=(-1.0, 1.0),
                 ang_vel_z=(-1.0, 1.0),
                 heading=(0.0, 0.0),
             ),
@@ -1063,5 +1050,7 @@ class DeeproboticsM20MoETeacherEnvCfg_ScanOnly(DeeproboticsM20MoETeacherEnvCfg):
     """仅使用 MultiLayer Scan 的环境"""
     def __post_init__(self):
         super().__post_init__()
+        # 禁用高程图
+        self.observations.noisy_elevation.height_scan = None
         if self.__class__.__name__ == "DeeproboticsM20MoETeacherEnvCfg_ScanOnly":
             self.disable_zero_weight_rewards()

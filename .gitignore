@@ -37,7 +37,3 @@ _build
 
 
 **/usd/*
-
-# Claude Code local config & superpowers artifacts (do not push)
-.claude/
-docs/superpowers/
