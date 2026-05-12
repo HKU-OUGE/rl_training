@@ -74,9 +74,19 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
 
         # 3. 奖励
         self.rewards = GapRewardsCfg()
-        self.rewards.is_terminated.weight = -100  # 摔/撞惩罚 (统一用 is_terminated, 不再用 termination_penalty)
+        # ---------------------------------------------------------------------------
+        # Gap regression fix (vs 2026-04-02 video baseline f22c8fc):
+        # 4-02 视频时能训出来 gap, 但当时 reward landscape 没有下面这些"反跳跃压力"
+        # 项. 后续版本逐步加上让通才/其它专才更稳, 但对 gap (跨越类) 是直接反激励.
+        # 在这里把它们归零, 恢复 4-02 的"敢跳"reward 形状.
+        #   - is_terminated:        0 (was -100)  摔倒不毒打, 否则 policy 永远不敢跳
+        #   - base_roll_l2:         0 (was -10)   跳跃落地必然 roll, -10 = 严罚跳跃
+        #   - feet_height_body:     0 (was -0.1)  蓄力/腾空时 body 偏离站姿是必须的
+        # track_*_pre_exp 软目标 (4-02 = 0.5 + 1.5) 暂不改, 先观察上述三项效果.
+        # ---------------------------------------------------------------------------
+        self.rewards.is_terminated.weight = 0      # 4-02 video baseline
         self.rewards.flat_orientation_l2.weight = 0
-        self.rewards.base_roll_l2.weight = -10.0
+        self.rewards.base_roll_l2.weight = 0       # 4-02 video baseline (项不存在)
         self.rewards.base_height_l2.weight = -0.0
         self.rewards.base_height_l2.params["target_height"] = 0.5
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
@@ -127,6 +137,8 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
 
         self.rewards.track_lin_vel_xy_exp.weight = 4.0
         self.rewards.track_ang_vel_z_exp.weight = 3.0
+        # pre_exp 软目标先保持 0 (用户决定先观察 is_terminated + base_roll +
+        # feet_height_body 三项归零的效果, pre_exp 后续视情况再说)
         self.rewards.track_lin_vel_xy_pre_exp.weight = 0
         self.rewards.track_ang_vel_z_pre_exp.weight = 0
 
@@ -142,7 +154,7 @@ class DeeproboticsM20TeacherGapEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
         self.rewards.feet_height.weight = 0
         self.rewards.feet_height.params["target_height"] = 0.3
         self.rewards.feet_height.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_height_body.weight = -0.1  # 轻微抑制匍匐 (was 0)
+        self.rewards.feet_height_body.weight = 0     # was -0.1; 4-02 video baseline (项不存在)
         self.rewards.feet_height_body.params["target_height"] = -0.48  # 默认站姿实测 -0.44
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_gait.weight = 0
