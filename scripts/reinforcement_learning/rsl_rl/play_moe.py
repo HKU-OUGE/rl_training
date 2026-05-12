@@ -51,7 +51,12 @@ import torch.nn.functional as F
 
 import carb
 import carb.input
-import omni.appwindow
+try:
+    import omni.appwindow  # not available in --headless Kit configs
+    _HAS_APPWINDOW = True
+except ModuleNotFoundError:
+    _HAS_APPWINDOW = False
+    omni = None  # placeholder; KeyboardExtension instantiation will be skipped
 
 from rl_utils import camera_follow 
 from isaaclab_tasks.utils import parse_env_cfg
@@ -829,10 +834,15 @@ def main():
                     radius=0.018,
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                 ),
+                # 高程图 (ElevationAE 的输入) — height_scanner 11x17 grid 的真实 ray_hit 位置
+                "elevation": sim_utils.SphereCfg(
+                    radius=0.025,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.8, 1.0)),
+                ),
             },
         )
         scan_vis_markers = VisualizationMarkers(scan_vis_cfg)
-        print("[ScanVis] post-aug scan markers enabled (env 0). 绿=valid, 黄=ramp, 紫=random_dropout, 红=true_no_return.")
+        print("[ScanVis] post-aug scan markers enabled (env 0). 绿=valid, 黄=ramp, 紫=random_dropout, 红=true_no_return, 青=elevation.")
         print("[ScanVis] 诊断日志写入 /tmp/scan_vis_diag.log — 另开终端 `tail -f /tmp/scan_vis_diag.log` 查看")
         # 清空旧日志
         try:
@@ -843,18 +853,62 @@ def main():
 
     _scan_vis_diag = {"step": 0, "ramp_seen": 0, "last_print": -1}
 
+    # 动态计算 noisy_elevation 组内 forward_scan / backward_scan 的真实切片位置。
+    # height_scan 可能出现在 LIDAR 之前 (见 NoisyElevationCfg)，硬编码 (0,496)/(496,992) 会错位。
+    _lidar_slices = []
+    _height_scan_slice = None
+    if args.vis_scan_obs:
+        try:
+            _om = base_env.observation_manager
+            # active_terms: dict[group_name, list[term_name]] (in concatenation order)
+            # group_obs_term_dim: dict[group_name, list[tuple[int, ...]]]
+            _term_names = _om.active_terms["noisy_elevation"]
+            _term_dims = _om.group_obs_term_dim["noisy_elevation"]
+            _name_to_sensor = {"forward_scan": "forward_lidar", "backward_scan": "backward_lidar"}
+            _off = 0
+            _height_scan_slice = None
+            for _n, _d in zip(_term_names, _term_dims):
+                _sz = int(_d[0])
+                if _n in _name_to_sensor:
+                    _lidar_slices.append((_name_to_sensor[_n], slice(_off, _off + _sz)))
+                elif _n == "height_scan":
+                    _height_scan_slice = slice(_off, _off + _sz)
+                _off += _sz
+            print(f"[ScanVis] dynamic slices = {_lidar_slices} "
+                  f"(group dim={_off}, height_scan slice={_height_scan_slice})")
+        except Exception as _e:
+            print(f"[ScanVis] dynamic slice lookup failed ({_e}); falling back to legacy 992 layout")
+            _lidar_slices = [("forward_lidar", slice(0, 496)), ("backward_lidar", slice(496, 992))]
+
+    # height_scan 可视化: 检测 obs 里是否真的有 height_scan 项, 且 scene 里挂了 height_scanner sensor
+    _viz_height_scan = False
+    if args.vis_scan_obs:
+        try:
+            _has_term = any(
+                "height_scan" in _terms
+                for _terms in base_env.observation_manager.active_terms.values()
+            )
+            _has_sensor = "height_scanner" in base_env.scene.sensors
+            _viz_height_scan = _has_term and _has_sensor
+            if _viz_height_scan:
+                print("[ScanVis] elevation (青色) markers enabled — height_scanner ray_hits_w")
+            else:
+                print(f"[ScanVis] elevation viz off (has_term={_has_term}, has_sensor={_has_sensor})")
+        except Exception as _e:
+            print(f"[ScanVis] elevation viz disabled: {_e}")
+
     def _update_scan_obs_markers(env_obs_dict, env_idx=0):
         """4 色分类: 区分 valid / ramp / random_dropout / true_no_return."""
         if "noisy_elevation" not in env_obs_dict:
             return
-        noisy = env_obs_dict["noisy_elevation"][env_idx]  # (992,)
+        noisy = env_obs_dict["noisy_elevation"][env_idx]
         pts_list, idx_list = [], []
         # 收集诊断
         diag_counts = [0, 0, 0, 0]   # valid, ramp, random, no_return
         diag_raw_min = float("inf")
         diag_raw_close_count = 0      # 当前帧 raw_d < 0.35 的射线数
 
-        for sname, slc in [("forward_lidar", slice(0, 496)), ("backward_lidar", slice(496, 992))]:
+        for sname, slc in _lidar_slices:
             sensor = base_env.scene.sensors[sname]
             # 用 _ray_starts_w (真实射线起点, 含 offset) 而非 data.pos_w (= base_link).
             ray_starts = sensor._ray_starts_w[env_idx]          # (496, 3) — 每条射线的世界起点
@@ -897,6 +951,23 @@ def main():
             if raw_finite.any():
                 diag_raw_min = min(diag_raw_min, float(raw_clean[raw_finite].min().item()))
             diag_raw_close_count += int((raw_finite & (raw_d < 0.35)).sum().item())
+
+        # 高程图可视化 (post-obs, 与 LIDAR 4 色同口径):
+        # obs_hs ∈ [-1, 1] = pos_w_z - ground_z - 0.5  (含 ±0.1 噪声, clip 后)
+        # → ground_z_seen_by_policy = pos_w_z - obs_hs - 0.5
+        # XY 仍取真实栅格位置 (_ray_starts_w 的 xy 分量, 已含 yaw 旋转后的 sensor 偏移)
+        if _viz_height_scan and _height_scan_slice is not None:
+            hs = base_env.scene.sensors["height_scanner"]
+            obs_hs = noisy[_height_scan_slice]                            # (187,) 已 noise+clip
+            ray_xy = hs._ray_starts_w[env_idx, :, :2]                     # (187, 2) world XY
+            pos_w_z = hs.data.pos_w[env_idx, 2]                           # scalar body z
+            ground_z = pos_w_z - obs_hs - 0.5                             # (187,)
+            elev_pts = torch.cat([ray_xy, ground_z.unsqueeze(-1)], dim=-1)
+            pts_list.append(elev_pts)
+            idx_list.append(torch.full(
+                (elev_pts.shape[0],), 4,
+                dtype=torch.long, device=elev_pts.device,
+            ))
 
         all_pts = torch.cat(pts_list, dim=0).cpu().numpy()
         all_idx = torch.cat(idx_list, dim=0).cpu().numpy().tolist()
