@@ -521,9 +521,18 @@ def main():
                     tl = _base_env.scene.terrain.terrain_levels.float()
                     m["terrain_level_mean"] = float(tl.mean().item())
                     m["terrain_level_max"] = float(tl.max().item())
+                # Per-rank PPO loss components (return dict from alg.update).
+                # 主要用来看 per-rank critic 是否真的让各 rank V̂ 分化:
+                #   - value_function: critic MSE (low + diverging across ranks = healthy)
+                #   - surrogate: PPO actor loss
+                #   - entropy: action distribution entropy
+                if isinstance(result, dict):
+                    for k in ("value_function", "surrogate", "entropy"):
+                        if k in result and isinstance(result[k], (int, float)):
+                            m[k] = float(result[k])
                 # episode 长度 / 奖励直接读 env (alg.update 此时还有 rollout 数据)
                 # episode_sums / lenbuffer 数据保存在 runner 自己的 deque, 不能从 alg 拿到
-                # → 这里只写 terrain_level. ep_reward / ep_length 走 hook 2 (master 自己有)
+                # → 这里只写 terrain_level + ppo loss. ep_reward / ep_length 走 hook 2 (master 自己有)
                 with open(_per_rank_path(local_rank), "a") as f:
                     f.write(_json.dumps(m) + "\n")
                     f.flush()
