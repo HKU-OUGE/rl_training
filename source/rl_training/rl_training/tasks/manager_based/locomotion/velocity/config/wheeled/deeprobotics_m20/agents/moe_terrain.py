@@ -1704,10 +1704,41 @@ class SplitMoEPPO(PPO):
         
         if isinstance(obs_mirrored, dict):
             if "policy" in obs_mirrored:
-                # 关键修复：不在原地修改，而是新建张量并赋值
+                # policy obs layout: [proprio(57), height_scan(187)?]
+                # height_scan 出现当 PolicyCfg 启用 mdp.height_scan 之后 (dim=244)
                 p = obs_mirrored["policy"]
-                obs_mirrored["policy"] = (p[..., obs_swap_idx] * obs_neg_mask).clone()
-                
+                proprio_dim = 57
+                # mirror 前 57 维 proprio (左右 swap + 取反)
+                proprio_part = (p[..., :proprio_dim][..., obs_swap_idx] * obs_neg_mask).clone()
+                if p.shape[-1] > proprio_dim:
+                    # 后面是 height_scan (11×17 grid), LR mirror = flip y axis = dim -2
+                    extra = p[..., proprio_dim:].clone()
+                    elev_dim = getattr(model, "elevation_dim", 187)
+                    if extra.shape[-1] >= elev_dim:
+                        elev = extra[..., :elev_dim]
+                        elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-2]).reshape(*elev.shape[:-1], elev_dim)
+                        extra[..., :elev_dim] = elev_mirrored
+                    obs_mirrored["policy"] = torch.cat([proprio_part, extra], dim=-1)
+                else:
+                    obs_mirrored["policy"] = proprio_part
+
+            if "critic" in obs_mirrored:
+                # critic obs 跟 policy 结构一致 (proprio + height_scan), 用相同 mirror 逻辑
+                # 即使 critic 不参与 sym_loss, batched_obs 仍需要 dim 一致
+                c = obs_mirrored["critic"]
+                proprio_dim = 57
+                proprio_part_c = (c[..., :proprio_dim][..., obs_swap_idx] * obs_neg_mask).clone()
+                if c.shape[-1] > proprio_dim:
+                    extra_c = c[..., proprio_dim:].clone()
+                    elev_dim = getattr(model, "elevation_dim", 187)
+                    if extra_c.shape[-1] >= elev_dim:
+                        elev_c = extra_c[..., :elev_dim]
+                        elev_c_mirrored = elev_c.view(*elev_c.shape[:-1], 11, 17).flip(dims=[-2]).reshape(*elev_c.shape[:-1], elev_dim)
+                        extra_c[..., :elev_dim] = elev_c_mirrored
+                    obs_mirrored["critic"] = torch.cat([proprio_part_c, extra_c], dim=-1)
+                else:
+                    obs_mirrored["critic"] = proprio_part_c
+
             if "estimator" in obs_mirrored:
                 e = obs_mirrored["estimator"]
                 history_len = e.shape[-1] // 57
@@ -1716,7 +1747,7 @@ class SplitMoEPPO(PPO):
                 for h_i in range(history_len):
                     est_swap_idx[h_i*57 : (h_i+1)*57] = obs_swap_idx + h_i*57
                 obs_mirrored["estimator"] = (e[..., est_swap_idx] * est_neg_mask).clone()
-                
+
             if "noisy_elevation" in obs_mirrored:
                 env_raw = obs_mirrored["noisy_elevation"].clone() # 不污染原图
                 if getattr(model, "use_elevation_ae", False):
@@ -1771,8 +1802,36 @@ class SplitMoEPPO(PPO):
 
         if isinstance(obs_mirrored, dict):
             if "policy" in obs_mirrored:
+                # policy obs layout: [proprio(57), height_scan(187)?]
+                # FB mirror = flip x axis = dim -1 (17 列对应 x 前后)
                 p = obs_mirrored["policy"]
-                obs_mirrored["policy"] = (p[..., obs_swap_idx] * obs_neg_mask).clone()
+                proprio_dim = 57
+                proprio_part = (p[..., :proprio_dim][..., obs_swap_idx] * obs_neg_mask).clone()
+                if p.shape[-1] > proprio_dim:
+                    extra = p[..., proprio_dim:].clone()
+                    elev_dim = getattr(model, "elevation_dim", 187)
+                    if extra.shape[-1] >= elev_dim:
+                        elev = extra[..., :elev_dim]
+                        elev_mirrored = elev.view(*elev.shape[:-1], 11, 17).flip(dims=[-1]).reshape(*elev.shape[:-1], elev_dim)
+                        extra[..., :elev_dim] = elev_mirrored
+                    obs_mirrored["policy"] = torch.cat([proprio_part, extra], dim=-1)
+                else:
+                    obs_mirrored["policy"] = proprio_part
+
+            if "critic" in obs_mirrored:
+                c = obs_mirrored["critic"]
+                proprio_dim = 57
+                proprio_part_c = (c[..., :proprio_dim][..., obs_swap_idx] * obs_neg_mask).clone()
+                if c.shape[-1] > proprio_dim:
+                    extra_c = c[..., proprio_dim:].clone()
+                    elev_dim = getattr(model, "elevation_dim", 187)
+                    if extra_c.shape[-1] >= elev_dim:
+                        elev_c = extra_c[..., :elev_dim]
+                        elev_c_mirrored = elev_c.view(*elev_c.shape[:-1], 11, 17).flip(dims=[-1]).reshape(*elev_c.shape[:-1], elev_dim)
+                        extra_c[..., :elev_dim] = elev_c_mirrored
+                    obs_mirrored["critic"] = torch.cat([proprio_part_c, extra_c], dim=-1)
+                else:
+                    obs_mirrored["critic"] = proprio_part_c
 
             if "estimator" in obs_mirrored:
                 e = obs_mirrored["estimator"]
