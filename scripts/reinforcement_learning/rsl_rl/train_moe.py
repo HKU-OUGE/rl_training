@@ -279,11 +279,25 @@ def main():
             STAIR_SLOPE_TEACHER_TERRAINS_CFG,    # rank 1: STAIR_SLOPE
             PLATFORM_TEACHER_TERRAINS_CFG,       # rank 2: PLATFORM (pit/box)
             SCAN_TEACHER_TERRAINS_CFG,           # rank 3: SCAN (hurdle)
-            _FLAT_TERRAINS_CFG,                  # rank 4: GAP→Stepping Stones→FLAT (后两者训练失败, 暂用平地)
+            STEPPING_STONES_TEACHER_TERRAINS_CFG,# rank 4: STONES (gap-crossing, 复用通才 rough.py 定义)
             RAIL_TEACHER_TERRAINS_CFG,           # rank 5: RAIL (0-40cm)
             NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
             GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
         ]
+        # rank → is_terminated 权重重写
+        # 通才默认 is_terminated.weight = -100 (摔倒严罚, 保证基本生存).
+        # 但在某些"必须跳跃才能完成"的专门地形上, -100 会让 policy 学到
+        # "不敢尝试", 反而完全卡死. 这些 rank 单独把权重设 0 (或更小)
+        # 让 policy 敢冒险.
+        #
+        # 注意: 这是 per-rank, terrain-specific 的解决方案; 替代了之前
+        # 71ee668 的 "is_terminated_terrain_excluded" 设计 — 那个设计
+        # 用通才布局的列号, 在 per-rank 切换 terrain_generator 后列号
+        # 错位, 已被 rollback. 在 per-rank 模式下这种"整 rank 一刀切"
+        # 的覆盖更简洁也更安全.
+        _RANK_IS_TERMINATED_WEIGHT_OVERRIDE = {
+            4: 0.0,   # STONES: 跳跃失败不毒打, 否则 policy 不敢尝试跨 gap
+        }
         # 每 rank 把自己的 dispatch info append 到共享文件 (不 print 到 stdout, 避免被 8x 刷屏)
         _DISPATCH_FILE = "/tmp/per_rank_dispatch.txt"
         if local_rank == 0:
@@ -293,11 +307,19 @@ def main():
         if local_rank < len(_RANK_TERRAIN_MAP):
             chosen = _RANK_TERRAIN_MAP[local_rank]
             env_cfg.scene.terrain.terrain_generator = chosen
+            # Apply per-rank is_terminated weight override
+            _term_weight_override = _RANK_IS_TERMINATED_WEIGHT_OVERRIDE.get(local_rank)
+            if _term_weight_override is not None:
+                _prev_weight = env_cfg.rewards.is_terminated.weight
+                env_cfg.rewards.is_terminated.weight = _term_weight_override
             with open(_DISPATCH_FILE, "a") as _f:
                 _f.write(f"[rank={local_rank}] terrain → "
                          f"{list(chosen.sub_terrains.keys())} "
                          f"(size={chosen.size}, num_rows={chosen.num_rows}, "
                          f"curriculum={chosen.curriculum})\n")
+                if _term_weight_override is not None:
+                    _f.write(f"[rank={local_rank}] is_terminated.weight: "
+                             f"{_prev_weight} → {_term_weight_override}\n")
         else:
             with open(_DISPATCH_FILE, "a") as _f:
                 _f.write(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range\n")
@@ -420,7 +442,7 @@ def main():
         import json as _json
         RANK_NAMES = os.environ.get(
             "PER_RANK_NAMES",
-            "FLAT,STAIR_SLOPE,PLATFORM,SCAN,FLAT2,RAIL,NOISE,GRID",
+            "FLAT,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,GRID",
         ).split(",")
         _world_size = int(os.environ.get("WORLD_SIZE", "1"))
         _rank_name = RANK_NAMES[local_rank] if local_rank < len(RANK_NAMES) else f"rank{local_rank}"
