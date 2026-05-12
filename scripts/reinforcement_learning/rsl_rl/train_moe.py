@@ -332,6 +332,26 @@ def main():
             **{r: _YAW_FIXED for r in range(1, 8)},
         }
 
+        # =====================================================================
+        # Per-rank Reward function (not weight) overrides
+        # =====================================================================
+        # Some rewards use a curriculum-gated function that returns 0 on flat
+        # terrain (e.g. feet_air_time_curriculum has scale = clamp(level/5, 0, 1)
+        # which is 0 at terrain level 0). On rank 0 (FLAT, level always 0), this
+        # silently neuters the feet_air_time reward → robot learns pure skid-steer
+        # turning. For pure-yaw command, we want the robot to *lift feet* and step
+        # around, not roll. Swap rank 0's feet_air_time func to
+        # feet_air_time_including_ang_z which:
+        #   - has NO curriculum scale (works on flat)
+        #   - triggers on ang_vel commands too (not just lin_vel)
+        # =====================================================================
+        import rl_training.tasks.manager_based.locomotion.velocity.mdp as _mdp
+        _RANK_REWARD_FUNC_OVERRIDES = {
+            0: {  # FLAT: enable step-turn instead of skid-steer
+                "feet_air_time": _mdp.feet_air_time_including_ang_z,
+            },
+        }
+
         _RANK_REWARD_WEIGHT_OVERRIDES = {
             # rank 2: PLATFORM (pit/box) — 攀爬大落差, 需要放宽 roll/pitch、
             # 关掉 base_height_l2、抑制蹲走 (feet_height_body 加重)、关掉 upward
@@ -380,6 +400,20 @@ def main():
                 _prev_w = _term.weight
                 _term.weight = _new_w
                 _applied.append((_term_name, _prev_w, _new_w))
+            # Apply per-rank reward FUNCTION overrides (e.g. switch curriculum-gated
+            # feet_air_time to ang-vel-aware variant on FLAT rank)
+            _func_overrides = _RANK_REWARD_FUNC_OVERRIDES.get(local_rank, {})
+            _func_applied = []
+            _func_skipped = []
+            for _term_name, _new_func in _func_overrides.items():
+                _term = getattr(env_cfg.rewards, _term_name, None)
+                if _term is None or not hasattr(_term, "func"):
+                    _func_skipped.append(_term_name)
+                    continue
+                _prev_func_name = getattr(_term.func, "__name__", str(_term.func))
+                _new_func_name  = getattr(_new_func, "__name__", str(_new_func))
+                _term.func = _new_func
+                _func_applied.append((_term_name, _prev_func_name, _new_func_name))
             # Apply per-rank command range overrides
             _cmd_overrides = _RANK_COMMAND_RANGE_OVERRIDES.get(local_rank, {})
             _cmd_applied = []
@@ -415,6 +449,10 @@ def main():
                     _f.write(f"[rank={local_rank}] rewards.{_name}.weight: {_prev} → {_new}\n")
                 for _name in _skipped:
                     _f.write(f"[rank={local_rank}] WARN: rewards.{_name} not found, override skipped\n")
+                for _name, _prev, _new in _func_applied:
+                    _f.write(f"[rank={local_rank}] rewards.{_name}.func: {_prev} → {_new}\n")
+                for _name in _func_skipped:
+                    _f.write(f"[rank={local_rank}] WARN: rewards.{_name}.func override skipped (no .func attr)\n")
                 for _name, _prev, _new in _cmd_applied:
                     _f.write(f"[rank={local_rank}] commands.base_velocity.ranges.{_name}: {_prev} → {_new}\n")
                 for _name in _cmd_skipped:

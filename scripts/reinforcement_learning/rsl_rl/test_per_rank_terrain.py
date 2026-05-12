@@ -173,6 +173,20 @@ class ASTSourceChecks(unittest.TestCase):
         self.assertIn("randomize_reset_base.params", src,
                       "reset event params never accessed")
 
+    def test_train_moe_reward_func_override_present(self):
+        """_RANK_REWARD_FUNC_OVERRIDES must wire feet_air_time → including_ang_z on FLAT."""
+        src = TRAIN_MOE.read_text()
+        self.assertIn("_RANK_REWARD_FUNC_OVERRIDES", src,
+                      "_RANK_REWARD_FUNC_OVERRIDES dict missing")
+        # The function name must be referenced (we expect rank 0 → feet_air_time_including_ang_z)
+        self.assertIn("feet_air_time_including_ang_z", src,
+                      "the ang_z variant of feet_air_time must be referenced for FLAT rank")
+        # Dispatch must look it up and write back the func attr
+        self.assertIn("_RANK_REWARD_FUNC_OVERRIDES.get(local_rank", src,
+                      "func override dict never read")
+        self.assertIn("_term.func = _new_func", src,
+                      "func override never assigned to the reward term")
+
     def test_inspect_terrain_rank4_is_gap_stones_mix(self):
         tree = load_ast(INSPECT)
         list_node = find_assignment_value(tree, "RANK_TERRAIN_MAP")
@@ -319,11 +333,15 @@ class SimulatedOverrideBehavior(unittest.TestCase):
         "yaw":   (-_math_mod.pi, _math_mod.pi),
     }
 
+    # Sentinel funcs live at MODULE level (see bottom of file). Class-level
+    # function attrs auto-bind to instances which breaks `is` identity checks.
+
     def _make_mock_env_cfg(self):
         """Build a mock env_cfg with rewards + commands + reset events."""
         class _Term:
-            def __init__(self, w):
+            def __init__(self, w, func=None):
                 self.weight = w
+                self.func = func
         class _Rewards:
             pass
         class _Terrain:
@@ -348,7 +366,9 @@ class SimulatedOverrideBehavior(unittest.TestCase):
         env_cfg.commands = _Commands()
         env_cfg.events = _Events()
         for name, w in self._BASE_WEIGHTS.items():
-            setattr(env_cfg.rewards, name, _Term(w))
+            # Only feet_air_time carries the func attr we care about for func-override tests
+            base_func = _base_feet_air_func if name == "feet_air_time" else None
+            setattr(env_cfg.rewards, name, _Term(w, func=base_func))
         # Reset ranges fresh (avoid sharing the dict reference across tests)
         env_cfg.events.randomize_reset_base = _RandReset()
         env_cfg.commands.base_velocity = _BaseVel()
@@ -360,17 +380,23 @@ class SimulatedOverrideBehavior(unittest.TestCase):
         return env_cfg
 
     def _simulate_dispatch(self, local_rank: int):
-        """Run a faithful port of the nested-dispatch logic (rewards + cmd + reset)."""
+        """Run a faithful port of the nested-dispatch logic (rewards + funcs + cmd + reset)."""
         env_cfg = self._make_mock_env_cfg()
         terrain_map = ["FLAT", "STAIR", "PLAT", "SCAN", "STONES", "RAIL", "NOISE", "GRID"]
         if local_rank < len(terrain_map):
             env_cfg.scene.terrain.terrain_generator = terrain_map[local_rank]
-            # Rewards
+            # Reward weights
             overrides = self._OVERRIDES.get(local_rank, {})
             for term_name, new_w in overrides.items():
                 term = getattr(env_cfg.rewards, term_name, None)
                 if term is not None and hasattr(term, "weight"):
                     term.weight = new_w
+            # Reward funcs (FUNC_OVERRIDES is a module-level dict, not class attr)
+            func_overrides = _FUNC_OVERRIDES.get(local_rank, {})
+            for term_name, new_func in func_overrides.items():
+                term = getattr(env_cfg.rewards, term_name, None)
+                if term is not None and hasattr(term, "func"):
+                    term.func = new_func
             # Command ranges
             cmd_overrides = self._CMD_OVERRIDES.get(local_rank, {})
             for k, v in cmd_overrides.items():
@@ -509,6 +535,22 @@ class SimulatedOverrideBehavior(unittest.TestCase):
                 f"rank {rank} ang_vel_z changed unexpectedly"
             )
 
+    # ---- New: per-rank reward function override ----
+
+    def test_rank_0_flat_swaps_feet_air_time_func(self):
+        env_cfg = self._simulate_dispatch(local_rank=0)
+        self.assertIs(env_cfg.rewards.feet_air_time.func, _ang_z_feet_air_func,
+                      "rank 0: feet_air_time.func should be the including_ang_z variant")
+        self.assertEqual(env_cfg.rewards.feet_air_time.func.__name__,
+                         "feet_air_time_including_ang_z")
+
+    def test_non_flat_ranks_keep_feet_air_time_func(self):
+        for rank in [1, 2, 3, 4, 5, 6, 7]:
+            env_cfg = self._simulate_dispatch(local_rank=rank)
+            with self.subTest(rank=rank):
+                self.assertIs(env_cfg.rewards.feet_air_time.func, _base_feet_air_func,
+                              f"rank {rank}: feet_air_time.func should stay at base (curriculum-gated)")
+
     def test_out_of_range_rank_does_nothing(self):
         """rank 8+ → terrain_map index OOB: no terrain swap, no override applied."""
         env_cfg = self._simulate_dispatch(local_rank=8)
@@ -519,6 +561,25 @@ class SimulatedOverrideBehavior(unittest.TestCase):
         for name, base_w in self._BASE_WEIGHTS.items():
             self.assertEqual(getattr(env_cfg.rewards, name).weight, base_w,
                              f"rank 8: rewards.{name}.weight changed unexpectedly")
+
+
+# Module-level sentinel funcs (avoid bound-method weirdness when used in `is` checks)
+def _base_feet_air_func(*a, **kw):
+    """Mock for mdp.feet_air_time_curriculum (curriculum-gated, zeros on flat)."""
+    return 0.0
+_base_feet_air_func.__name__ = "feet_air_time_curriculum"
+
+
+def _ang_z_feet_air_func(*a, **kw):
+    """Mock for mdp.feet_air_time_including_ang_z (no curriculum gate)."""
+    return 0.0
+_ang_z_feet_air_func.__name__ = "feet_air_time_including_ang_z"
+
+
+# Module-level dispatch dict (referenced by SimulatedOverrideBehavior._simulate_dispatch)
+_FUNC_OVERRIDES = {
+    0: {"feet_air_time": _ang_z_feet_air_func},
+}
 
 
 if __name__ == "__main__":
