@@ -44,7 +44,7 @@ def find_assignment_value(tree: ast.Module, name: str):
 class ASTSourceChecks(unittest.TestCase):
     """Static checks against source AST — fast, no Isaac Lab needed."""
 
-    def test_train_moe_rank4_is_stepping_stones(self):
+    def test_train_moe_rank4_is_gap_stones_mix(self):
         tree = load_ast(TRAIN_MOE)
         list_node = find_assignment_value(tree, "_RANK_TERRAIN_MAP")
         self.assertIsNotNone(list_node, "_RANK_TERRAIN_MAP not found in train_moe.py")
@@ -54,8 +54,9 @@ class ASTSourceChecks(unittest.TestCase):
         self.assertIsInstance(rank4, ast.Name,
                               f"rank 4 is {ast.dump(rank4)}, expected Name")
         self.assertEqual(
-            rank4.id, "STEPPING_STONES_TEACHER_TERRAINS_CFG",
-            f"rank 4 = {rank4.id}, expected STEPPING_STONES_TEACHER_TERRAINS_CFG"
+            rank4.id, "GAP_STONES_MIX_TEACHER_TERRAINS_CFG",
+            f"rank 4 = {rank4.id}, expected GAP_STONES_MIX_TEACHER_TERRAINS_CFG "
+            f"(MeshGap + HfSteppingStones 50/50)"
         )
 
     def test_train_moe_per_rank_names_default(self):
@@ -145,14 +146,14 @@ class ASTSourceChecks(unittest.TestCase):
             "must use getattr (term may have been pruned by disable_zero_weight_rewards)"
         )
 
-    def test_inspect_terrain_rank4_is_stepping_stones(self):
+    def test_inspect_terrain_rank4_is_gap_stones_mix(self):
         tree = load_ast(INSPECT)
         list_node = find_assignment_value(tree, "RANK_TERRAIN_MAP")
         self.assertIsNotNone(list_node, "RANK_TERRAIN_MAP not found in inspect_terrain.py")
         self.assertIsInstance(list_node, ast.List)
         rank4 = list_node.elts[4]
         self.assertIsInstance(rank4, ast.Name)
-        self.assertEqual(rank4.id, "STEPPING_STONES_TEACHER_TERRAINS_CFG")
+        self.assertEqual(rank4.id, "GAP_STONES_MIX_TEACHER_TERRAINS_CFG")
 
     def test_inspect_terrain_rank_names_have_stones(self):
         tree = load_ast(INSPECT)

@@ -424,6 +424,31 @@ STEPPING_STONES_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     }
 )
 
+# [Teacher 5 — combined] Gap + Stepping Stones 50/50 mix
+# 通才 rank 4 用. 两种 gap-crossing 模态各占 50%, 提供互补信号:
+#   - MeshGap 单缝: 二值"跨过/掉下"信号最尖锐, 失败立刻终止 (terrain_out_of_bounds)
+#   - HfSteppingStones 多石头: 把跨越距离切成多次小 hole, 单 episode 跨越次数多,
+#     reward shaping 信号密度高
+# 两者难度参数对齐 (gap_width / hole_distance 都是 0.0-1.0 / 0.1-0.8 区间)
+GAP_STONES_MIX_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=TERRAIN_SIZE, border_width=20.0, num_rows=NUM_ROWS, num_cols=10, curriculum=True,
+    sub_terrains={
+        "gap": terrain_gen.MeshGapTerrainCfg(
+            proportion=0.5,
+            gap_width_range=(0.0, 1.0),
+            platform_width=2.0,
+        ),
+        "stepping_stones": terrain_gen.HfSteppingStonesTerrainCfg(
+            proportion=0.5,
+            stone_height_max=0.01,
+            stone_width_range=(2.0, 2.0),       # 大平台 (2m × 2m), 不需精准落足
+            stone_distance_range=(0.1, 0.8),    # difficulty 0→1 时 hole 宽度 0.1m → 0.8m
+            holes_depth=-0.65,
+            platform_width=2.0,
+        ),
+    }
+)
+
 # [Teacher 8] 跨栏跳跃专家 (Rail Jumping)
 # 运动模态：跳跃跨越栏杆 (需要高程+扫描感知前方障碍)
 # 不同高度和厚度的栏杆组合，难度递增

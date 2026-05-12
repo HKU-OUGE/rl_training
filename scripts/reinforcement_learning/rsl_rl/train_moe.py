@@ -263,6 +263,7 @@ def main():
             SCAN_TEACHER_TERRAINS_CFG,
             GAP_TEACHER_TERRAINS_CFG,
             STEPPING_STONES_TEACHER_TERRAINS_CFG,
+            GAP_STONES_MIX_TEACHER_TERRAINS_CFG,
             RAIL_TEACHER_TERRAINS_CFG,
             NOISE_TEACHER_TERRAINS_CFG,
             GRID_TEACHER_TERRAINS_CFG,
@@ -279,7 +280,7 @@ def main():
             STAIR_SLOPE_TEACHER_TERRAINS_CFG,    # rank 1: STAIR_SLOPE
             PLATFORM_TEACHER_TERRAINS_CFG,       # rank 2: PLATFORM (pit/box)
             SCAN_TEACHER_TERRAINS_CFG,           # rank 3: SCAN (hurdle)
-            STEPPING_STONES_TEACHER_TERRAINS_CFG,# rank 4: STONES (gap-crossing, 复用通才 rough.py 定义)
+            GAP_STONES_MIX_TEACHER_TERRAINS_CFG, # rank 4: GAP+STONES 50/50 (MeshGap 单缝 + HfSteppingStones 多 hole 互补信号)
             RAIL_TEACHER_TERRAINS_CFG,           # rank 5: RAIL (0-40cm)
             NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
             GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
