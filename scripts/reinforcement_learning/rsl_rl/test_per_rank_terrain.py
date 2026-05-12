@@ -146,6 +146,33 @@ class ASTSourceChecks(unittest.TestCase):
             "must use getattr (term may have been pruned by disable_zero_weight_rewards)"
         )
 
+    def test_train_moe_command_range_overrides_present(self):
+        """_RANK_COMMAND_RANGE_OVERRIDES must exist and gate rank 0 vs rest."""
+        src = TRAIN_MOE.read_text()
+        self.assertIn("_RANK_COMMAND_RANGE_OVERRIDES", src,
+                      "_RANK_COMMAND_RANGE_OVERRIDES dict missing in train_moe.py")
+        self.assertIn("_LATERAL_ON", src,  "lateral ON shortcut missing")
+        self.assertIn("_LATERAL_OFF", src, "lateral OFF shortcut missing")
+        # Must look up the dict
+        self.assertIn("_RANK_COMMAND_RANGE_OVERRIDES.get(local_rank", src,
+                      "command override dict never read")
+        # Must assign onto env_cfg.commands.base_velocity.ranges
+        self.assertIn("env_cfg.commands.base_velocity.ranges", src,
+                      "command ranges never modified")
+
+    def test_train_moe_reset_pose_overrides_present(self):
+        """_RANK_RESET_POSE_OVERRIDES must exist for FLAT vs non-FLAT yaw."""
+        src = TRAIN_MOE.read_text()
+        self.assertIn("_RANK_RESET_POSE_OVERRIDES", src,
+                      "_RANK_RESET_POSE_OVERRIDES dict missing")
+        self.assertIn("_YAW_RANDOM", src)
+        self.assertIn("_YAW_FIXED",  src)
+        self.assertIn("_RANK_RESET_POSE_OVERRIDES.get(local_rank", src,
+                      "reset pose override dict never read")
+        # Must write into pose_range
+        self.assertIn("randomize_reset_base.params", src,
+                      "reset event params never accessed")
+
     def test_inspect_terrain_rank4_is_gap_stones_mix(self):
         tree = load_ast(INSPECT)
         list_node = find_assignment_value(tree, "RANK_TERRAIN_MAP")
@@ -259,8 +286,41 @@ class SimulatedOverrideBehavior(unittest.TestCase):
         "undesired_contacts":     -0.3,
     }
 
+    # ---- command range + reset yaw overrides (mirror train_moe.py) ----
+    import math as _math_mod
+    _LATERAL_ON  = {"lin_vel_y": (-1.0, 1.0), "heading": (-_math_mod.pi, _math_mod.pi)}
+    _LATERAL_OFF = {"lin_vel_y": ( 0.0, 0.0), "heading": ( 0.0,           0.0)}
+    _CMD_OVERRIDES = {
+        0: _LATERAL_ON,
+        1: _LATERAL_OFF, 2: _LATERAL_OFF, 3: _LATERAL_OFF, 4: _LATERAL_OFF,
+        5: _LATERAL_OFF, 6: _LATERAL_OFF, 7: _LATERAL_OFF,
+    }
+    _YAW_RANDOM = {"yaw": (-_math_mod.pi, _math_mod.pi)}
+    _YAW_FIXED  = {"yaw": ( 0.0,           0.0)}
+    _RESET_OVERRIDES = {
+        0: _YAW_RANDOM,
+        1: _YAW_FIXED, 2: _YAW_FIXED, 3: _YAW_FIXED, 4: _YAW_FIXED,
+        5: _YAW_FIXED, 6: _YAW_FIXED, 7: _YAW_FIXED,
+    }
+
+    # Base command + reset values (mirror moe_teacher_env_cfg.py)
+    _BASE_CMD_RANGES = {
+        "lin_vel_x": (-1.0, 1.0),
+        "lin_vel_y": (-1.0, 1.0),
+        "ang_vel_z": (-1.0, 1.0),
+        "heading":   ( 0.0,  0.0),
+    }
+    _BASE_RESET_POSE = {
+        "x":     (-0.5, 0.5),
+        "y":     (-0.2, 0.2),
+        "z":     ( 0.0, 0.0),
+        "roll":  (-0.3, 0.3),
+        "pitch": (-0.3, 0.3),
+        "yaw":   (-_math_mod.pi, _math_mod.pi),
+    }
+
     def _make_mock_env_cfg(self):
-        """Build a mock env_cfg whose rewards holds every term in _BASE_WEIGHTS."""
+        """Build a mock env_cfg with rewards + commands + reset events."""
         class _Term:
             def __init__(self, w):
                 self.weight = w
@@ -270,26 +330,58 @@ class SimulatedOverrideBehavior(unittest.TestCase):
             terrain_generator = None
         class _Scene:
             terrain = _Terrain()
+        class _Ranges:
+            pass
+        class _BaseVel:
+            ranges = _Ranges()
+        class _Commands:
+            base_velocity = _BaseVel()
+        class _RandReset:
+            params = {"pose_range": dict(SimulatedOverrideBehavior._BASE_RESET_POSE)}
+        class _Events:
+            randomize_reset_base = _RandReset()
         class _EnvCfg:
             pass
         env_cfg = _EnvCfg()
         env_cfg.scene = _Scene()
         env_cfg.rewards = _Rewards()
+        env_cfg.commands = _Commands()
+        env_cfg.events = _Events()
         for name, w in self._BASE_WEIGHTS.items():
             setattr(env_cfg.rewards, name, _Term(w))
+        # Reset ranges fresh (avoid sharing the dict reference across tests)
+        env_cfg.events.randomize_reset_base = _RandReset()
+        env_cfg.commands.base_velocity = _BaseVel()
+        # Wire fresh _Ranges
+        new_ranges = type("R", (), {})()
+        for k, v in self._BASE_CMD_RANGES.items():
+            setattr(new_ranges, k, v)
+        env_cfg.commands.base_velocity.ranges = new_ranges
         return env_cfg
 
     def _simulate_dispatch(self, local_rank: int):
-        """Run a faithful port of the nested-dispatch logic."""
+        """Run a faithful port of the nested-dispatch logic (rewards + cmd + reset)."""
         env_cfg = self._make_mock_env_cfg()
         terrain_map = ["FLAT", "STAIR", "PLAT", "SCAN", "STONES", "RAIL", "NOISE", "GRID"]
         if local_rank < len(terrain_map):
             env_cfg.scene.terrain.terrain_generator = terrain_map[local_rank]
+            # Rewards
             overrides = self._OVERRIDES.get(local_rank, {})
             for term_name, new_w in overrides.items():
                 term = getattr(env_cfg.rewards, term_name, None)
                 if term is not None and hasattr(term, "weight"):
                     term.weight = new_w
+            # Command ranges
+            cmd_overrides = self._CMD_OVERRIDES.get(local_rank, {})
+            for k, v in cmd_overrides.items():
+                if hasattr(env_cfg.commands.base_velocity.ranges, k):
+                    setattr(env_cfg.commands.base_velocity.ranges, k, v)
+            # Reset pose
+            reset_overrides = self._RESET_OVERRIDES.get(local_rank, {})
+            pose_range = env_cfg.events.randomize_reset_base.params.get("pose_range", {})
+            for k, v in reset_overrides.items():
+                if k in pose_range:
+                    pose_range[k] = v
         return env_cfg
 
     def test_rank_2_platform_overrides_applied(self):
@@ -357,6 +449,65 @@ class SimulatedOverrideBehavior(unittest.TestCase):
         self.assertEqual(env_cfg.rewards.feet_height_body.weight, -0.5)
         # Confirm upward truly doesn't exist (i.e. the override didn't accidentally create it)
         self.assertFalse(hasattr(env_cfg.rewards, "upward"))
+
+    # ---- New: per-rank command + reset overrides ----
+
+    def test_rank_0_flat_gets_lateral_and_random_yaw(self):
+        env_cfg = self._simulate_dispatch(local_rank=0)
+        # Commands: lateral ON, heading full
+        self.assertEqual(env_cfg.commands.base_velocity.ranges.lin_vel_y, (-1.0, 1.0))
+        self.assertEqual(env_cfg.commands.base_velocity.ranges.heading[0], -self._math_mod.pi)
+        self.assertEqual(env_cfg.commands.base_velocity.ranges.heading[1],  self._math_mod.pi)
+        # Reset: random yaw
+        yaw = env_cfg.events.randomize_reset_base.params["pose_range"]["yaw"]
+        self.assertEqual(yaw[0], -self._math_mod.pi)
+        self.assertEqual(yaw[1],  self._math_mod.pi)
+
+    def test_non_flat_ranks_get_no_lateral_no_yaw(self):
+        for rank in [1, 2, 3, 4, 5, 6, 7]:
+            env_cfg = self._simulate_dispatch(local_rank=rank)
+            with self.subTest(rank=rank):
+                # Commands locked
+                self.assertEqual(
+                    env_cfg.commands.base_velocity.ranges.lin_vel_y, (0.0, 0.0),
+                    f"rank {rank} lin_vel_y not zeroed"
+                )
+                self.assertEqual(
+                    env_cfg.commands.base_velocity.ranges.heading, (0.0, 0.0),
+                    f"rank {rank} heading not zeroed"
+                )
+                # Reset yaw locked
+                self.assertEqual(
+                    env_cfg.events.randomize_reset_base.params["pose_range"]["yaw"],
+                    (0.0, 0.0),
+                    f"rank {rank} reset yaw not zeroed"
+                )
+
+    def test_non_yaw_pose_range_keys_untouched(self):
+        """Other pose_range keys (x, y, z, roll, pitch) should be unchanged."""
+        for rank in [0, 4]:
+            env_cfg = self._simulate_dispatch(local_rank=rank)
+            pose = env_cfg.events.randomize_reset_base.params["pose_range"]
+            self.assertEqual(pose["x"],     self._BASE_RESET_POSE["x"])
+            self.assertEqual(pose["y"],     self._BASE_RESET_POSE["y"])
+            self.assertEqual(pose["z"],     self._BASE_RESET_POSE["z"])
+            self.assertEqual(pose["roll"],  self._BASE_RESET_POSE["roll"])
+            self.assertEqual(pose["pitch"], self._BASE_RESET_POSE["pitch"])
+
+    def test_other_command_ranges_untouched(self):
+        """lin_vel_x and ang_vel_z stay at base for all ranks."""
+        for rank in range(8):
+            env_cfg = self._simulate_dispatch(local_rank=rank)
+            self.assertEqual(
+                env_cfg.commands.base_velocity.ranges.lin_vel_x,
+                self._BASE_CMD_RANGES["lin_vel_x"],
+                f"rank {rank} lin_vel_x changed unexpectedly"
+            )
+            self.assertEqual(
+                env_cfg.commands.base_velocity.ranges.ang_vel_z,
+                self._BASE_CMD_RANGES["ang_vel_z"],
+                f"rank {rank} ang_vel_z changed unexpectedly"
+            )
 
     def test_out_of_range_rank_does_nothing(self):
         """rank 8+ → terrain_map index OOB: no terrain swap, no override applied."""

@@ -306,6 +306,32 @@ def main():
         # disable_zero_weight_rewards() 在 base cfg 里已经删了, getattr
         # 拿不到, 会被 dispatch log 警告并跳过.
         # =====================================================================
+        # =====================================================================
+        # Per-rank Command Range / Reset Yaw overrides
+        # =====================================================================
+        # FLAT (rank 0) 是唯一允许 y 速度命令 + 全向随机朝向的 rank, 因为只有
+        # 平地有侧移+原地转向训练价值. 其它 rank 都锁定:
+        #   - lin_vel_y = (0, 0)  → 不发 y 速度命令
+        #   - heading   = (0, 0)  → heading 命令永远朝前
+        #   - reset yaw = (0, 0)  → spawn 时机器人朝前 (不随机)
+        # 让其它地形的 policy 专注前进, 不被侧移/转向干扰. FLAT 反过来用全向
+        # 训练 actor 学到通用机动性, 通过共享 actor 让其它地形也"会转弯"
+        # (但 critic 仍 per-rank, 见 SplitMoEPPO).
+        # =====================================================================
+        import math as _math
+        _LATERAL_ON  = {"lin_vel_y": (-1.0, 1.0), "heading": (-_math.pi, _math.pi)}
+        _LATERAL_OFF = {"lin_vel_y": ( 0.0, 0.0), "heading": ( 0.0,       0.0)}
+        _RANK_COMMAND_RANGE_OVERRIDES = {
+            0: _LATERAL_ON,
+            **{r: _LATERAL_OFF for r in range(1, 8)},
+        }
+        _YAW_RANDOM = {"yaw": (-_math.pi, _math.pi)}
+        _YAW_FIXED  = {"yaw": ( 0.0,       0.0)}
+        _RANK_RESET_POSE_OVERRIDES = {
+            0: _YAW_RANDOM,
+            **{r: _YAW_FIXED for r in range(1, 8)},
+        }
+
         _RANK_REWARD_WEIGHT_OVERRIDES = {
             # rank 2: PLATFORM (pit/box) — 攀爬大落差, 需要放宽 roll/pitch、
             # 关掉 base_height_l2、抑制蹲走 (feet_height_body 加重)、关掉 upward
@@ -354,6 +380,32 @@ def main():
                 _prev_w = _term.weight
                 _term.weight = _new_w
                 _applied.append((_term_name, _prev_w, _new_w))
+            # Apply per-rank command range overrides
+            _cmd_overrides = _RANK_COMMAND_RANGE_OVERRIDES.get(local_rank, {})
+            _cmd_applied = []
+            _cmd_skipped = []
+            if env_cfg.commands.base_velocity is not None and _cmd_overrides:
+                _ranges = env_cfg.commands.base_velocity.ranges
+                for _k, _v in _cmd_overrides.items():
+                    if hasattr(_ranges, _k):
+                        _prev = getattr(_ranges, _k)
+                        setattr(_ranges, _k, _v)
+                        _cmd_applied.append((_k, _prev, _v))
+                    else:
+                        _cmd_skipped.append(_k)
+            # Apply per-rank reset pose_range overrides (only yaw for now)
+            _reset_overrides = _RANK_RESET_POSE_OVERRIDES.get(local_rank, {})
+            _reset_applied = []
+            _reset_skipped = []
+            if _reset_overrides:
+                _pose_range = env_cfg.events.randomize_reset_base.params.get("pose_range", {})
+                for _k, _v in _reset_overrides.items():
+                    if _k in _pose_range:
+                        _prev = _pose_range[_k]
+                        _pose_range[_k] = _v
+                        _reset_applied.append((_k, _prev, _v))
+                    else:
+                        _reset_skipped.append(_k)
             with open(_DISPATCH_FILE, "a") as _f:
                 _f.write(f"[rank={local_rank}] terrain → "
                          f"{list(chosen.sub_terrains.keys())} "
@@ -363,6 +415,14 @@ def main():
                     _f.write(f"[rank={local_rank}] rewards.{_name}.weight: {_prev} → {_new}\n")
                 for _name in _skipped:
                     _f.write(f"[rank={local_rank}] WARN: rewards.{_name} not found, override skipped\n")
+                for _name, _prev, _new in _cmd_applied:
+                    _f.write(f"[rank={local_rank}] commands.base_velocity.ranges.{_name}: {_prev} → {_new}\n")
+                for _name in _cmd_skipped:
+                    _f.write(f"[rank={local_rank}] WARN: commands.base_velocity.ranges.{_name} not found\n")
+                for _name, _prev, _new in _reset_applied:
+                    _f.write(f"[rank={local_rank}] reset.pose_range.{_name}: {_prev} → {_new}\n")
+                for _name in _reset_skipped:
+                    _f.write(f"[rank={local_rank}] WARN: reset.pose_range.{_name} not found\n")
         else:
             with open(_DISPATCH_FILE, "a") as _f:
                 _f.write(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range\n")
