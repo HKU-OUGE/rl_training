@@ -104,13 +104,13 @@ def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     rel_vec = sensor.data.ray_hits_w - sensor._ray_starts_w
     depths = torch.norm(rel_vec, dim=-1)
     
-    # 将 NaN 和 inf 视为安全距离 (5.0m)
-    depths = torch.nan_to_num(depths, posinf=5.0, neginf=5.0, nan=5.0)
-    
-    # 归一化：[0, 5.0] 映射到 [0.0, 1.0]
-    normalized_depths = torch.clip(depths / 5.0, 0.0, 1.0)
-    
-    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 5.0m)
+    # 将 NaN 和 inf 视为安全距离 (= sensor max_distance 2.5m, 匹配真机 no-hit 行为)
+    depths = torch.nan_to_num(depths, posinf=2.5, neginf=2.5, nan=2.5)
+
+    # 归一化：[0, 2.5] 映射到 [0.0, 1.0] (近场聚焦, 跟 main 一致)
+    normalized_depths = torch.clip(depths / 2.5, 0.0, 1.0)
+
+    # 盲区覆写：物理距离 < 0.3m 填充为最大量程归一化值 (匹配真机 no-hit = 2.5m)
     normalized_depths = torch.where(
         depths < 0.3,
         torch.full_like(normalized_depths, 1.0),
@@ -809,7 +809,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
                 offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
                 ray_alignment="base", 
                 pattern_cfg=SCAN_PATTERN, 
-                max_distance=5.0, # 修改为 5.0m
+                max_distance=2.5, # 跟 main 对齐: 真机 Robosense Airy max_distance ≈ 2.5m
                 debug_vis=True, 
                 reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
@@ -827,7 +827,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
                 offset=MultiMeshRayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
                 ray_alignment="base", 
                 pattern_cfg=SCAN_PATTERN, 
-                max_distance=5.0, # 修改为 5.0m
+                max_distance=2.5, # 跟 main 对齐: 真机 Robosense Airy max_distance ≈ 2.5m
                 debug_vis=True, 
                 reference_meshes=True,
                 mesh_prim_paths=SCAN_MESHES,
