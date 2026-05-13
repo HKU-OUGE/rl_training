@@ -266,17 +266,17 @@ def main():
             STEPPING_STONES_TEACHER_TERRAINS_CFG,
             RAIL_TEACHER_TERRAINS_CFG,
             NOISE_TEACHER_TERRAINS_CFG,
-            GRID_TEACHER_TERRAINS_CFG,
+            MOE_ROUGH_TERRAINS_CFG,
         )
         _RANK_TERRAIN_MAP = [
-            FLAT_TEACHER_TERRAINS_CFG,           # rank 0: FLAT
+            MOE_ROUGH_TERRAINS_CFG,              # rank 0: MIXED (master rank, baseline-like 全局 anchor)
             STAIR_SLOPE_TEACHER_TERRAINS_CFG,    # rank 1: STAIR_SLOPE
             PLATFORM_TEACHER_TERRAINS_CFG,       # rank 2: PLATFORM (pit/box)
             SCAN_TEACHER_TERRAINS_CFG,           # rank 3: SCAN (hurdle)
             STEPPING_STONES_TEACHER_TERRAINS_CFG, # rank 4: STEPPING_STONES (替代 GAP)
             RAIL_TEACHER_TERRAINS_CFG,           # rank 5: RAIL
             NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
-            GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
+            FLAT_TEACHER_TERRAINS_CFG,           # rank 7: FLAT (侧移训练专项, 见下方 lin_vel_y gate)
         ]
         if local_rank < len(_RANK_TERRAIN_MAP):
             chosen = _RANK_TERRAIN_MAP[local_rank]
@@ -290,16 +290,17 @@ def main():
 
         # =====================================================================
         # Per-rank command range override (lateral y velocity)
-        # FLAT (rank 0) 启用 lin_vel_y, 让 actor 在平地上学到侧移机动性;
-        # 其它 rank 锁定 lin_vel_y=(0, 0), 专注前向运动避免被侧移训练干扰.
+        # FLAT terrain 上启用 lin_vel_y (避开难地形上的侧移训练扰动稳定性);
+        # 其它 terrain 锁定 lin_vel_y=(0, 0), 专注前向运动.
+        # gate 改为 terrain 身份判断, FLAT 可以放在任意 rank.
         # DEBUG: 设 DEBUG_NO_LINVELY_OVERRIDE=1 跳过此 override (用于二分 hang)
         # =====================================================================
         if env_cfg.commands.base_velocity is not None \
                 and os.environ.get("DEBUG_NO_LINVELY_OVERRIDE", "0") != "1":
             _ranges = env_cfg.commands.base_velocity.ranges
-            if local_rank == 0:
+            if chosen is FLAT_TEACHER_TERRAINS_CFG:
                 _ranges.lin_vel_y = (-1.0, 1.0)
-                print(f"[rank=0] FLAT: lin_vel_y = (-1.0, 1.0) (enable lateral)")
+                print(f"[rank={local_rank}] FLAT: lin_vel_y = (-1.0, 1.0) (enable lateral)")
             else:
                 _ranges.lin_vel_y = (0.0, 0.0)
                 print(f"[rank={local_rank}] lin_vel_y = (0, 0) (forward only)")
@@ -422,7 +423,7 @@ def main():
         import json as _json
         RANK_NAMES = os.environ.get(
             "PER_RANK_NAMES",
-            "FLAT,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,GRID",
+            "MIXED,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,FLAT",
         ).split(",")
         _rank_name = RANK_NAMES[local_rank] if local_rank < len(RANK_NAMES) else f"rank{local_rank}"
         _jsonl_path = f"/tmp/per_rank_train_{_rank_name}_rank{local_rank}.jsonl"
