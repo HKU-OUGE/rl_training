@@ -1796,7 +1796,7 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
 class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 6000
+    max_iterations = 20000   # bumped from 6000 for full curriculum convergence
     save_interval = 200
     experiment_name = "split_moe_teacher_parallel" 
     empirical_normalization = False
