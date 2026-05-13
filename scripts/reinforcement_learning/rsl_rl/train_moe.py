@@ -422,18 +422,35 @@ def main():
 
         _original_log = runner.log
 
+        # DDP-safe: 所有 rank 必须以**完全一致的顺序 + 同样数量**调用 all_gather, 否则会死锁.
+        # 因此 local_metrics 的 keys 用固定列表, 数据缺失时填 0 而不是省略 key.
+        _PERRANK_METRIC_KEYS = [
+            "terrain_level_mean",
+            "terrain_level_max",
+            "ep_reward",
+            "ep_length",
+            "value_function",
+            "surrogate",
+            "entropy",
+            "term_time_out",
+            "term_illegal_contact",
+            "term_terrain_out_of_bounds",
+        ]
+
         def _per_rank_log(locs, *a, **kw):
             ret = _original_log(locs, *a, **kw)
+            # 永远进入 all_gather 路径 (即使内部 try 失败也得发同样数量的 tensor).
+            # 失败时 fill 0, 保证跨 rank 调用次数一致.
+            def _zero():
+                return torch.zeros((), device=device, dtype=torch.float32)
+
+            local_metrics = {k: _zero() for k in _PERRANK_METRIC_KEYS}
             try:
-                it = locs.get("it", runner.current_learning_iteration)
-                local_metrics = {}
-                # terrain curriculum
                 if hasattr(_base_env, "scene") and hasattr(_base_env.scene, "terrain") \
                    and hasattr(_base_env.scene.terrain, "terrain_levels"):
                     tl = _base_env.scene.terrain.terrain_levels.float()
                     local_metrics["terrain_level_mean"] = tl.mean()
-                    local_metrics["terrain_level_max"] = tl.max()
-                # episode reward / length
+                    local_metrics["terrain_level_max"]  = tl.max()
                 if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
                     local_metrics["ep_reward"] = torch.tensor(
                         sum(locs["rewbuffer"]) / len(locs["rewbuffer"]),
@@ -444,37 +461,39 @@ def main():
                         sum(locs["lenbuffer"]) / len(locs["lenbuffer"]),
                         device=device, dtype=torch.float32,
                     )
-                # termination 占比 (Episode_Termination/* 平均)
-                if locs.get("ep_infos"):
-                    term_keys = [k for k in locs["ep_infos"][0].keys()
-                                 if k.startswith("Episode_Termination/")]
-                    for k in term_keys:
-                        vals = [ep[k] for ep in locs["ep_infos"] if k in ep]
-                        if vals:
-                            avg = sum(v.item() if hasattr(v, "item") else float(v)
-                                      for v in vals) / len(vals)
-                            local_metrics[k.replace("Episode_Termination/", "term_")] = \
-                                torch.tensor(avg, device=device, dtype=torch.float32)
-                # PPO 损失 (per-rank critic 时各 rank V loss 可能差很多, da4207f port)
                 if "mean_value_loss" in locs:
                     local_metrics["value_function"] = torch.tensor(
-                        float(locs["mean_value_loss"]),
-                        device=device, dtype=torch.float32,
+                        float(locs["mean_value_loss"]), device=device, dtype=torch.float32,
                     )
                 if "mean_surrogate_loss" in locs:
                     local_metrics["surrogate"] = torch.tensor(
-                        float(locs["mean_surrogate_loss"]),
-                        device=device, dtype=torch.float32,
+                        float(locs["mean_surrogate_loss"]), device=device, dtype=torch.float32,
                     )
                 if "mean_entropy" in locs:
                     local_metrics["entropy"] = torch.tensor(
-                        float(locs["mean_entropy"]),
-                        device=device, dtype=torch.float32,
+                        float(locs["mean_entropy"]), device=device, dtype=torch.float32,
                     )
+                # Termination: 固定 3 个 key (DDP 一致性), 缺失填 0
+                if locs.get("ep_infos"):
+                    for fixed_key in ["time_out", "illegal_contact", "terrain_out_of_bounds"]:
+                        full_key = f"Episode_Termination/{fixed_key}"
+                        vals = [ep[full_key] for ep in locs["ep_infos"] if full_key in ep]
+                        if vals:
+                            avg = sum(v.item() if hasattr(v, "item") else float(v)
+                                      for v in vals) / len(vals)
+                            local_metrics[f"term_{fixed_key}"] = torch.tensor(
+                                avg, device=device, dtype=torch.float32,
+                            )
+            except Exception as e:
+                if is_master:
+                    print(f"[per_rank_log] populate failed: {e}; using zeros")
 
-                # all_gather 到所有 rank, 只 master 写 wandb
+            # all_gather: 固定 keys 顺序遍历, 跨 rank 同步保证
+            try:
+                it = locs.get("it", runner.current_learning_iteration)
                 world = int(os.environ.get("WORLD_SIZE", "1"))
-                for key, val in local_metrics.items():
+                for key in _PERRANK_METRIC_KEYS:
+                    val = local_metrics[key]
                     tensor = val.detach().to(device).float().contiguous()
                     if tensor.dim() == 0:
                         tensor = tensor.unsqueeze(0)
@@ -488,7 +507,7 @@ def main():
                             )
             except Exception as e:
                 if is_master:
-                    print(f"[per_rank_log] failed: {e}")
+                    print(f"[per_rank_log] all_gather failed: {e}")
             return ret
 
         runner.log = _per_rank_log
