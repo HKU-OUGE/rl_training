@@ -238,10 +238,57 @@ def main():
         print(f"[Info] Using device: {device}")
 
     env_cfg = parse_env_cfg(args.task, device=device, num_envs=args.num_envs)
-    
+
     if args.seed is not None:
         env_cfg.seed = args.seed + local_rank
-    
+
+    # =========================================================================
+    # Per-rank terrain dispatch (异构地形多卡训练) — port cfb9e3b
+    # 每张卡跑不同 terrain, 共享同一 reward/network, DDP 平均 actor 梯度;
+    # 配合 PER_RANK_TERRAIN=1 + 多 GPU + Rough-MoE-Teacher 任务一起用。
+    # rank → modality:
+    #   0: FLAT             — 纯平地
+    #   1: STAIR_SLOPE      — 楼梯 + 斜坡
+    #   2: PLATFORM         — pit + boxes (高台爬降)
+    #   3: SCAN             — hurdle (跨栏)
+    #   4: STEPPING_STONES  — baseline 的 stepping_stones
+    #   5: RAIL             — rail bars
+    #   6: NOISE            — random_rough
+    #   7: GRID             — discrete grid boxes
+    # 不改 reward / command / yaw / func — 这些维持 baseline 共享
+    # =========================================================================
+    if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1":
+        from rl_training.terrains.config.rough import (
+            FLAT_TEACHER_TERRAINS_CFG,
+            STAIR_SLOPE_TEACHER_TERRAINS_CFG,
+            PLATFORM_TEACHER_TERRAINS_CFG,
+            SCAN_TEACHER_TERRAINS_CFG,
+            STEPPING_STONES_TEACHER_TERRAINS_CFG,
+            RAIL_TEACHER_TERRAINS_CFG,
+            NOISE_TEACHER_TERRAINS_CFG,
+            GRID_TEACHER_TERRAINS_CFG,
+        )
+        _RANK_TERRAIN_MAP = [
+            FLAT_TEACHER_TERRAINS_CFG,           # rank 0: FLAT
+            STAIR_SLOPE_TEACHER_TERRAINS_CFG,    # rank 1: STAIR_SLOPE
+            PLATFORM_TEACHER_TERRAINS_CFG,       # rank 2: PLATFORM (pit/box)
+            SCAN_TEACHER_TERRAINS_CFG,           # rank 3: SCAN (hurdle)
+            STEPPING_STONES_TEACHER_TERRAINS_CFG, # rank 4: STEPPING_STONES (替代 GAP)
+            RAIL_TEACHER_TERRAINS_CFG,           # rank 5: RAIL
+            NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
+            GRID_TEACHER_TERRAINS_CFG,           # rank 7: GRID
+        ]
+        if local_rank < len(_RANK_TERRAIN_MAP):
+            chosen = _RANK_TERRAIN_MAP[local_rank]
+            env_cfg.scene.terrain.terrain_generator = chosen
+            print(f"[rank={local_rank}] terrain → "
+                  f"{list(chosen.sub_terrains.keys())} "
+                  f"(num_rows={chosen.num_rows}, curriculum={chosen.curriculum})")
+        else:
+            print(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range, "
+                  f"using default terrain from task cfg")
+
+
     render_mode = "rgb_array" if args.video else None
     env = gym.make(args.task, cfg=env_cfg, render_mode=render_mode)
 
