@@ -1482,6 +1482,48 @@ class SplitMoEPPO(PPO):
                     loss_dict["Noise/Leg_Std"] = std_np[:n_legs].mean()
                     loss_dict["Noise/Wheel_Std"] = std_np[n_legs:].mean() if len(std_np) > n_legs else 0.0
 
+        # =====================================================================
+        # VERIFY_PER_RANK_CRITIC: hash actor / critic params, all_gather, 打印
+        #   actor 应跨 rank 全等 (all_reduce 后参数严格一致)
+        #   critic 应跨 rank 发散 (per-rank optimizer 独立)
+        # 用法: VERIFY_PER_RANK_CRITIC=1 [VERIFY_INTERVAL=N] 跑 50 iter
+        # =====================================================================
+        import os as _os
+        if getattr(self, "is_multi_gpu", False) \
+                and int(_os.environ.get("VERIFY_PER_RANK_CRITIC", "0")):
+            if not hasattr(self, "_verify_iter"):
+                self._verify_iter = 0
+            interval = int(_os.environ.get("VERIFY_INTERVAL", "10"))
+            self._verify_iter += 1
+            if self._verify_iter == 1 or self._verify_iter % interval == 0:
+                import torch.distributed as _dist
+                _m = getattr(self, "actor_critic", getattr(self, "policy", None))
+                _crit_ids = self._critic_param_ids
+                _actor_hash = sum(p.detach().double().sum().item()
+                                  for p in _m.parameters() if id(p) not in _crit_ids)
+                _critic_hash = 0.0
+                for _attr in ("critic_rnn", "critic_mlp"):
+                    _mod = getattr(_m, _attr, None)
+                    if _mod is not None:
+                        _critic_hash += sum(p.detach().double().sum().item()
+                                            for p in _mod.parameters())
+                _at = torch.tensor([_actor_hash], device=self.device, dtype=torch.float64)
+                _ct = torch.tensor([_critic_hash], device=self.device, dtype=torch.float64)
+                _aall = [torch.zeros_like(_at) for _ in range(self.gpu_world_size)]
+                _call = [torch.zeros_like(_ct) for _ in range(self.gpu_world_size)]
+                _dist.all_gather(_aall, _at)
+                _dist.all_gather(_call, _ct)
+                if getattr(self, "gpu_global_rank", 0) == 0:
+                    _a = [t.item() for t in _aall]
+                    _c = [t.item() for t in _call]
+                    _adiff = max(abs(x - _a[0]) for x in _a)
+                    _cdiff = max(abs(x - _c[0]) for x in _c)
+                    _async_ok = _adiff < 1e-6
+                    _cdiv_ok = _cdiff > 1e-4
+                    print(f"[VERIFY iter={self._verify_iter}] "
+                          f"actor sync={'OK' if _async_ok else 'FAIL'} (max_diff={_adiff:.3e}), "
+                          f"critic divergence={'OK' if _cdiv_ok else 'FAIL'} (max_diff={_cdiff:.3e})")
+
         return loss_dict
     
     def _mirror_obs(self, obs):
