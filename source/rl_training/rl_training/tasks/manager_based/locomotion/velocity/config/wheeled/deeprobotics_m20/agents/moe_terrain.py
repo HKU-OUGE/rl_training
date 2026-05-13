@@ -1763,8 +1763,8 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     use_elevation_ae: bool = True   
     elevation_dim: int = 187      
     use_multilayer_scan: bool = False
-    num_scan_channels: int = 12 
-    num_scan_rays: int = 21   
+    num_scan_channels: int = 24   # 12前 + 12后 (12 pitch × 2 sensor, 加密版)
+    num_scan_rays: int = 21       # 每 pitch 21 azimuth rays
     use_cnn: bool = False           
     num_cameras: int = 2
     camera_height: int = 58
@@ -1829,8 +1829,8 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,  # 6前 + 6后
-        num_scan_rays=21,     # 每个通道的射线数
+        num_scan_channels=24,  # 12前 + 12后 (12 pitch × 2 sensor, 加密版)
+        num_scan_rays=21,     # 每 pitch 21 azimuth rays
 
         actor_obs_normalization=True, 
         critic_obs_normalization=True,
@@ -2232,8 +2232,8 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         estimator_obs_normalization=True,
 
         use_multilayer_scan=True,
-        num_scan_channels=12,  # 6前 + 6后
-        num_scan_rays=21,     # 每个通道的射线数
+        num_scan_channels=24,  # 12前 + 12后 (12 pitch × 2 sensor, 加密版)
+        num_scan_rays=21,     # 每 pitch 21 azimuth rays
 
         actor_obs_normalization=True, 
         critic_obs_normalization=True,

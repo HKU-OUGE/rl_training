@@ -29,6 +29,11 @@ from isaaclab.sensors import MultiMeshRayCasterCfg
 ##
 from rl_training.assets.deeprobotics import DEEPROBOTICS_M20_CFG  # isort: skip
 from rl_training.terrains.config.rough import *
+from rl_training.sensors import (
+    HemisphericalArcPatternCfg,
+    MultiPitchArcPatternCfg,
+    SinglePitchArcPatternCfg,
+)
 
 # ==============================================================================
 # Helper Functions (Modified for Sim2Real & CNN)
@@ -401,21 +406,19 @@ class DeeproboticsM20ObservationsCfg:
             clip=(-1.0, 1.0),
             scale=1.0,
         )
-        # --- 前向 6 层 ---
-        forward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        forward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("forward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        
-        # --- 后向 6 层 ---
-        backward_scan_l0 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer0")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l1 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer1")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l2 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer2")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l3 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer3")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l4 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer4")}, noise=Unoise(n_min=-0.05, n_max=0.05))
-        backward_scan_l5 = ObsTerm(func=multi_layer_scan, params={"sensor_cfg": SceneEntityCfg("backward_scanner_layer5")}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # --- 2 sensor 多 pitch 弧 (跟 6+6 SinglePitchArc 几何 byte-equal) ---
+        # 每 sensor 一次性输出 6 pitch × 21 azim = 126 ray flat (pitch-major).
+        # 后向 sensor 通过 sensor offset rot=180°Z 反向, ScanAE reshape (B, 12, 21) 对齐.
+        forward_scan = ObsTerm(
+            func=multi_layer_scan,
+            params={"sensor_cfg": SceneEntityCfg("forward_lidar")},
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+        )
+        backward_scan = ObsTerm(
+            func=multi_layer_scan,
+            params={"sensor_cfg": SceneEntityCfg("backward_lidar")},
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+        )
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -756,52 +759,64 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
         
+        # =====================================================================
+        # 2-sensor 多 pitch 水平扇面 LIDAR (跟 baseline 6+6 SinglePitchArc 几何 byte-equal)
+        # 每 sensor 内打包 6 个 pitch × 21 azim = 126 ray, 双 sensor 共 252 ray.
+        # 跟独立 12-sensor 版本字节级等价 (验证已通过), 但少 10 个 sensor 对象 → 节省
+        # IsaacLab sensor 管理开销, raycast kernel launch 数从 12 减到 2.
+        # 几何约定: elevation/azimuth (从水平面起算), 跟"同一俯仰角" semantics 一致.
+        # 后向 sensor 整体绕 Z 转 180° → boresight = -X.
+        # =====================================================================
         FRONT_LIDAR_POS = (0.32028, 0.0, -0.013)
         REAR_LIDAR_POS = (-0.32028, 0.0, -0.013)
-        
+        SCAN_MESHES    = ["/World/ground"]
 
-        down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 25.0]
+        # 12 个 pitch (从水平面起算 deg, 负=向下), 加密版 (baseline 是 6 个)
+        # linspace(-25, 25, 12) → 步长 ~4.5°, 覆盖 baseline 同范围但密度翻倍
+        SCAN_PITCHES = [
+            -25.000, -20.455, -15.909, -11.364, -6.818, -2.273,
+              2.273,   6.818,  11.364,  15.909,  20.455,  25.000,
+        ]
+        # 收窄 azimuth ±30° (跟 baseline GridPattern ±0.5m lateral 在 1.5m 距离的角度等价)
+        # baseline 等 Y 线在 r=1.5m 处覆盖 ±0.5m → atan(0.5/1.5)=±18.4°, ±30° 略宽一点
+        # num_azim 保 21 (步长 3°), 比 baseline 等 Y 线 5cm 横向间距 (在 1.5m ≈ 1.9°) 略稀疏但近场更密
+        SCAN_AZIM_RANGE = (-30.0, 30.0)
+        SCAN_NUM_AZIM = 21
 
-        SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
-        SCAN_MESHES = ["/World/ground"]
+        SCAN_PATTERN = MultiPitchArcPatternCfg(
+            pitch_angles_deg=SCAN_PITCHES,
+            num_azimuth=SCAN_NUM_AZIM,
+            azimuth_range_deg=SCAN_AZIM_RANGE,
+        )
 
-        for i, angle_deg in enumerate(down_angles_deg):
-            
-            # 前向雷达
-            fwd_pitch_deg = -(90.0 - angle_deg)
-            fwd_half_rad = math.radians(fwd_pitch_deg) / 2.0
-            fwd_rot = (math.cos(fwd_half_rad), 0.0, math.sin(fwd_half_rad), 0.0)
-            
-            fwd_sensor = MultiMeshRayCasterCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS, rot=fwd_rot),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, 
-                max_distance=2.5, # 跟 main 对齐: 真机 Robosense Airy max_distance ≈ 2.5m
-                debug_vis=True, 
-                reference_meshes=True,
-                mesh_prim_paths=SCAN_MESHES,
-            )
-            fwd_sensor.update_period = 0.1
-            setattr(self.scene, f"forward_scanner_layer{i}", fwd_sensor)
+        # 前向 sensor: 无旋转, boresight=+X. 6 pitch × 21 azim = 126 ray (pitch-major flat).
+        self.scene.forward_lidar = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(pos=FRONT_LIDAR_POS),
+            ray_alignment="base",
+            pattern_cfg=SCAN_PATTERN,
+            max_distance=2.5,
+            debug_vis=False,
+            reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+        self.scene.forward_lidar.update_period = 0.1
 
-            # 后向雷达
-            bwd_pitch_deg = (90.0 - angle_deg)
-            bwd_half_rad = math.radians(bwd_pitch_deg) / 2.0
-            bwd_rot = (math.cos(bwd_half_rad), 0.0, math.sin(bwd_half_rad), 0.0)
-            
-            bwd_sensor = MultiMeshRayCasterCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base_link",
-                offset=MultiMeshRayCasterCfg.OffsetCfg(pos=REAR_LIDAR_POS, rot=bwd_rot),
-                ray_alignment="base", 
-                pattern_cfg=SCAN_PATTERN, 
-                max_distance=2.5, # 跟 main 对齐: 真机 Robosense Airy max_distance ≈ 2.5m
-                debug_vis=True, 
-                reference_meshes=True,
-                mesh_prim_paths=SCAN_MESHES,
-            )
-            bwd_sensor.update_period = 0.1
-            setattr(self.scene, f"backward_scanner_layer{i}", bwd_sensor)
+        # 后向 sensor: 绕 Z 转 180° → boresight = -X. 同 pattern, 物理位置在车后.
+        self.scene.backward_lidar = MultiMeshRayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base_link",
+            offset=MultiMeshRayCasterCfg.OffsetCfg(
+                pos=REAR_LIDAR_POS,
+                rot=(0.0, 0.0, 0.0, 1.0),   # quaternion (w,x,y,z) = 绕 Z 转 180°
+            ),
+            ray_alignment="base",
+            pattern_cfg=SCAN_PATTERN,
+            max_distance=2.5,
+            debug_vis=False,
+            reference_meshes=True,
+            mesh_prim_paths=SCAN_MESHES,
+        )
+        self.scene.backward_lidar.update_period = 0.1
         # Rewards
         self.rewards.is_terminated.weight = 0
         self.rewards.lin_vel_z_l2.weight = -2.0

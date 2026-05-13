@@ -31,6 +31,10 @@ parser.add_argument("--keyboard", action="store_true", default=False, help="Whet
 # Export
 parser.add_argument("--export", action="store_true", default=True, help="Whether to export ONNX/TorchScript and Configs.")
 parser.add_argument("--joystick", action="store_true", default=False, help="Whether to use joystick/gamepad.")
+parser.add_argument("--logbag", type=str, default="", help="Path to save offline test logbag (e.g. logbag.jsonl)")
+parser.add_argument("--vis-scan-obs", action="store_true", default=False,
+                    help="Visualize post-augmentation LiDAR scan obs as 3D markers (env 0). "
+                         "绿球=valid, 红球=blind/dropout. 与 Isaac Sim Scene Debug 里的 forward/backward_lidar 原始点对照看.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app_launcher = AppLauncher(args)
@@ -47,7 +51,12 @@ import torch.nn.functional as F
 
 import carb
 import carb.input
-import omni.appwindow
+try:
+    import omni.appwindow  # not available in --headless Kit configs
+    _HAS_APPWINDOW = True
+except ModuleNotFoundError:
+    _HAS_APPWINDOW = False
+    omni = None  # placeholder; KeyboardExtension instantiation will be skipped
 
 from rl_utils import camera_follow 
 from isaaclab_tasks.utils import parse_env_cfg
@@ -232,7 +241,12 @@ def get_flat_obs_dim(policy):
     return dim
 
 class UnifiedExportPolicy(nn.Module):
-    """统一导出包装器"""
+    """统一导出包装器.
+
+    若 policy.use_scan_history=True, ONNX 接口扩展:
+      新增输入: scan_history (B, K, scan_out_dim) — 过去 K 帧 ae latent (oldest→newest)
+      新增输出: scan_lat_t (B, scan_out_dim) — 当前帧 ae latent (caller 加进 buffer)
+    """
     def __init__(self, policy):
         super().__init__()
         self.policy = policy
@@ -240,28 +254,52 @@ class UnifiedExportPolicy(nn.Module):
         for param in self.policy.parameters():
             param.requires_grad = False
         self.rnn_type = getattr(policy, "rnn_type", "gru").lower()
+        self.use_scan_history = getattr(policy, "use_scan_history", False)
+        self.scan_history_len = getattr(policy, "scan_history_len", 0)
+        self.scan_out_dim = getattr(policy, "scan_out_dim", 64)
 
-    def forward(self, proprio_and_env, estimator_history, h0, c0=None):
+    def forward(self, proprio_and_env, estimator_history, h0, c0_or_scan_history=None, scan_history=None):
+        # 兼容三种调用 :
+        #   GRU 无 scan_history:  forward(po, eh, h0)
+        #   GRU + scan_history:   forward(po, eh, h0, scan_history)  -> c0_or_scan_history 即 scan_history
+        #   LSTM:                 forward(po, eh, h0, c0)            -> 无 scan_history
+        #   LSTM + scan_history:  forward(po, eh, h0, c0, scan_history)
         if self.rnn_type == "lstm":
-            hidden_states = (h0, c0)
+            hidden_states = (h0, c0_or_scan_history)
+            scan_hist_input = scan_history
         else:
             hidden_states = h0
-            
+            scan_hist_input = c0_or_scan_history if c0_or_scan_history is not None else scan_history
+
         obs_dict = {
             "policy": proprio_and_env[..., :self.policy.proprio_dim],
             "noisy_elevation": proprio_and_env[..., self.policy.proprio_dim:]
         }
         if estimator_history.shape[-1] > 0:
             obs_dict["estimator"] = estimator_history
-            
-        action_mean, _, next_state = self.policy.forward(
-            obs_dict, masks=None, hidden_states=hidden_states, save_dist=False
-        )
-        
+
+        # 若使用 scan_history, 通过 forward 的 _scan_history_input kwarg 传入. policy.forward 不直接接受
+        # 此 kwarg, 借助实例属性临时透传。
+        if self.use_scan_history:
+            self.policy._onnx_scan_history_input = scan_hist_input
+        try:
+            action_mean, _, next_state = self.policy.forward(
+                obs_dict, masks=None, hidden_states=hidden_states, save_dist=False
+            )
+        finally:
+            if hasattr(self.policy, "_onnx_scan_history_input"):
+                del self.policy._onnx_scan_history_input
+
+        # 当前帧 latent: policy 在 _process_obs 中通过 aux_outputs 暴露
+        scan_lat_t = getattr(self.policy, "_last_scan_lat_t", None)
+
         if self.rnn_type == "lstm":
-            return action_mean, next_state[0], next_state[1]
+            outs = [action_mean, next_state[0], next_state[1]]
         else:
-            return action_mean, next_state
+            outs = [action_mean, next_state]
+        if self.use_scan_history and scan_lat_t is not None:
+            outs.append(scan_lat_t)
+        return tuple(outs) if len(outs) > 1 else outs[0]
 
 def resolve_checkpoint_path(root_log_dir, run_name_or_path, checkpoint_pattern):
     run_dir = None
@@ -320,17 +358,33 @@ def export_model_files(policy, log_dir, device):
         dummy_obs = torch.zeros(batch_size, flat_obs_dim, device=device)
         dummy_est = torch.zeros(batch_size, est_dim, device=device)
         
+        use_scan_history = getattr(policy, "use_scan_history", False)
+        scan_history_len = getattr(policy, "scan_history_len", 0)
+        scan_out_dim = getattr(policy, "scan_out_dim", 64)
+
         if rnn_type == "lstm":
             dummy_h0 = torch.zeros(1, batch_size, latent_dim, device=device)
             dummy_c0 = torch.zeros(1, batch_size, latent_dim, device=device)
-            inputs = (dummy_obs, dummy_est, dummy_h0, dummy_c0)
-            input_names = ["proprio_and_env", "estimator_history", "h0", "c0"]
-            output_names = ["action", "next_h0", "next_c0"]
+            if use_scan_history:
+                dummy_scan_hist = torch.zeros(batch_size, scan_history_len, scan_out_dim, device=device)
+                inputs = (dummy_obs, dummy_est, dummy_h0, dummy_c0, dummy_scan_hist)
+                input_names = ["proprio_and_env", "estimator_history", "h0", "c0", "scan_history"]
+                output_names = ["action", "next_h0", "next_c0", "scan_lat_t"]
+            else:
+                inputs = (dummy_obs, dummy_est, dummy_h0, dummy_c0)
+                input_names = ["proprio_and_env", "estimator_history", "h0", "c0"]
+                output_names = ["action", "next_h0", "next_c0"]
         else:
             dummy_h0 = torch.zeros(1, batch_size, latent_dim, device=device)
-            inputs = (dummy_obs, dummy_est, dummy_h0)
-            input_names = ["proprio_and_env", "estimator_history", "h0"]
-            output_names = ["action", "next_h0"]
+            if use_scan_history:
+                dummy_scan_hist = torch.zeros(batch_size, scan_history_len, scan_out_dim, device=device)
+                inputs = (dummy_obs, dummy_est, dummy_h0, dummy_scan_hist)
+                input_names = ["proprio_and_env", "estimator_history", "h0", "scan_history"]
+                output_names = ["action", "next_h0", "scan_lat_t"]
+            else:
+                inputs = (dummy_obs, dummy_est, dummy_h0)
+                input_names = ["proprio_and_env", "estimator_history", "h0"]
+                output_names = ["action", "next_h0"]
             
         onnx_path = os.path.join(exported_dir, "unified_policy.onnx")
         torch.onnx.export(
@@ -654,16 +708,30 @@ def main():
             bar = '▒' * min(int(diff * 40), 30)
             lines.append(f"  {labels[i]}: Est={e:6.3f} | GT={g:6.3f} | Err={err_color}{diff:6.3f} {bar}\033[0m")
         return lines
-
+    
+    def print_tracking_diff(cmd_vec, gt_vec):
+        lines = []
+        labels = ["Vx", "Vy", "Wz"]
+        dim = min(len(cmd_vec), len(gt_vec), 3)
+        for i in range(dim):
+            c, g = cmd_vec[i].item(), gt_vec[i].item()
+            diff = abs(c - g)
+            # 误差越小越绿，越大越红
+            err_color = "\033[92m" if diff < 0.2 else "\033[91m"
+            bar = '▒' * min(int(diff * 20), 30)
+            lines.append(f"  {labels[i]}: Cmd={c:6.3f} | Act={g:6.3f} | Err={err_color}{diff:6.3f} {bar}\033[0m")
+        return lines
+    
     last_printed_lines = 0
     status_message = ""
     status_timer = 0
 
-    def visualize(obs_idx=0, est_state=None, gt_state=None, cur_terrain_info=None, controller_debug=None, connected=True):
+    def visualize(obs_idx=0, est_state=None, gt_state=None, cmd_state=None, cur_terrain_info=None, controller_debug=None, connected=True):
         nonlocal last_printed_lines, status_message, status_timer
         
         lines = []
-        lines.append("="*30 + " H-MoE Dashboard " + "="*30)
+        # 1. 缩短首行分隔符长度
+        lines.append("="*18 + " H-MoE Dashboard " + "="*18)
         
         if args.joystick or args.keyboard:
             ctrl_type = "Gamepad" if args.joystick else "Keyboard"
@@ -677,7 +745,9 @@ def main():
             lines.append(f"Terrain Status:")
             lines.append(f"  Level : {draw_progress_bar(cur_lvl, num_rows)}")
             lines.append(f"  Type  : {draw_progress_bar(cur_type, num_cols)}")
-            lines.append("-" * 65)
+            tracking_weight = max(0.2, 1.0 - (cur_lvl / 30.0))
+            lines.append(f"  Tolerance: \033[93m{tracking_weight:.2f}\033[0m (Reward Weight)")
+            lines.append("-" * 53)
 
         for name in ["Wheel", "Leg"]:
             if name in monitor_data:
@@ -691,8 +761,14 @@ def main():
         if est_state is not None and gt_state is not None:
             lines.append("State Estimator:")
             lines.extend(print_estimator_diff(est_state[obs_idx], gt_state[obs_idx]))
-            
-        lines.append("="*75)
+
+        if cmd_state is not None and gt_state is not None:
+            lines.append("-" * 30)
+            lines.append("Velocity Tracking (Cmd vs Actual):")
+            lines.extend(print_tracking_diff(cmd_state[obs_idx], gt_state[obs_idx]))
+
+        # 缩短底部分隔符
+        lines.append("="*53)
 
         if status_timer > 0:
             lines.append(f"\033[93m[EVENT] {status_message}\033[0m")
@@ -701,7 +777,9 @@ def main():
             lines.append("") 
 
         if last_printed_lines > 0:
-            sys.stdout.write(f"\033[{last_printed_lines}A\033[J")
+            # 2. 加入 \r 确保光标严格回到最左侧行首，并清空缓冲区
+            sys.stdout.write(f"\r\033[{last_printed_lines}A\033[J")
+            sys.stdout.flush()
         
         print("\n".join(lines))
         last_printed_lines = len(lines)
@@ -722,11 +800,247 @@ def main():
     HEIGHT_TOP = 5.0
     OFFSET_BACKWARD = [ 2.5, 0.0, 1.5 ]
     camera_history = []
-    
+    if hasattr(base_env.scene.terrain, "terrain_levels"):
+        cur_difficulty = base_env.scene.terrain.terrain_levels[0].item()
+    if hasattr(base_env.scene.terrain, "terrain_types"):
+        cur_subterrain = base_env.scene.terrain.terrain_types[0].item()
+
+    # ===== Scan obs 可视化 (post-augmentation, 4 色分类) =====
+    # 绿 (valid)     : obs 没被增强干掉, 落在策略真实"看到"的位置 (含 noise+latency 偏移)
+    # 黄 (ramp)      : obs blind 且 raw_depth ∈ [0, 0.35]m → 距离渐变盲区干掉的
+    # 紫 (random)    : obs blind 且 raw_depth ∈ [0.35, 2.4]m → 30-50% 随机 dropout 干掉的
+    # 红 (no_return) : obs blind 且 raw 无 hit / >2.4m → 真无回波 (天空/超量程, 真机也是这样)
+    # 黄/紫/红 都画在距 sensor 2.5m 的射线方向上 (= 策略的 "max_distance 球壳" 认知)
+    scan_vis_markers = None
+    if args.vis_scan_obs:
+        import isaaclab.sim as sim_utils
+        from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+        scan_vis_cfg = VisualizationMarkersCfg(
+            prim_path="/Visuals/scan_obs_pts",
+            markers={
+                "valid": sim_utils.SphereCfg(
+                    radius=0.04,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                ),
+                "ramp": sim_utils.SphereCfg(
+                    radius=0.028,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.95, 0.0)),
+                ),
+                "random": sim_utils.SphereCfg(
+                    radius=0.028,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.65, 0.0, 1.0)),
+                ),
+                "no_return": sim_utils.SphereCfg(
+                    radius=0.018,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                ),
+                # 高程图 (ElevationAE 的输入) — height_scanner 11x17 grid 的真实 ray_hit 位置
+                "elevation": sim_utils.SphereCfg(
+                    radius=0.025,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.8, 1.0)),
+                ),
+            },
+        )
+        scan_vis_markers = VisualizationMarkers(scan_vis_cfg)
+        print("[ScanVis] post-aug scan markers enabled (env 0). 绿=valid, 黄=ramp, 紫=random_dropout, 红=true_no_return, 青=elevation.")
+        print("[ScanVis] 诊断日志写入 /tmp/scan_vis_diag.log — 另开终端 `tail -f /tmp/scan_vis_diag.log` 查看")
+        # 清空旧日志
+        try:
+            with open("/tmp/scan_vis_diag.log", "w") as _f:
+                _f.write("# ScanVis diagnostic log\n")
+        except Exception:
+            pass
+
+    _scan_vis_diag = {"step": 0, "ramp_seen": 0, "last_print": -1}
+
+    # 动态计算 noisy_elevation 组内 forward_scan / backward_scan 的真实切片位置。
+    # height_scan 可能出现在 LIDAR 之前 (见 NoisyElevationCfg)，硬编码 (0,496)/(496,992) 会错位。
+    _lidar_slices = []
+    _height_scan_slice = None
+    if args.vis_scan_obs:
+        try:
+            _om = base_env.observation_manager
+            # active_terms: dict[group_name, list[term_name]] (in concatenation order)
+            # group_obs_term_dim: dict[group_name, list[tuple[int, ...]]]
+            _term_names = _om.active_terms["noisy_elevation"]
+            _term_dims = _om.group_obs_term_dim["noisy_elevation"]
+            _name_to_sensor = {"forward_scan": "forward_lidar", "backward_scan": "backward_lidar"}
+            _off = 0
+            _height_scan_slice = None
+            for _n, _d in zip(_term_names, _term_dims):
+                _sz = int(_d[0])
+                if _n in _name_to_sensor:
+                    _lidar_slices.append((_name_to_sensor[_n], slice(_off, _off + _sz)))
+                elif _n == "height_scan":
+                    _height_scan_slice = slice(_off, _off + _sz)
+                _off += _sz
+            print(f"[ScanVis] dynamic slices = {_lidar_slices} "
+                  f"(group dim={_off}, height_scan slice={_height_scan_slice})")
+        except Exception as _e:
+            print(f"[ScanVis] dynamic slice lookup failed ({_e}); falling back to legacy 992 layout")
+            _lidar_slices = [("forward_lidar", slice(0, 496)), ("backward_lidar", slice(496, 992))]
+
+    # height_scan 可视化: 检测 obs 里是否真的有 height_scan 项, 且 scene 里挂了 height_scanner sensor
+    _viz_height_scan = False
+    if args.vis_scan_obs:
+        try:
+            _has_term = any(
+                "height_scan" in _terms
+                for _terms in base_env.observation_manager.active_terms.values()
+            )
+            _has_sensor = "height_scanner" in base_env.scene.sensors
+            _viz_height_scan = _has_term and _has_sensor
+            if _viz_height_scan:
+                print("[ScanVis] elevation (青色) markers enabled — height_scanner ray_hits_w")
+            else:
+                print(f"[ScanVis] elevation viz off (has_term={_has_term}, has_sensor={_has_sensor})")
+        except Exception as _e:
+            print(f"[ScanVis] elevation viz disabled: {_e}")
+
+    def _update_scan_obs_markers(env_obs_dict, env_idx=0):
+        """4 色分类: 区分 valid / ramp / random_dropout / true_no_return."""
+        if "noisy_elevation" not in env_obs_dict:
+            return
+        noisy = env_obs_dict["noisy_elevation"][env_idx]
+        pts_list, idx_list = [], []
+        # 收集诊断
+        diag_counts = [0, 0, 0, 0]   # valid, ramp, random, no_return
+        diag_raw_min = float("inf")
+        diag_raw_close_count = 0      # 当前帧 raw_d < 0.35 的射线数
+
+        for sname, slc in _lidar_slices:
+            sensor = base_env.scene.sensors[sname]
+            # 用 _ray_starts_w (真实射线起点, 含 offset) 而非 data.pos_w (= base_link).
+            ray_starts = sensor._ray_starts_w[env_idx]          # (496, 3) — 每条射线的世界起点
+            hits = sensor.data.ray_hits_w[env_idx]              # (496, 3)
+            vec = hits - ray_starts
+            raw_d = vec.norm(dim=-1)                            # (496,) — 真正的 sensor→hit 深度
+            ray_dir = torch.nan_to_num(
+                vec / raw_d.clamp(min=1e-3).unsqueeze(-1),
+                nan=0.0, posinf=0.0, neginf=0.0,
+            )
+
+            obs_norm = noisy[slc]
+            obs_depth = (obs_norm * 2.5).clamp(0.0, 2.5)
+            obs_blind = obs_norm > 0.95
+            raw_finite = torch.isfinite(raw_d)
+            raw_clean = torch.where(raw_finite, raw_d, torch.full_like(raw_d, 99.0))
+
+            # 分类 (默认 0=valid)
+            idx = torch.zeros_like(obs_blind, dtype=torch.long)
+            no_return = obs_blind & ((~raw_finite) | (raw_clean > 2.4))
+            ramp = obs_blind & (~no_return) & (raw_clean < 0.35)
+            random_drop = obs_blind & (~no_return) & (raw_clean >= 0.35)
+            idx = torch.where(ramp, torch.full_like(idx, 1), idx)
+            idx = torch.where(random_drop, torch.full_like(idx, 2), idx)
+            idx = torch.where(no_return, torch.full_like(idx, 3), idx)
+
+            # 位置: valid → obs 深度 (含噪/延迟); blind 三类 → 2.5m 球壳 (策略的"max_dist 认知")
+            # 起点用 ray_starts (真实 sensor 位置), 不是 base_link
+            depth_for_vis = torch.where(obs_blind, torch.full_like(obs_depth, 2.5), obs_depth)
+            new_pts = ray_starts + ray_dir * depth_for_vis.unsqueeze(-1)
+
+            pts_list.append(new_pts)
+            idx_list.append(idx)
+
+            # 累计诊断
+            diag_counts[0] += int((idx == 0).sum().item())
+            diag_counts[1] += int((idx == 1).sum().item())
+            diag_counts[2] += int((idx == 2).sum().item())
+            diag_counts[3] += int((idx == 3).sum().item())
+            if raw_finite.any():
+                diag_raw_min = min(diag_raw_min, float(raw_clean[raw_finite].min().item()))
+            diag_raw_close_count += int((raw_finite & (raw_d < 0.35)).sum().item())
+
+        # 高程图可视化 (post-obs, 与 LIDAR 4 色同口径):
+        # obs_hs ∈ [-1, 1] = pos_w_z - ground_z - 0.5  (含 ±0.1 噪声, clip 后)
+        # → ground_z_seen_by_policy = pos_w_z - obs_hs - 0.5
+        # XY 仍取真实栅格位置 (_ray_starts_w 的 xy 分量, 已含 yaw 旋转后的 sensor 偏移)
+        if _viz_height_scan and _height_scan_slice is not None:
+            hs = base_env.scene.sensors["height_scanner"]
+            obs_hs = noisy[_height_scan_slice]                            # (187,) 已 noise+clip
+            ray_xy = hs._ray_starts_w[env_idx, :, :2]                     # (187, 2) world XY
+            pos_w_z = hs.data.pos_w[env_idx, 2]                           # scalar body z
+            ground_z = pos_w_z - obs_hs - 0.5                             # (187,)
+            elev_pts = torch.cat([ray_xy, ground_z.unsqueeze(-1)], dim=-1)
+            pts_list.append(elev_pts)
+            idx_list.append(torch.full(
+                (elev_pts.shape[0],), 4,
+                dtype=torch.long, device=elev_pts.device,
+            ))
+
+        all_pts = torch.cat(pts_list, dim=0).cpu().numpy()
+        all_idx = torch.cat(idx_list, dim=0).cpu().numpy().tolist()
+        scan_vis_markers.visualize(translations=all_pts, marker_indices=all_idx)
+
+        # ---- 诊断打印 ----
+        s = _scan_vis_diag
+        s["step"] += 1
+        if diag_counts[1] > 0:
+            s["ramp_seen"] += 1
+        # 触发条件: 每 60 帧 (~1.2s) 打印一次, 或 raw_d 出现 < 0.35 的射线时强制打印
+        force = diag_raw_close_count > 0 and s["last_print"] != s["step"]
+        periodic = (s["step"] % 60 == 0)
+        if force or periodic:
+            s["last_print"] = s["step"]
+            line = (f"[ScanVis step={s['step']:5d}] "
+                    f"green={diag_counts[0]:3d}  yellow={diag_counts[1]:3d}  "
+                    f"purple={diag_counts[2]:3d}  red={diag_counts[3]:3d}  "
+                    f"| raw_min={diag_raw_min:.2f}m  raw<0.35: {diag_raw_close_count} rays  "
+                    f"| ramp_seen_total={s['ramp_seen']}/{s['step']}\n")
+            try:
+                with open("/tmp/scan_vis_diag.log", "a") as _f:
+                    _f.write(line)
+            except Exception:
+                pass
+
     step = 0
     with torch.inference_mode():
         while simulation_app.is_running():
             obs_dict = base_env.obs_buf
+            if scan_vis_markers is not None:
+                _update_scan_obs_markers(obs_dict, env_idx=0)
+            log_dict = None
+            if args.logbag and step > 0: # step 0 的 last_action 是空的，跳过
+                robot = base_env.scene["robot"]
+                # 1. 基础本体 (Raw)
+                omega = robot.data.root_ang_vel_b[0].cpu().tolist()
+                proj_g = robot.data.projected_gravity_b[0].cpu().tolist()
+                cmd = base_env.command_manager.get_command("base_velocity")[0].cpu().tolist()
+                jp = robot.data.joint_pos[0].cpu().tolist()
+                jv = robot.data.joint_vel[0].cpu().tolist()
+                last_act = prev_actions[0].cpu().tolist()
+
+                # 2. 高程图 (Python已经处理好了187维，直接取这187个值，规避C++重构ROS GridMap的麻烦)
+                noisy_ele = obs_dict["noisy_elevation"][0].cpu().tolist()
+                processed_heights = noisy_ele[:187]
+
+                # 3. 雷达扫描距离 (完全 Raw，包含 NaN/Inf)
+                # 半球形 LidarPattern: 16 ch × 31 az = 496 rays per direction (front / back)
+                f_sens = base_env.scene.sensors["forward_lidar"]
+                f_dist = torch.norm(f_sens.data.ray_hits_w[0] - f_sens.data.pos_w[0], dim=-1)
+                raw_fwd = torch.nan_to_num(f_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
+                b_sens = base_env.scene.sensors["backward_lidar"]
+                b_dist = torch.norm(b_sens.data.ray_hits_w[0] - b_sens.data.pos_w[0], dim=-1)
+                raw_bwd = torch.nan_to_num(b_dist, posinf=5.0, neginf=5.0, nan=5.0).cpu().tolist()
+
+                log_dict = {
+                    "omega": omega, "proj_g": proj_g, "cmd": cmd,
+                    "jp": jp, "jv": jv, "last_action": last_act,
+                    "processed_heights": processed_heights,
+                    "raw_fwd": raw_fwd, "raw_bwd": raw_bwd
+                }
+
+
+            actions = policy(obs_dict)
+            
+
+            if log_dict is not None:
+                log_dict["gt_action"] = actions[0].cpu().tolist()
+                with open(args.logbag, "a") as f:
+                    f.write(json.dumps(log_dict) + "\n")
+            prev_actions = actions.clone()
+
             actions = policy(obs_dict)
             
             reset_terrain_needed = False
@@ -803,22 +1117,35 @@ def main():
             rb_prev, lb_prev = rb_curr, lb_curr
 
             if reset_terrain_needed:
+                # 首先执行重置 (让 IsaacLab 内部逻辑跑完，它可能会在这里偷偷改 level)
+                obs, _ = env_wrapped.reset()
+
+                # 然后：强制覆盖回用户指定的 Difficulty 和 Type
                 if hasattr(base_env.scene.terrain, "terrain_levels"):
                     levels_vec = torch.full((env_wrapped.num_envs,), cur_difficulty, device=env_wrapped.device, dtype=torch.long)
                     base_env.scene.terrain.terrain_levels[:] = levels_vec
                 
-                obs, _ = env_wrapped.reset()
+                if hasattr(base_env.scene.terrain, "terrain_types"):
+                    types_vec = torch.full((env_wrapped.num_envs,), cur_subterrain, device=env_wrapped.device, dtype=torch.long)
+                    base_env.scene.terrain.terrain_types[:] = types_vec
+                
+                # 重新计算出生点
+                base_env.scene.terrain.update_env_origins(
+                    env_ids=torch.arange(env_wrapped.num_envs, device=env_wrapped.device, dtype=torch.long),
+                    move_up=torch.zeros(env_wrapped.num_envs, device=env_wrapped.device, dtype=torch.long),
+                    move_down=torch.zeros(env_wrapped.num_envs, device=env_wrapped.device, dtype=torch.long)
+                )
 
-                if terrain_origins is not None and robot_entity is not None:
-                    r_idx = max(0, min(cur_difficulty, num_rows - 1))
-                    c_idx = max(0, min(cur_subterrain, num_cols - 1))
-                    target_origin = terrain_origins[r_idx, c_idx].clone()
-                    target_origin[2] += 0.55 
+                # 5. 使用原生场景属性 base_env.scene.env_origins 进行传送
+                if robot_entity is not None:
+                    # 直接获取 update_env_origins 计算出的坐标
+                    target_pos = base_env.scene.env_origins.clone()
+                    target_pos[:, 2] += 0.55  # 抬高一点防止穿模
                     
                     default_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env_wrapped.device).repeat(env_wrapped.num_envs, 1)
-                    target_pos = target_origin.unsqueeze(0).repeat(env_wrapped.num_envs, 1).to(env_wrapped.device)
-                    
                     root_pose = torch.cat([target_pos, default_quat], dim=-1)
+                    
+                    # 写入仿真
                     robot_entity.write_root_pose_to_sim(root_pose)
                     
                     root_vel = torch.zeros_like(robot_entity.data.root_link_vel_w)
@@ -833,7 +1160,7 @@ def main():
                 gt_lin = robot_entity.data.root_lin_vel_b
                 gt_ang = robot_entity.data.root_ang_vel_b
                 gt_state = torch.cat([gt_lin[:, :2], gt_ang[:, 2:3]], dim=-1)
-
+            actual_cmd = obs_dict["policy"][:, 6:9]
             obs, _, _, _ = env_wrapped.step(actions)
             step += 1
             
@@ -841,7 +1168,8 @@ def main():
                 visualize(
                     obs_idx=0, 
                     est_state=est_state, 
-                    gt_state=gt_state, 
+                    gt_state=gt_state,
+                    cmd_state=actual_cmd, 
                     cur_terrain_info=(cur_difficulty, cur_subterrain),
                     controller_debug=ctrl_debug if args.joystick else None,
                     connected=is_connected
