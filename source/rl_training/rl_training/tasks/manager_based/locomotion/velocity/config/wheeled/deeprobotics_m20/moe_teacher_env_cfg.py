@@ -68,13 +68,17 @@ def process_lidar_data(depths: torch.Tensor, is_student: bool) -> torch.Tensor:
 
 def lidar_depth_scan_teacher(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     sensor = env.scene.sensors[sensor_cfg.name]
-    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
+    # 用 _ray_starts_w (真实射线起点世界坐标, 含 OffsetCfg 偏移), 而不是 data.pos_w (= base_link).
+    # data.pos_w 报的是父 prim, 用它会让深度系统性大 ~0.32m, 与真机 lidar_to_scan.cpp 之间产生 sim2real 偏差。
+    rel_vec = sensor.data.ray_hits_w - sensor._ray_starts_w
     depths = torch.norm(rel_vec, dim=-1)
     return process_lidar_data(depths, is_student=False)
 
 def lidar_depth_scan_student(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     sensor = env.scene.sensors[sensor_cfg.name]
-    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
+    # 用 _ray_starts_w (真实射线起点世界坐标, 含 OffsetCfg 偏移), 而不是 data.pos_w (= base_link).
+    # data.pos_w 报的是父 prim, 用它会让深度系统性大 ~0.32m, 与真机 lidar_to_scan.cpp 之间产生 sim2real 偏差。
+    rel_vec = sensor.data.ray_hits_w - sensor._ray_starts_w
     depths = torch.norm(rel_vec, dim=-1)
     return process_lidar_data(depths, is_student=True)
 
@@ -94,8 +98,10 @@ def student_camera_depth(env, sensor_cfg: SceneEntityCfg, data_type: str, normal
 def multi_layer_scan(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """处理多层雷达扫描，输出归一化的距离数组 (严格区分安全区与盲区)"""
     sensor = env.scene.sensors[sensor_cfg.name]
-    
-    rel_vec = sensor.data.ray_hits_w - sensor.data.pos_w.unsqueeze(1)
+
+    # 用 _ray_starts_w (真实射线起点世界坐标, 含 OffsetCfg 偏移), 而不是 data.pos_w (= base_link).
+    # data.pos_w 报的是父 prim, 用它会让深度系统性大 ~0.32m, 与真机 lidar_to_scan.cpp 之间产生 sim2real 偏差。
+    rel_vec = sensor.data.ray_hits_w - sensor._ray_starts_w
     depths = torch.norm(rel_vec, dim=-1)
     
     # 将 NaN 和 inf 视为安全距离 (5.0m)
