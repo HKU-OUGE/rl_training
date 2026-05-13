@@ -386,6 +386,100 @@ def main():
 
     runner = OnPolicyRunner(env, train_cfg_dict, log_dir=log_dir, device=device)
 
+    # =========================================================================
+    # Per-rank logging hook (monkey-patch runner.log) — port cfb9e3b second hunk
+    # 把各 rank 自己的 terrain_level / ep_reward / ep_length / termination 占比
+    # all_gather 到 rank 0, 然后写成 wandb scalar `PerRank/{key}/{name}`.
+    # 仅在 args.distributed + PER_RANK_TERRAIN=1 时挂载, 不影响单卡 run.
+    # =========================================================================
+    if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1":
+        import torch.distributed as dist
+        RANK_NAMES = os.environ.get(
+            "PER_RANK_NAMES",
+            "FLAT,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,GRID",
+        ).split(",")
+
+        _base_env = env
+        while hasattr(_base_env, "env"):
+            _base_env = _base_env.env
+        if hasattr(_base_env, "unwrapped"):
+            _base_env = _base_env.unwrapped
+
+        _original_log = runner.log
+
+        def _per_rank_log(locs, *a, **kw):
+            ret = _original_log(locs, *a, **kw)
+            try:
+                it = locs.get("it", runner.current_learning_iteration)
+                local_metrics = {}
+                # terrain curriculum
+                if hasattr(_base_env, "scene") and hasattr(_base_env.scene, "terrain") \
+                   and hasattr(_base_env.scene.terrain, "terrain_levels"):
+                    tl = _base_env.scene.terrain.terrain_levels.float()
+                    local_metrics["terrain_level_mean"] = tl.mean()
+                    local_metrics["terrain_level_max"] = tl.max()
+                # episode reward / length
+                if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
+                    local_metrics["ep_reward"] = torch.tensor(
+                        sum(locs["rewbuffer"]) / len(locs["rewbuffer"]),
+                        device=device, dtype=torch.float32,
+                    )
+                if locs.get("lenbuffer") and len(locs["lenbuffer"]) > 0:
+                    local_metrics["ep_length"] = torch.tensor(
+                        sum(locs["lenbuffer"]) / len(locs["lenbuffer"]),
+                        device=device, dtype=torch.float32,
+                    )
+                # termination 占比 (Episode_Termination/* 平均)
+                if locs.get("ep_infos"):
+                    term_keys = [k for k in locs["ep_infos"][0].keys()
+                                 if k.startswith("Episode_Termination/")]
+                    for k in term_keys:
+                        vals = [ep[k] for ep in locs["ep_infos"] if k in ep]
+                        if vals:
+                            avg = sum(v.item() if hasattr(v, "item") else float(v)
+                                      for v in vals) / len(vals)
+                            local_metrics[k.replace("Episode_Termination/", "term_")] = \
+                                torch.tensor(avg, device=device, dtype=torch.float32)
+                # PPO 损失 (per-rank critic 时各 rank V loss 可能差很多, da4207f port)
+                if "mean_value_loss" in locs:
+                    local_metrics["value_function"] = torch.tensor(
+                        float(locs["mean_value_loss"]),
+                        device=device, dtype=torch.float32,
+                    )
+                if "mean_surrogate_loss" in locs:
+                    local_metrics["surrogate"] = torch.tensor(
+                        float(locs["mean_surrogate_loss"]),
+                        device=device, dtype=torch.float32,
+                    )
+                if "mean_entropy" in locs:
+                    local_metrics["entropy"] = torch.tensor(
+                        float(locs["mean_entropy"]),
+                        device=device, dtype=torch.float32,
+                    )
+
+                # all_gather 到所有 rank, 只 master 写 wandb
+                world = int(os.environ.get("WORLD_SIZE", "1"))
+                for key, val in local_metrics.items():
+                    tensor = val.detach().to(device).float().contiguous()
+                    if tensor.dim() == 0:
+                        tensor = tensor.unsqueeze(0)
+                    gathered = [torch.zeros_like(tensor) for _ in range(world)]
+                    dist.all_gather(gathered, tensor)
+                    if is_master and runner.writer is not None:
+                        for r, g_val in enumerate(gathered):
+                            name = RANK_NAMES[r] if r < len(RANK_NAMES) else f"rank{r}"
+                            runner.writer.add_scalar(
+                                f"PerRank/{key}/{name}", g_val.item(), it,
+                            )
+            except Exception as e:
+                if is_master:
+                    print(f"[per_rank_log] failed: {e}")
+            return ret
+
+        runner.log = _per_rank_log
+        if is_master:
+            print(f"[INFO] PerRank logging enabled. RANK_NAMES = {RANK_NAMES}")
+
     if resume_path:
         loaded_dict = torch.load(resume_path, map_location=device)
         state_dict = loaded_dict.get("model_state_dict", loaded_dict)
