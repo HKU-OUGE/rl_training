@@ -724,9 +724,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-        # ground terrain
+        # 单一 terrain importer (跟 main 一致, 取消之前的 terrain + terrain2 双层结构)
+        # per-rank terrain dispatch 在 train_moe.py 里覆盖 self.scene.terrain.terrain_generator
         self.scene.terrain = TerrainImporterCfg(
-            prim_path="/World/obstacles",
+            prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
             max_init_terrain_level=0,
@@ -745,45 +746,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             ),
             debug_vis=False,
         )
-        self.scene.terrain2 = TerrainImporterCfg(
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
-            max_init_terrain_level=0,
-            collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=1.0,
-            ),
-            visual_material=sim_utils.MdlFileCfg(
-                mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
-                project_uvw=True,
-                texture_scale=(0.25, 0.25),
-            ),
-            debug_vis=False,
-        )
-        self.scene.terrain2.terrain_generator = MOE_ROUGH_TERRAINS_CFG
-        if(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
-            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.4, 1.4]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.4, 1.4]
-            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        elif(self.scene.terrain2.terrain_generator == MOE_ROUGH_TERRAINS_CFG):
-            self.scene.terrain2.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.2)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.16)
-            self.scene.terrain2.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.4, 1.4]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.4, 1.4]
-            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
-        else:
-            self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.4, 1.4]
-            self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.4, 1.4]
-            self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
+        # 拓宽 friction 范围 [0.4, 1.4] (sim2real, 58aad13 port)
+        self.events.randomize_rigid_body_material.params["static_friction_range"] = [0.4, 1.4]
+        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [0.4, 1.4]
+        self.events.randomize_rigid_body_material.params["restitution_range"] = [0.0, 0.7]
         # self.events.randomize_rigid_body_material.params["static_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = [1.0, 1.0]
         # self.events.randomize_rigid_body_material.params["restitution_range"] = [0.7, 0.7]
@@ -795,7 +761,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         down_angles_deg = [-25.0, -15.0, -5.0, 5.0, 15.0, 25.0]
 
         SCAN_PATTERN = patterns.GridPatternCfg(resolution=0.05, size=[0.0, 1.0])
-        SCAN_MESHES = ["/World/ground", "/World/obstacles"]
+        SCAN_MESHES = ["/World/ground"]
 
         for i, angle_deg in enumerate(down_angles_deg):
             
