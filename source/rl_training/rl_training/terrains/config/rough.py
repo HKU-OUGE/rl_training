@@ -206,12 +206,18 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     horizontal_scale=0.1, vertical_scale=0.005, slope_threshold=0.75,
     use_cache=False, curriculum=True,
     sub_terrains={
-        "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
-            proportion=0.5, pit_depth_range=(0.05, 1.0),
+        # 双层 pit (前后/两侧坑): 0.2 — 训练在窄平台上避免侧滑跌落
+        "pit_double": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=0.2, pit_depth_range=(0.05, 1.0),
             double_pit=True, platform_width=2.0),
-        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.5, grid_width=0.45,
-            grid_height_range=(0.05, 0.2), platform_width=2.0),
+        # 单层 pit (周围 1m 深坑): 0.6 — 主体训练场景, 学习"跳坑/避坑"
+        "pit_single": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
+            proportion=0.6, pit_depth_range=(0.05, 1.0),
+            double_pit=False, platform_width=2.0),
+        # 中央高 box: 0.2 — 训练下高台 (机器人在 box 上, 周围低)
+        "box": terrain_gen.trimesh.mesh_terrains_cfg.MeshBoxTerrainCfg(
+            proportion=0.2, box_height_range=(0.05, 1.0),
+            double_box=False, platform_width=2.0),
     },
 )
 
@@ -221,9 +227,27 @@ SCAN_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     horizontal_scale=0.1, vertical_scale=0.005, slope_threshold=0.75,
     use_cache=False, curriculum=True,
     sub_terrains={
-        "hurdle": MeshSquareHurdleTerrainCfg(
-            proportion=1.0, hurdle_height_range=(0.4, 0.65),
+        # 共同特征: crawl 模式, 最难 clearance=0.15m (curriculum 从 0.5 → 0.15)
+        # 4 种形状提供多样的视觉/几何挑战:
+        # 1) 杆 (5×5cm): 细横杆, 视觉上小, 钻过时机短
+        "hurdle_pole": MeshSquareHurdleTerrainCfg(
+            proportion=0.25, hurdle_height_range=(0.15, 0.5),
+            bar_thickness=0.05, bar_width=0.05,
+            platform_width=2.0, mode="crawl"),
+        # 2) 板子 (20cm 高 × 5cm 厚, 沿前进方向): 视觉上较大, 钻过快
+        "hurdle_board": MeshSquareHurdleTerrainCfg(
+            proportion=0.25, hurdle_height_range=(0.15, 0.5),
             bar_thickness=0.2, bar_width=0.05,
+            platform_width=2.0, mode="crawl"),
+        # 3) 薄墙 (20cm 高 × 15cm 厚): 钻行需保持低姿一段距离
+        "hurdle_thin_wall": MeshSquareHurdleTerrainCfg(
+            proportion=0.25, hurdle_height_range=(0.15, 0.5),
+            bar_thickness=0.2, bar_width=0.15,
+            platform_width=2.0, mode="crawl"),
+        # 4) 厚墙 (20cm 高 × 50cm 厚, 最厚): 长时间低姿穿过隧道型障碍
+        "hurdle_thick_wall": MeshSquareHurdleTerrainCfg(
+            proportion=0.25, hurdle_height_range=(0.15, 0.5),
+            bar_thickness=0.2, bar_width=0.5,
             platform_width=2.0, mode="crawl"),
     },
 )
