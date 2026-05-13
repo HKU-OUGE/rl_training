@@ -207,7 +207,7 @@ PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     use_cache=False, curriculum=True,
     sub_terrains={
         "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
-            proportion=0.5, pit_depth_range=(0.05, 0.8),
+            proportion=0.5, pit_depth_range=(0.05, 1.0),
             double_pit=True, platform_width=2.0),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
             proportion=0.5, grid_width=0.45,
