@@ -403,19 +403,29 @@ def main():
     runner = OnPolicyRunner(env, train_cfg_dict, log_dir=log_dir, device=device)
 
     # =========================================================================
-    # Per-rank logging hook (monkey-patch runner.log) — port cfb9e3b second hunk
-    # 把各 rank 自己的 terrain_level / ep_reward / ep_length / termination 占比
-    # all_gather 到 rank 0, 然后写成 wandb scalar `PerRank/{key}/{name}`.
-    # 仅在 args.distributed + PER_RANK_TERRAIN=1 时挂载, 不影响单卡 run.
-    # DEBUG: 设 DEBUG_NO_PERRANK_LOG=1 跳过 hook 安装 (用于二分 hang 调试)
+    # Per-rank logging hook (monkey-patch runner.log) — jsonl 文件路径, 无 NCCL
+    #
+    # 设计:
+    # - 每 rank 各自把本 iter 的 metrics 写一行 JSON 到自己的文件
+    #   /tmp/per_rank_train_{name}_rank{N}.jsonl
+    # - 不做 all_gather / all_reduce → 杜绝 NCCL 死锁可能 (之前的根因)
+    # - 离线用 scripts/.../plot_per_rank.py 读 jsonl 画曲线 / 上传 wandb
+    #
+    # 历史: 之前用 dist.all_gather hook 直接写 wandb scalar, 但 iter 0
+    # 之后 all_gather 死锁 (即使做了 deterministic keys 修复也未解决, 真因
+    # 可能是 CUDA stream / NCCL 内部状态污染). jsonl 方案完全绕开 NCCL 路径.
+    #
+    # DEBUG: 设 DEBUG_NO_PERRANK_LOG=1 跳过 hook (理论上没必要了, 保留作 escape)
     # =========================================================================
     if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1" \
             and os.environ.get("DEBUG_NO_PERRANK_LOG", "0") != "1":
-        import torch.distributed as dist
+        import json as _json
         RANK_NAMES = os.environ.get(
             "PER_RANK_NAMES",
             "FLAT,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,GRID",
         ).split(",")
+        _rank_name = RANK_NAMES[local_rank] if local_rank < len(RANK_NAMES) else f"rank{local_rank}"
+        _jsonl_path = f"/tmp/per_rank_train_{_rank_name}_rank{local_rank}.jsonl"
 
         _base_env = env
         while hasattr(_base_env, "env"):
@@ -423,60 +433,40 @@ def main():
         if hasattr(_base_env, "unwrapped"):
             _base_env = _base_env.unwrapped
 
-        _original_log = runner.log
+        # 清空 (truncate) 自己的 jsonl, 让本次 run 数据干净
+        try:
+            with open(_jsonl_path, "w") as _f:
+                pass
+        except Exception as _e:
+            if is_master:
+                print(f"[per_rank_log] could not init {_jsonl_path}: {_e}")
 
-        # DDP-safe: 所有 rank 必须以**完全一致的顺序 + 同样数量**调用 all_gather, 否则会死锁.
-        # 因此 local_metrics 的 keys 用固定列表, 数据缺失时填 0 而不是省略 key.
-        _PERRANK_METRIC_KEYS = [
-            "terrain_level_mean",
-            "terrain_level_max",
-            "ep_reward",
-            "ep_length",
-            "value_function",
-            "surrogate",
-            "entropy",
-            "term_time_out",
-            "term_illegal_contact",
-            "term_terrain_out_of_bounds",
-        ]
+        _original_log = runner.log
 
         def _per_rank_log(locs, *a, **kw):
             ret = _original_log(locs, *a, **kw)
-            # 永远进入 all_gather 路径 (即使内部 try 失败也得发同样数量的 tensor).
-            # 失败时 fill 0, 保证跨 rank 调用次数一致.
-            def _zero():
-                return torch.zeros((), device=device, dtype=torch.float32)
-
-            local_metrics = {k: _zero() for k in _PERRANK_METRIC_KEYS}
             try:
+                it = locs.get("it", runner.current_learning_iteration)
+                metrics = {
+                    "iter": int(it),
+                    "rank": int(local_rank),
+                    "name": _rank_name,
+                }
                 if hasattr(_base_env, "scene") and hasattr(_base_env.scene, "terrain") \
                    and hasattr(_base_env.scene.terrain, "terrain_levels"):
                     tl = _base_env.scene.terrain.terrain_levels.float()
-                    local_metrics["terrain_level_mean"] = tl.mean()
-                    local_metrics["terrain_level_max"]  = tl.max()
+                    metrics["terrain_level_mean"] = float(tl.mean().item())
+                    metrics["terrain_level_max"] = float(tl.max().item())
                 if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
-                    local_metrics["ep_reward"] = torch.tensor(
-                        sum(locs["rewbuffer"]) / len(locs["rewbuffer"]),
-                        device=device, dtype=torch.float32,
-                    )
+                    metrics["ep_reward"] = float(sum(locs["rewbuffer"]) / len(locs["rewbuffer"]))
                 if locs.get("lenbuffer") and len(locs["lenbuffer"]) > 0:
-                    local_metrics["ep_length"] = torch.tensor(
-                        sum(locs["lenbuffer"]) / len(locs["lenbuffer"]),
-                        device=device, dtype=torch.float32,
-                    )
+                    metrics["ep_length"] = float(sum(locs["lenbuffer"]) / len(locs["lenbuffer"]))
                 if "mean_value_loss" in locs:
-                    local_metrics["value_function"] = torch.tensor(
-                        float(locs["mean_value_loss"]), device=device, dtype=torch.float32,
-                    )
+                    metrics["value_function"] = float(locs["mean_value_loss"])
                 if "mean_surrogate_loss" in locs:
-                    local_metrics["surrogate"] = torch.tensor(
-                        float(locs["mean_surrogate_loss"]), device=device, dtype=torch.float32,
-                    )
+                    metrics["surrogate"] = float(locs["mean_surrogate_loss"])
                 if "mean_entropy" in locs:
-                    local_metrics["entropy"] = torch.tensor(
-                        float(locs["mean_entropy"]), device=device, dtype=torch.float32,
-                    )
-                # Termination: 固定 3 个 key (DDP 一致性), 缺失填 0
+                    metrics["entropy"] = float(locs["mean_entropy"])
                 if locs.get("ep_infos"):
                     for fixed_key in ["time_out", "illegal_contact", "terrain_out_of_bounds"]:
                         full_key = f"Episode_Termination/{fixed_key}"
@@ -484,38 +474,20 @@ def main():
                         if vals:
                             avg = sum(v.item() if hasattr(v, "item") else float(v)
                                       for v in vals) / len(vals)
-                            local_metrics[f"term_{fixed_key}"] = torch.tensor(
-                                avg, device=device, dtype=torch.float32,
-                            )
+                            metrics[f"term_{fixed_key}"] = float(avg)
+                # Append 一行 (no NCCL)
+                with open(_jsonl_path, "a") as _f:
+                    _f.write(_json.dumps(metrics) + "\n")
             except Exception as e:
                 if is_master:
-                    print(f"[per_rank_log] populate failed: {e}; using zeros")
-
-            # all_gather: 固定 keys 顺序遍历, 跨 rank 同步保证
-            try:
-                it = locs.get("it", runner.current_learning_iteration)
-                world = int(os.environ.get("WORLD_SIZE", "1"))
-                for key in _PERRANK_METRIC_KEYS:
-                    val = local_metrics[key]
-                    tensor = val.detach().to(device).float().contiguous()
-                    if tensor.dim() == 0:
-                        tensor = tensor.unsqueeze(0)
-                    gathered = [torch.zeros_like(tensor) for _ in range(world)]
-                    dist.all_gather(gathered, tensor)
-                    if is_master and runner.writer is not None:
-                        for r, g_val in enumerate(gathered):
-                            name = RANK_NAMES[r] if r < len(RANK_NAMES) else f"rank{r}"
-                            runner.writer.add_scalar(
-                                f"PerRank/{key}/{name}", g_val.item(), it,
-                            )
-            except Exception as e:
-                if is_master:
-                    print(f"[per_rank_log] all_gather failed: {e}")
+                    print(f"[per_rank_log] write failed: {e}")
             return ret
 
         runner.log = _per_rank_log
         if is_master:
-            print(f"[INFO] PerRank logging enabled. RANK_NAMES = {RANK_NAMES}")
+            print(f"[INFO] PerRank logging enabled (jsonl mode). RANK_NAMES = {RANK_NAMES}")
+            print(f"[INFO] Each rank writes to /tmp/per_rank_train_<name>_rank<N>.jsonl")
+            print(f"[INFO] Visualize: scripts/reinforcement_learning/rsl_rl/plot_per_rank.py --remote <host>")
 
     if resume_path:
         loaded_dict = torch.load(resume_path, map_location=device)
