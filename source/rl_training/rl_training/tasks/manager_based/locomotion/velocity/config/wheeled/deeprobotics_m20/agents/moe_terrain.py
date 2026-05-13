@@ -1053,9 +1053,11 @@ class SplitMoEPPO(PPO):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         import os as _os
+        # DEBUG: 设 DEBUG_NO_PERRANK_CRITIC=1 → 强制 per_rank_critic=False (full all_reduce, 二分 hang)
         self.per_rank_critic = (
             getattr(self, "is_multi_gpu", False)
             and _os.environ.get("PER_RANK_TERRAIN", "0") == "1"
+            and _os.environ.get("DEBUG_NO_PERRANK_CRITIC", "0") != "1"
         )
         if self.per_rank_critic:
             self._critic_param_ids = self._collect_critic_param_ids()

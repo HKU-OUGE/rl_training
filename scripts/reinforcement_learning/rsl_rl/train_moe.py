@@ -292,9 +292,10 @@ def main():
         # Per-rank command range override (lateral y velocity)
         # FLAT (rank 0) 启用 lin_vel_y, 让 actor 在平地上学到侧移机动性;
         # 其它 rank 锁定 lin_vel_y=(0, 0), 专注前向运动避免被侧移训练干扰.
-        # actor 跨 rank 同步 → 平地学到的侧移能力会迁移到其它 rank.
+        # DEBUG: 设 DEBUG_NO_LINVELY_OVERRIDE=1 跳过此 override (用于二分 hang)
         # =====================================================================
-        if env_cfg.commands.base_velocity is not None:
+        if env_cfg.commands.base_velocity is not None \
+                and os.environ.get("DEBUG_NO_LINVELY_OVERRIDE", "0") != "1":
             _ranges = env_cfg.commands.base_velocity.ranges
             if local_rank == 0:
                 _ranges.lin_vel_y = (-1.0, 1.0)
@@ -406,8 +407,10 @@ def main():
     # 把各 rank 自己的 terrain_level / ep_reward / ep_length / termination 占比
     # all_gather 到 rank 0, 然后写成 wandb scalar `PerRank/{key}/{name}`.
     # 仅在 args.distributed + PER_RANK_TERRAIN=1 时挂载, 不影响单卡 run.
+    # DEBUG: 设 DEBUG_NO_PERRANK_LOG=1 跳过 hook 安装 (用于二分 hang 调试)
     # =========================================================================
-    if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1":
+    if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1" \
+            and os.environ.get("DEBUG_NO_PERRANK_LOG", "0") != "1":
         import torch.distributed as dist
         RANK_NAMES = os.environ.get(
             "PER_RANK_NAMES",
