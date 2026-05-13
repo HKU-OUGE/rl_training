@@ -1101,6 +1101,7 @@ class SplitMoEPPO(PPO):
             return super().reduce_parameters()
 
         from itertools import chain as _chain
+        import os as _os
         crit_ids = self._critic_param_ids
 
         pol_params = [p for p in self.policy.parameters() if id(p) not in crit_ids]
@@ -1113,6 +1114,23 @@ class SplitMoEPPO(PPO):
         if not params_with_grad:
             return
 
+        # =====================================================================
+        # VERIFY_REDUCE_CONTRIB: 证明每个 rank 的 local grad 都进了 mean.
+        # 利用 sum() 是线性算子: mean(local_hash 跨 rank) == synced_hash
+        # 打印: 8 个 local_hash (应不同) + mean(local) + synced + err
+        # =====================================================================
+        _do_fire = False
+        if int(_os.environ.get("VERIFY_REDUCE_CONTRIB", "0")):
+            if not hasattr(self, "_contrib_call_count"):
+                self._contrib_call_count = 0
+            self._contrib_call_count += 1
+            _interval = int(_os.environ.get("CONTRIB_INTERVAL", "100"))
+            _do_fire = (self._contrib_call_count <= 3
+                        or self._contrib_call_count % _interval == 0)
+        if _do_fire:
+            _actor_pwg = [p for p in pol_params if p.grad is not None]
+            _local_hash = sum(p.grad.detach().double().sum().item() for p in _actor_pwg)
+
         grads = [p.grad.view(-1) for p in params_with_grad]
         all_grads = torch.cat(grads)
         torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
@@ -1123,6 +1141,31 @@ class SplitMoEPPO(PPO):
             numel = p.grad.numel()
             p.grad.copy_(all_grads[offset : offset + numel].view_as(p.grad))
             offset += numel
+
+        if _do_fire:
+            _synced_hash = sum(p.grad.detach().double().sum().item() for p in _actor_pwg)
+            _lt = torch.tensor([_local_hash], device=self.device, dtype=torch.float64)
+            _st = torch.tensor([_synced_hash], device=self.device, dtype=torch.float64)
+            _ll = [torch.zeros_like(_lt) for _ in range(self.gpu_world_size)]
+            _sl = [torch.zeros_like(_st) for _ in range(self.gpu_world_size)]
+            torch.distributed.all_gather(_ll, _lt)
+            torch.distributed.all_gather(_sl, _st)
+            if getattr(self, "gpu_global_rank", 0) == 0:
+                _locs = [t.item() for t in _ll]
+                _syns = [t.item() for t in _sl]
+                _mean = sum(_locs) / len(_locs)
+                _err = abs(_syns[0] - _mean)
+                _spread = max(_locs) - min(_locs)
+                _nonzero = sum(1 for v in _locs if abs(v) > 1e-12)
+                _sync_consist = max(abs(v - _syns[0]) for v in _syns)
+                _status = ("OK" if _err < 1e-6 and _spread > 1e-9
+                           and _nonzero == len(_locs) and _sync_consist < 1e-6 else "FAIL")
+                print(f"[CONTRIB call={self._contrib_call_count}] "
+                      f"locals=[{', '.join(f'{v:+.3e}' for v in _locs)}]")
+                print(f"[CONTRIB call={self._contrib_call_count}]   "
+                      f"spread={_spread:.3e} nonzero={_nonzero}/{len(_locs)} "
+                      f"mean(local)={_mean:.6e} synced={_syns[0]:.6e} "
+                      f"err={_err:.3e} sync_consist={_sync_consist:.3e} [{_status}]")
 
     def update(self) -> dict[str, float]:
         mean_value_loss = 0.0
