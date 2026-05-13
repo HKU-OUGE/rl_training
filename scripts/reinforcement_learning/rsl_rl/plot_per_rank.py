@@ -43,6 +43,11 @@ METRICS = [
     ("value_function",     "PPO value loss (per-rank critic MSE)"),
     ("surrogate",          "PPO surrogate loss"),
     ("entropy",            "policy entropy"),
+    ("ep_reward",          "episode total reward (rewbuffer mean)"),
+    ("ep_length",          "episode length (lenbuffer mean)"),
+    ("term_time_out",                 "termination: time_out rate"),
+    ("term_illegal_contact",          "termination: illegal_contact rate"),
+    ("term_terrain_out_of_bounds",    "termination: terrain_out_of_bounds rate"),
 ]
 
 
