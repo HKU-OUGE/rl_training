@@ -725,11 +725,13 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
         # 单一 terrain importer (跟 main 一致, 取消之前的 terrain + terrain2 双层结构)
-        # per-rank terrain dispatch 在 train_moe.py 里覆盖 self.scene.terrain.terrain_generator
+        # 默认 generator = MOE_ROUGH_TERRAINS_CFG (混合训练地形)
+        # 双层结构里的 CFG2 是边界死亡区 (全部 3m 深 pit) — 单层结构下不需要
+        # per-rank terrain dispatch 在 train_moe.py 里按 rank 覆盖 self.scene.terrain.terrain_generator
         self.scene.terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
-            terrain_generator=MOE_ROUGH_TERRAINS_CFG2,
+            terrain_generator=MOE_ROUGH_TERRAINS_CFG,
             max_init_terrain_level=0,
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
