@@ -12,6 +12,7 @@ import isaaclab.terrains as terrain_gen
 
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 from isaaclab.terrains import FlatPatchSamplingCfg, TerrainImporter, TerrainImporterCfg
+from rl_training.terrains import MeshSquareHurdleTerrainCfg
 MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
@@ -50,9 +51,13 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
             proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.4),platform_width=2.0
         ),
-        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
-            proportion=3.0/18, # 保持比例不变
-            # 生成一个纯平的平台，稍后我们在这个平台上用代码放圆环
+        "hurdle": MeshSquareHurdleTerrainCfg(
+            proportion=3.0/18,
+            hurdle_height_range=(0.4, 0.65),
+            bar_thickness=0.2,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
         ),
         "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
             proportion=2.0/18,      
@@ -109,12 +114,13 @@ MOE_ROUGH_TERRAINS_CFG2 = TerrainGeneratorCfg(
             double_pit=False,
             platform_width=8.0,
         ),
-        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
-            proportion=3.0/18,                         
-            ring_width_range=(0.1, 0.5),             
-            ring_height_range=(0.4, 0.75),           
-            ring_thickness=0.25,                 
-            platform_width=2.0, 
+        "hurdle": MeshSquareHurdleTerrainCfg(
+            proportion=3.0/18,
+            hurdle_height_range=(0.4, 0.75),
+            bar_thickness=0.25,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
         ),
         "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
             proportion=2.0/18,      
@@ -159,12 +165,13 @@ RING_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
     use_cache=False,
     curriculum=True,
     sub_terrains={
-        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
-            proportion=3.0/4.0,                           # 完全生成此地形                        
-            ring_width_range=(0.1, 0.5),             
-            ring_height_range=(0.4, 0.75),           
-            ring_thickness=0.25,                 
-            platform_width=2.0, 
+        "hurdle": MeshSquareHurdleTerrainCfg(
+            proportion=3.0/4.0,
+            hurdle_height_range=(0.4, 0.75),
+            bar_thickness=0.25,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
         ),
         "plane": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
             proportion=1.0/4.0,
@@ -255,12 +262,13 @@ MOE_ROUGH_TEST_TERRAINS_CFG = TerrainGeneratorCfg(
             border_width=1.0,
             holes=False,
         ),
-        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
-            proportion=1.0,                           # 完全生成此地形
-            ring_width_range=(0.1, 0.5),              # 环的宽度范围（中心向外延伸 0.5~1.0 米）
-            ring_height_range=(0.65, 0.65),             # 环的离地高度范围
-            ring_thickness=0.2,                       # 环厚度（z 方向）
-            platform_width=2.0,                       # 地形中心的方形平台大小
+        "hurdle": MeshSquareHurdleTerrainCfg(
+            proportion=1.0,
+            hurdle_height_range=(0.65, 0.65),
+            bar_thickness=0.2,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
         ),
     },
 )
@@ -303,12 +311,13 @@ MOE_STUDENT_TERRAINS_CFG = TerrainGeneratorCfg(
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
             proportion=3.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.3),platform_width=2.0
         ),
-        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
-            proportion=3.0/18,                           # 完全生成此地形
-            ring_width_range=(0.1, 0.5),              # 环的宽度范围（中心向外延伸 0.5~1.0 米）
-            ring_height_range=(0.4, 0.65),             # 环的离地高度范围
-            ring_thickness=0.35,                       # 环厚度（z 方向）
-            platform_width=2.0,                       # 地形中心的方形平台大小
+        "hurdle": MeshSquareHurdleTerrainCfg(
+            proportion=3.0/18,
+            hurdle_height_range=(0.4, 0.65),
+            bar_thickness=0.35,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
         ),
         "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
             proportion=1.0/18, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
@@ -575,9 +584,13 @@ SCAN_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
             proportion=3.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.35),platform_width=2.0
         ),
-        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(
-            proportion=3.0/18, # 保持比例不变
-            # 生成一个纯平的平台，稍后我们在这个平台上用代码放圆环
+        "hurdle": MeshSquareHurdleTerrainCfg(
+            proportion=3.0/18,
+            hurdle_height_range=(0.4, 0.65),
+            bar_thickness=0.2,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
         ),
         "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
             proportion=3.0/18,      
@@ -628,12 +641,13 @@ SCAN_ROUGH_TERRAINS_CFG2 = TerrainGeneratorCfg(
             double_pit=False,
             platform_width=8.0,
         ),
-        "floating_ring": terrain_gen.trimesh.mesh_terrains_cfg.MeshFloatingRingTerrainCfg(
-            proportion=3.0/18,                         
-            ring_width_range=(0.1, 0.5),             
-            ring_height_range=(0.4, 0.75),           
-            ring_thickness=0.25,                 
-            platform_width=2.0, 
+        "hurdle": MeshSquareHurdleTerrainCfg(
+            proportion=3.0/18,
+            hurdle_height_range=(0.4, 0.75),
+            bar_thickness=0.25,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
         ),
         "pit": terrain_gen.trimesh.mesh_terrains_cfg.MeshPitTerrainCfg(
             proportion=3.0/18,      
