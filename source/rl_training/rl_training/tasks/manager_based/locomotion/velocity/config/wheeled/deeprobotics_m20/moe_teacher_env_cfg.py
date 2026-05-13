@@ -777,10 +777,10 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             -25.000, -20.455, -15.909, -11.364, -6.818, -2.273,
               2.273,   6.818,  11.364,  15.909,  20.455,  25.000,
         ]
-        # 收窄 azimuth ±30° (跟 baseline GridPattern ±0.5m lateral 在 1.5m 距离的角度等价)
-        # baseline 等 Y 线在 r=1.5m 处覆盖 ±0.5m → atan(0.5/1.5)=±18.4°, ±30° 略宽一点
-        # num_azim 保 21 (步长 3°), 比 baseline 等 Y 线 5cm 横向间距 (在 1.5m ≈ 1.9°) 略稀疏但近场更密
-        SCAN_AZIM_RANGE = (-30.0, 30.0)
+        # azimuth ±45° (90° 前向 FOV, 兼顾侧向感知与近场分辨率)
+        # 1m 距离侧向覆盖 ±1m, 1.5m 覆盖 ±1.5m. 步长 4.5° 对 1m+ 距离的 ≥4.5cm 障碍仍 OK.
+        # 比 baseline 等 Y 线的有效 ~±25° 范围略宽, 给转向时的侧向障碍感知留余量.
+        SCAN_AZIM_RANGE = (-45.0, 45.0)
         SCAN_NUM_AZIM = 21
 
         SCAN_PATTERN = MultiPitchArcPatternCfg(

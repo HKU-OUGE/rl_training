@@ -288,6 +288,21 @@ def main():
             print(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range, "
                   f"using default terrain from task cfg")
 
+        # =====================================================================
+        # Per-rank command range override (lateral y velocity)
+        # FLAT (rank 0) 启用 lin_vel_y, 让 actor 在平地上学到侧移机动性;
+        # 其它 rank 锁定 lin_vel_y=(0, 0), 专注前向运动避免被侧移训练干扰.
+        # actor 跨 rank 同步 → 平地学到的侧移能力会迁移到其它 rank.
+        # =====================================================================
+        if env_cfg.commands.base_velocity is not None:
+            _ranges = env_cfg.commands.base_velocity.ranges
+            if local_rank == 0:
+                _ranges.lin_vel_y = (-1.0, 1.0)
+                print(f"[rank=0] FLAT: lin_vel_y = (-1.0, 1.0) (enable lateral)")
+            else:
+                _ranges.lin_vel_y = (0.0, 0.0)
+                print(f"[rank={local_rank}] lin_vel_y = (0, 0) (forward only)")
+
 
     render_mode = "rgb_array" if args.video else None
     env = gym.make(args.task, cfg=env_cfg, render_mode=render_mode)
