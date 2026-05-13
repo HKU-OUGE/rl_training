@@ -81,7 +81,7 @@ except ImportError:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.benchmark = True  # 启用 cudnn 自动选 conv 算法 (port 5260c3d, 通用提升 RNN/CNN 训练吞吐)
 
 # ==============================================================================
 # [New] 动态视角巡视 Wrapper (修正 KeyError Bug)
