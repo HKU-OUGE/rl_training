@@ -1040,6 +1040,88 @@ class SplitMoEStudentTeacher(nn.Module):
 # ==============================================================================
 
 class SplitMoEPPO(PPO):
+
+    # =========================================================================
+    # Per-rank Critic (multi-GPU multi-terrain only) — port eb2145d
+    # =========================================================================
+    # PER_RANK_TERRAIN=1 + multi-GPU 时, 每 rank 跑不同地形, 最优 V*(s) 各异。
+    # 默认 all_reduce 会让 critic 变成 8 卡 V* 的均值估计 → biased advantage。
+    # 这里只在多卡 + per-rank 模式下, 把 critic_rnn + critic_mlp 从 all_reduce 排除,
+    # actor / encoder / AE / std 仍同步, broadcast_parameters() 保证起点一致。
+    # =========================================================================
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        import os as _os
+        self.per_rank_critic = (
+            getattr(self, "is_multi_gpu", False)
+            and _os.environ.get("PER_RANK_TERRAIN", "0") == "1"
+        )
+        if self.per_rank_critic:
+            self._critic_param_ids = self._collect_critic_param_ids()
+            try:
+                _rank = int(_os.environ.get("RANK", "-1"))
+            except ValueError:
+                _rank = -1
+            print(
+                f"[SplitMoEPPO] rank={_rank} PER_RANK_CRITIC enabled: "
+                f"{len(self._critic_param_ids)} critic params "
+                f"(critic_rnn+critic_mlp) will NOT be all_reduced; "
+                f"broadcast_parameters() still syncs them at init."
+            )
+        else:
+            self._critic_param_ids = set()
+
+    def _collect_critic_param_ids(self):
+        """Identify critic-specific params on the policy model.
+
+        Returns a set of id(param) for O(1) lookup during reduce step.
+        """
+        model = getattr(self, "actor_critic", getattr(self, "policy", None))
+        ids = set()
+        if model is None:
+            return ids
+        for attr_name in ("critic_rnn", "critic_mlp"):
+            mod = getattr(model, attr_name, None)
+            if mod is None:
+                continue
+            for p in mod.parameters():
+                ids.add(id(p))
+        return ids
+
+    def reduce_parameters(self) -> None:
+        """Override of PPO.reduce_parameters().
+
+        Per-rank-critic mode: excludes critic_rnn + critic_mlp from all_reduce.
+        Otherwise delegates to the parent implementation.
+        """
+        if not getattr(self, "per_rank_critic", False):
+            return super().reduce_parameters()
+
+        from itertools import chain as _chain
+        crit_ids = self._critic_param_ids
+
+        pol_params = [p for p in self.policy.parameters() if id(p) not in crit_ids]
+        if getattr(self, "rnd", None):
+            all_param_list = list(_chain(pol_params, self.rnd.parameters()))
+        else:
+            all_param_list = pol_params
+
+        params_with_grad = [p for p in all_param_list if p.grad is not None]
+        if not params_with_grad:
+            return
+
+        grads = [p.grad.view(-1) for p in params_with_grad]
+        all_grads = torch.cat(grads)
+        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
+        all_grads /= self.gpu_world_size
+
+        offset = 0
+        for p in params_with_grad:
+            numel = p.grad.numel()
+            p.grad.copy_(all_grads[offset : offset + numel].view_as(p.grad))
+            offset += numel
+
     def update(self) -> dict[str, float]:
         mean_value_loss = 0.0
         mean_surrogate_loss = 0.0
