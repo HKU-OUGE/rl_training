@@ -864,7 +864,19 @@ def main():
             # group_obs_term_dim: dict[group_name, list[tuple[int, ...]]]
             _term_names = _om.active_terms["noisy_elevation"]
             _term_dims = _om.group_obs_term_dim["noisy_elevation"]
-            _name_to_sensor = {"forward_scan": "forward_lidar", "backward_scan": "backward_lidar"}
+            # 支持两种 NoisyElevationCfg 布局:
+            # (A) 2-sensor 半球 (main 版): forward_scan / backward_scan → forward_lidar / backward_lidar
+            # (B) 12-sensor 单 pitch 弧 (baseline / recover 版):
+            #     forward_scan_lN / backward_scan_lN → forward_scanner_layerN / backward_scanner_layerN
+            _name_to_sensor = {
+                # 2-sensor 半球
+                "forward_scan": "forward_lidar",
+                "backward_scan": "backward_lidar",
+            }
+            # 6+6 layer 命名
+            for _i in range(6):
+                _name_to_sensor[f"forward_scan_l{_i}"] = f"forward_scanner_layer{_i}"
+                _name_to_sensor[f"backward_scan_l{_i}"] = f"backward_scanner_layer{_i}"
             _off = 0
             _height_scan_slice = None
             for _n, _d in zip(_term_names, _term_dims):
@@ -874,11 +886,15 @@ def main():
                 elif _n == "height_scan":
                     _height_scan_slice = slice(_off, _off + _sz)
                 _off += _sz
-            print(f"[ScanVis] dynamic slices = {_lidar_slices} "
+            print(f"[ScanVis] dynamic slices ({len(_lidar_slices)} sensors) = {_lidar_slices} "
                   f"(group dim={_off}, height_scan slice={_height_scan_slice})")
         except Exception as _e:
-            print(f"[ScanVis] dynamic slice lookup failed ({_e}); falling back to legacy 992 layout")
-            _lidar_slices = [("forward_lidar", slice(0, 496)), ("backward_lidar", slice(496, 992))]
+            print(f"[ScanVis] dynamic slice lookup failed ({_e}); falling back to 12-layer baseline layout")
+            _lidar_slices = []
+            for _i in range(6):
+                _lidar_slices.append((f"forward_scanner_layer{_i}", slice(_i*21, (_i+1)*21)))
+            for _i in range(6):
+                _lidar_slices.append((f"backward_scanner_layer{_i}", slice((6+_i)*21, (7+_i)*21)))
 
     # height_scan 可视化: 检测 obs 里是否真的有 height_scan 项, 且 scene 里挂了 height_scanner sensor
     _viz_height_scan = False
@@ -911,10 +927,11 @@ def main():
         for sname, slc in _lidar_slices:
             sensor = base_env.scene.sensors[sname]
             # 用 _ray_starts_w (真实射线起点, 含 offset) 而非 data.pos_w (= base_link).
-            ray_starts = sensor._ray_starts_w[env_idx]          # (496, 3) — 每条射线的世界起点
-            hits = sensor.data.ray_hits_w[env_idx]              # (496, 3)
+            # 注: ray 数量取决于 pattern. 2-sensor 半球 = (496, 3); 12-sensor 单 pitch 弧 = (21, 3).
+            ray_starts = sensor._ray_starts_w[env_idx]          # 每条射线的世界起点
+            hits = sensor.data.ray_hits_w[env_idx]
             vec = hits - ray_starts
-            raw_d = vec.norm(dim=-1)                            # (496,) — 真正的 sensor→hit 深度
+            raw_d = vec.norm(dim=-1)                            # 真正的 sensor→hit 深度
             ray_dir = torch.nan_to_num(
                 vec / raw_d.clamp(min=1e-3).unsqueeze(-1),
                 nan=0.0, posinf=0.0, neginf=0.0,
