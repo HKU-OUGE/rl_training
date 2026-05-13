@@ -1389,12 +1389,25 @@ class SplitMoEPPO(PPO):
             # STEP E: 终极单趟反向传播
             # -----------------------------------------------------------------
             loss.backward()
-            
+
             if getattr(self, "is_multi_gpu", False):
                 self.reduce_parameters()
             if self.max_grad_norm is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
-            
+                if getattr(self, "per_rank_critic", False):
+                    # per-rank 模式: actor / critic 分组 clip.
+                    # 若用全局 clip, total_norm = sqrt(||actor_g||² + ||critic_g||²),
+                    # critic_g 跨 rank 不同 → clip_coef 跨 rank 不同 → 已同步的 actor_g
+                    # 被不同系数 scale, 导致 actor 参数 step 后再次发散.
+                    # 分组后: actor 各 rank grad 全等 → clip_coef 全等 → actor 保持同步;
+                    # critic 各 rank 独立 clip 是正确行为.
+                    crit_ids = self._critic_param_ids
+                    actor_p = [p for p in model.parameters() if id(p) not in crit_ids]
+                    critic_p = [p for p in model.parameters() if id(p) in crit_ids]
+                    nn.utils.clip_grad_norm_(actor_p, self.max_grad_norm)
+                    nn.utils.clip_grad_norm_(critic_p, self.max_grad_norm)
+                else:
+                    nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+
             self.optimizer.step()
             # # =================================================================
             # # DEBUG 3: 检查专家网络的梯度健康度 (确保没有死神经元)
