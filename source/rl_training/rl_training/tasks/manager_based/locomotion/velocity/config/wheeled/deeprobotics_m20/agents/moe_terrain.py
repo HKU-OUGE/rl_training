@@ -2297,19 +2297,22 @@ class EleMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 
 @configclass
 class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
-    """PPO Configuration for training the Teacher."""
+    """PPO Configuration for training the Teacher (Scan-only ablation, no elevation map).
+
+    Hparams aligned to SplitMoEPPOCfg for apples-to-apples A/B (only diff: use_elevation_ae=False).
+    """
     num_steps_per_env = 36
-    max_iterations = 6000
-    save_interval = 100
-    experiment_name = "scan_moe_teacher_parallel" 
+    max_iterations = 20000    # aligned with SplitMoEPPOCfg (was 6000)
+    save_interval = 200       # aligned with SplitMoEPPOCfg (was 100)
+    experiment_name = "scan_moe_teacher_parallel"   # 保留, 区分 wandb run
     empirical_normalization = False
-    
+
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
-    
+
     policy = SplitMoEActorCriticCfg(
-        init_noise_std=1.0, 
-        init_noise_legs=0.8,
-        init_noise_wheels=0.5, 
+        init_noise_std=1.0,
+        init_noise_legs=0.2,    # aligned with SplitMoEPPOCfg (was 0.8)
+        init_noise_wheels=1.5,  # aligned with SplitMoEPPOCfg (was 0.5)
         actor_hidden_dims=[256, 128, 128], 
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
