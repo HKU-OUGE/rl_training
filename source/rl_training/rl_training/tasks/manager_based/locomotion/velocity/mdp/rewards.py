@@ -952,3 +952,51 @@ def wheel_lateral_slip_penalty(env, asset_cfg: SceneEntityCfg, sensor_cfg: Scene
     
     # 6. 只有触地时的侧滑才会导致惩罚
     return torch.sum(lateral_vel_sq * contacts, dim=1)
+
+
+# ==============================================================================
+# Terrain-curriculum-aware tracking rewards (ported from main)
+# 地形越难, 放宽 std, 扩大误差容忍区间
+# ==============================================================================
+def track_lin_vel_xy_exp_curriculum(
+    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """带地形课程的线速度跟踪奖励: 地形越难, 将标准差(std)放宽, 扩大误差容忍区间。"""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    lin_vel_error = torch.sum(
+        torch.square(env.command_manager.get_command(command_name)[:, :2] - asset.data.root_lin_vel_b[:, :2]),
+        dim=1,
+    )
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_levels"):
+        curr_levels = env.scene.terrain.terrain_levels.float()
+        # 平地 (Level 0) → std_mult=1.0; 高台 (Level 30) → std_mult=3.0 (容忍度扩大3倍)
+        std_mult = torch.clamp(1.0 + (curr_levels / 15.0), min=1.0, max=3.0)
+    else:
+        std_mult = 1.0
+    dynamic_std = std * std_mult
+    return torch.exp(-lin_vel_error / (dynamic_std**2))
+
+
+def track_ang_vel_z_exp_curriculum(
+    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """带地形课程的角速度跟踪奖励: 动态放宽 std。"""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_b[:, 2])
+    if hasattr(env.scene, "terrain") and hasattr(env.scene.terrain, "terrain_levels"):
+        curr_levels = env.scene.terrain.terrain_levels.float()
+        std_mult = torch.clamp(1.0 + (curr_levels / 15.0), min=1.0, max=3.0)
+    else:
+        std_mult = 1.0
+    dynamic_std = std * std_mult
+    return torch.exp(-ang_vel_error / (dynamic_std**2))
+
+
+def base_roll_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize ONLY the base roll angle using L2 squared kernel.
+
+    Computed by penalizing the y-component of the projected gravity vector.
+    This prevents lateral tilting without penalizing pitching on slopes.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return torch.square(asset.data.projected_gravity_b[:, 1])

@@ -331,6 +331,13 @@ class DeeproboticsM20RewardsCfg(RewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
         },
     )
+    # 仅惩罚 base roll (projected gravity y 分量), 不惩罚斜坡上的 pitch.
+    # PLATFORM / SCAN per-rank reward 用到 (weight 0 默认会被 disable_zero_weight_rewards 移除).
+    base_roll_l2 = RewTerm(
+        func=mdp.base_roll_l2,
+        weight=0.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
 @configclass
 class DeeproboticsM20SceneCfg(MySceneCfg):
     pass
