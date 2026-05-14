@@ -290,22 +290,27 @@ def main():
 
         # =====================================================================
         # Per-rank command range override (lateral y velocity)
-        # 仅在"侧移安全"的地形上启用 lin_vel_y: FLAT (平地) + NOISE (温和起伏).
-        # 其它 terrain 锁定 lin_vel_y=(0, 0), 专注前向运动:
-        #   - PLATFORM/STEPPING_STONES/RAIL: 侧移 = 掉坑/踩洞/撞轨, 直接摔
-        #   - SCAN (crawl): 侧移让机器人横漂, 稀释钻栏技能信号
-        #   - STAIR_SLOPE/MIXED: 楼梯方向性强, 侧横穿易翻
-        # actor 跨 rank 同步, 坏梯度会污染 shared actor, 故只留安全地形做侧移 anchor.
+        #   FLAT  → 纯侧移专项: lin_vel_x=(0,0), lin_vel_y=(-1,1).
+        #           给 shared actor 一个不被 x 稀释的干净 y 跟踪梯度;
+        #           x 跟踪由其余 7 rank 覆盖, 不损失.
+        #   NOISE → x+y 混合: lin_vel_y=(-1,1), x 保持 env 默认 → 训斜向运动.
+        #   其它  → lin_vel_y=(0,0), 专注前向:
+        #           PLATFORM/STEPPING_STONES/RAIL 侧移=掉坑/踩洞/撞轨;
+        #           SCAN(crawl) 侧移横漂稀释钻栏; STAIR_SLOPE/MIXED 楼梯方向性强易翻.
+        # heading_command 维持全局开启 (FLAT 也是边侧移边转向朝目标 heading).
         # gate 用 terrain 身份判断, 地形放在任意 rank 都自动生效.
         # DEBUG: 设 DEBUG_NO_LINVELY_OVERRIDE=1 跳过此 override (用于二分 hang)
         # =====================================================================
-        _LATERAL_TERRAINS = (FLAT_TEACHER_TERRAINS_CFG, NOISE_TEACHER_TERRAINS_CFG)
         if env_cfg.commands.base_velocity is not None \
                 and os.environ.get("DEBUG_NO_LINVELY_OVERRIDE", "0") != "1":
             _ranges = env_cfg.commands.base_velocity.ranges
-            if chosen in _LATERAL_TERRAINS:
+            if chosen is FLAT_TEACHER_TERRAINS_CFG:
+                _ranges.lin_vel_x = (0.0, 0.0)
                 _ranges.lin_vel_y = (-1.0, 1.0)
-                print(f"[rank={local_rank}] lin_vel_y = (-1.0, 1.0) (enable lateral — safe terrain)")
+                print(f"[rank={local_rank}] FLAT: lin_vel_x=(0,0) lin_vel_y=(-1,1) (pure lateral)")
+            elif chosen is NOISE_TEACHER_TERRAINS_CFG:
+                _ranges.lin_vel_y = (-1.0, 1.0)
+                print(f"[rank={local_rank}] NOISE: lin_vel_y=(-1,1) (x+y blend)")
             else:
                 _ranges.lin_vel_y = (0.0, 0.0)
                 print(f"[rank={local_rank}] lin_vel_y = (0, 0) (forward only)")
