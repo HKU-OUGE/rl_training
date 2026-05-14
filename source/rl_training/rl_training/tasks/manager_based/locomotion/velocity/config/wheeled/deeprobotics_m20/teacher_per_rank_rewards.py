@@ -251,3 +251,24 @@ def apply_scan_rewards(env_cfg) -> None:
     r.upward.weight = 0.08
 
     env_cfg.disable_zero_weight_rewards()
+
+
+def apply_flat_rewards(env_cfg) -> None:
+    """FLAT 纯侧移 rank: 关掉和 crab-walk 冲突的 mirror reward + 加摔倒惩罚.
+
+    与 platform/scan 不同, 这里只是在 base teacher reward (env_cfg.rewards 已被
+    __post_init__ 调好) 上做 3 处最小改动, 不重建整个 reward cfg:
+      - joint_mirror (-0.05, 对角含 hipx) + joint_mirror_lr (-0.03, 左右):
+        编码前进步态对称先验, 和纯侧移冲突 → 置 None 关掉
+      - is_terminated: base __post_init__ 设 0, 已被 disable_zero_weight_rewards
+        移成 None; 重建为 -100 摔倒惩罚 (同 PLATFORM/SCAN)
+
+    注: 直接置 None / 重建 term, 不再调 disable_zero_weight_rewards
+    (第二次调会在已为 None 的 term 上 .weight 报错; 这里手动等效处理)。
+    """
+    r = env_cfg.rewards
+    # mirror reward 和 crab-walk 冲突 → 关掉 (置 None 等效 disable_zero_weight_rewards)
+    r.joint_mirror = None
+    r.joint_mirror_lr = None
+    # 重建 is_terminated 为摔倒惩罚 (base 里是 0 → 已被移成 None)
+    r.is_terminated = RewTerm(func=mdp.is_terminated, weight=-100.0)

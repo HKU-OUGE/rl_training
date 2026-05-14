@@ -316,8 +316,10 @@ def main():
                 print(f"[rank={local_rank}] lin_vel_y = (0, 0) (forward only)")
 
         # =====================================================================
-        # Per-rank reward override (port main teacher_platform / teacher_scan)
-        # PLATFORM rank → 高台攀爬 reward; SCAN rank → 钻栏 reward.
+        # Per-rank reward override
+        #   PLATFORM → 高台攀爬 reward (port main); SCAN → 钻栏 reward (port main).
+        #   FLAT     → 纯侧移微调: 关 joint_mirror/joint_mirror_lr (和 crab-walk 冲突)
+        #              + is_terminated=-100 摔倒惩罚.
         # 只换 reward, terrain/command/curriculum 维持本分支配置.
         # DEBUG: 设 DEBUG_NO_PERRANK_REWARD=1 跳过 (退回全 rank 共享 baseline reward)
         # =====================================================================
@@ -330,6 +332,10 @@ def main():
                 from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_scan_rewards
                 apply_scan_rewards(env_cfg)
                 print(f"[rank={local_rank}] reward → SCAN (钻栏, port main)")
+            elif chosen is FLAT_TEACHER_TERRAINS_CFG:
+                from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_flat_rewards
+                apply_flat_rewards(env_cfg)
+                print(f"[rank={local_rank}] reward → FLAT (纯侧移: mirror off + 摔倒惩罚 -100)")
 
 
     render_mode = "rgb_array" if args.video else None
