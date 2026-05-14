@@ -911,7 +911,8 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.6, 1.0) 
 
         self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
+        # env 默认启用侧移命令; per-rank 训练时 train_moe.py 会把非 FLAT rank 覆盖回 (0, 0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         
         # self.rewards.base_height_l2.params["sensor_cfg"] = None

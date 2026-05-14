@@ -290,17 +290,22 @@ def main():
 
         # =====================================================================
         # Per-rank command range override (lateral y velocity)
-        # FLAT terrain 上启用 lin_vel_y (避开难地形上的侧移训练扰动稳定性);
-        # 其它 terrain 锁定 lin_vel_y=(0, 0), 专注前向运动.
-        # gate 改为 terrain 身份判断, FLAT 可以放在任意 rank.
+        # 仅在"侧移安全"的地形上启用 lin_vel_y: FLAT (平地) + NOISE (温和起伏).
+        # 其它 terrain 锁定 lin_vel_y=(0, 0), 专注前向运动:
+        #   - PLATFORM/STEPPING_STONES/RAIL: 侧移 = 掉坑/踩洞/撞轨, 直接摔
+        #   - SCAN (crawl): 侧移让机器人横漂, 稀释钻栏技能信号
+        #   - STAIR_SLOPE/MIXED: 楼梯方向性强, 侧横穿易翻
+        # actor 跨 rank 同步, 坏梯度会污染 shared actor, 故只留安全地形做侧移 anchor.
+        # gate 用 terrain 身份判断, 地形放在任意 rank 都自动生效.
         # DEBUG: 设 DEBUG_NO_LINVELY_OVERRIDE=1 跳过此 override (用于二分 hang)
         # =====================================================================
+        _LATERAL_TERRAINS = (FLAT_TEACHER_TERRAINS_CFG, NOISE_TEACHER_TERRAINS_CFG)
         if env_cfg.commands.base_velocity is not None \
                 and os.environ.get("DEBUG_NO_LINVELY_OVERRIDE", "0") != "1":
             _ranges = env_cfg.commands.base_velocity.ranges
-            if chosen is FLAT_TEACHER_TERRAINS_CFG:
+            if chosen in _LATERAL_TERRAINS:
                 _ranges.lin_vel_y = (-1.0, 1.0)
-                print(f"[rank={local_rank}] FLAT: lin_vel_y = (-1.0, 1.0) (enable lateral)")
+                print(f"[rank={local_rank}] lin_vel_y = (-1.0, 1.0) (enable lateral — safe terrain)")
             else:
                 _ranges.lin_vel_y = (0.0, 0.0)
                 print(f"[rank={local_rank}] lin_vel_y = (0, 0) (forward only)")
