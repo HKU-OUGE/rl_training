@@ -28,7 +28,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=1.0/18,  # 2/18 的概率生成此地形
             step_height_range=(0.05, 0.25),
             step_width=0.3,
-            platform_width=3.0,
+            platform_width=2.0,  # was 3.0 — 与其他 sub-terrain 对齐 (都是 2.0)
             border_width=1.0,
             holes=False,
         ),
@@ -36,7 +36,7 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=3.0/18,
             step_height_range=(0.05, 0.25),
             step_width=0.3,
-            platform_width=3.0,
+            platform_width=2.0,  # was 3.0 — 与其他 sub-terrain 对齐 (都是 2.0)
             border_width=1.0,
             holes=False,
         ),
@@ -51,11 +51,29 @@ MOE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         "rail": terrain_gen.trimesh.mesh_terrains_cfg.MeshRailsTerrainCfg(
             proportion=2.0/18, rail_thickness_range=(0.05, 0.1), rail_height_range=(0.05, 0.4),platform_width=2.0
         ),
-        "hurdle": MeshSquareHurdleTerrainCfg(
-            proportion=3.0/18,
+        # hurdle 拆成 3 种墙厚 (各 1/18, 合计仍 3/18), clearance 保持
+        # MOE_ROUGH 较宽松的 (0.4, 0.65) — 它是 generalist anchor, 比 SCAN specialist 容易.
+        "hurdle_pole": MeshSquareHurdleTerrainCfg(   # 细杆 5×5cm
+            proportion=1.0/18,
+            hurdle_height_range=(0.4, 0.65),
+            bar_thickness=0.05,
+            bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
+        ),
+        "hurdle_board": MeshSquareHurdleTerrainCfg(  # 高薄板 20×5cm
+            proportion=1.0/18,
             hurdle_height_range=(0.4, 0.65),
             bar_thickness=0.2,
             bar_width=0.05,
+            platform_width=2.0,
+            mode="crawl",
+        ),
+        "hurdle_wall": MeshSquareHurdleTerrainCfg(   # 厚墙 20×30cm
+            proportion=1.0/18,
+            hurdle_height_range=(0.4, 0.65),
+            bar_thickness=0.2,
+            bar_width=0.3,
             platform_width=2.0,
             mode="crawl",
         ),
