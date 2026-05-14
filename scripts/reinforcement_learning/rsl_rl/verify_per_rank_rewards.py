@@ -15,7 +15,7 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--mode", choices=["platform", "scan", "baseline"], default="platform")
+parser.add_argument("--mode", choices=["platform", "scan", "flat", "baseline"], default="platform")
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--steps", type=int, default=10)
 AppLauncher.add_app_launcher_args(parser)
@@ -49,6 +49,18 @@ elif args.mode == "scan":
     )
     apply_scan_rewards(env_cfg)
     print("[verify] apply_scan_rewards(env_cfg) OK")
+elif args.mode == "flat":
+    from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import (
+        apply_flat_rewards,
+    )
+    apply_flat_rewards(env_cfg)
+    print("[verify] apply_flat_rewards(env_cfg) OK")
+    # FLAT 专项断言: joint_mirror / joint_mirror_lr 应被关掉, is_terminated 应为 -100
+    assert getattr(env_cfg.rewards, "joint_mirror", None) is None, "joint_mirror 应为 None"
+    assert getattr(env_cfg.rewards, "joint_mirror_lr", None) is None, "joint_mirror_lr 应为 None"
+    _ist = getattr(env_cfg.rewards, "is_terminated", None)
+    assert _ist is not None and _ist.weight == -100.0, f"is_terminated 应为 -100, 实际 {_ist}"
+    print("[verify] FLAT 断言通过: joint_mirror=None, joint_mirror_lr=None, is_terminated.weight=-100")
 else:
     print("[verify] baseline — 不改 reward")
 
