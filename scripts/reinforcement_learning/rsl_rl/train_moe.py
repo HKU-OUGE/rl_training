@@ -607,22 +607,37 @@ def main():
                 )
 
             # --- step 4: writer wrapper that routes add_scalar → wandb.log ---
-            # 关键: wandb 的 x_label 只 tag system metrics / 控制台日志, **不会** 自动
+            # 关键 1: wandb 的 x_label 只 tag system metrics / 控制台日志, **不会** 自动
             # tag 用户 wandb.log({tag: value}) 的指标。8 个 rank 都写 'Train/mean_reward'
             # 会互相覆盖。官方建议: 手动在 metric key 加 rank 前缀, 让 wandb UI 按
             # rank 自动归到不同 folder。
+            #
+            # 关键 2: shared mode 下 wandb 忽略 wandb.log(..., step=N), auto-increment
+            # 自己的 _step (8 rank × add_scalar/iter → step 暴涨到几万)。修复用
+            # wandb.define_metric 把 'iter' 声明为 step_metric, 每 log 里带上 'iter'
+            # 字段, wandb UI 自动用 iter 做 x 轴。
             _per_rank_prefix = _x_label  # 比如 "rank3_SCAN"
+            try:
+                _wandb.define_metric("iter")
+                _wandb.define_metric("*", step_metric="iter")
+            except Exception as _e:
+                print(f"[wandb-shared rank={local_rank}] define_metric failed: {_e}")
+
             class _SharedWandbWriter(_SW):
                 """Writer for shared-mode wandb: 写本进程的 wandb run, metric key 加
-                rank 前缀避免 8 rank 同 key 互相覆盖。"""
+                rank 前缀避免 8 rank 同 key 互相覆盖, 用 iter 做 x 轴避免 _step 暴涨。"""
                 def __init__(self, log_dir, flush_secs):
                     super().__init__(log_dir, flush_secs)
 
                 def add_scalar(self, tag, scalar_value, global_step=None, walltime=None, new_style=False):
                     super().add_scalar(tag, scalar_value, global_step, walltime, new_style)
                     try:
-                        # 前缀 rank tag, wandb UI 自动按 prefix 分组到不同 folder
-                        _wandb.log({f"{_per_rank_prefix}/{tag}": scalar_value}, step=global_step)
+                        # rank 前缀 + iter 字段一起 log。不传 step= (shared mode 会忽略,
+                        # 且经实测会让 _step 失控)。wandb 用 define_metric 声明的 iter 做 x 轴。
+                        payload = {f"{_per_rank_prefix}/{tag}": scalar_value}
+                        if global_step is not None:
+                            payload["iter"] = int(global_step)
+                        _wandb.log(payload)
                     except Exception:
                         pass
 
