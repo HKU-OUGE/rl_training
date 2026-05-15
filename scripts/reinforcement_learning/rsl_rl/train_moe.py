@@ -538,22 +538,24 @@ def main():
         print("="*80 + "\n")
 
     # =========================================================================
-    # Per-rank wandb: 每 rank 自己一个 wandb run, 同一次启动用同一 group, 上传后
-    # 在 wandb UI 中自动归组 (Group 视图里 8 个 rank 折叠成一组). 不同启动天然
-    # 不同 group, 无需手动维护。
+    # Shared-mode wandb: 8 个 rank 共写 1 个 wandb run, 数据用 x_label 区分。
+    # wandb 0.22 已 hard-block "同机多进程独立 init" (非 master rank 的 init
+    # 返回 None), 官方多进程方案是 mode='shared': rank 0 创建 run, 其他 rank
+    # 用同一 run.id 加入 (worker), wandb 自动用 x_label 标记 metric 来源。
+    # 文档要求 SDK >= 0.19.9 (我们 0.22.3 ✓)。
     #
-    # 工作原理:
-    # - 子类 WandbSummaryWriter, 跳过其默认 wandb.init (无 group), 用我们带
-    #   group + run_name 的 init 替代。
-    # - 在 runner.learn() 之前设 runner.writer = 自定义 writer,
-    #   rsl_rl 的 _prepare_logging_writer 检测 writer 非 None 就跳过自己的 init。
-    # - 强制 runner.disable_logs = False, 让所有 rank 的 runner.log() 都被调,
-    #   每 rank 各自写自己的 wandb run。
+    # 流程:
+    #   1. rank 0 wandb.init(mode='shared', x_primary=True), 拿 run.id
+    #   2. dist.broadcast_object_list 把 run.id 同步到其他 rank
+    #   3. 其他 rank wandb.init(id=run.id, mode='shared', x_primary=False)
+    #   4. 替换 runner.writer 为 wandb.log wrapper; 强制 disable_logs=False
+    #      让所有 rank 都调 runner.log() → 每 rank 写自己 x_label 标记的 metric
+    #   5. 非 master rank: save=no-op + print 静音 (避免 8× 重复)
     # =========================================================================
     if args.distributed and train_cfg_dict.get("logger") == "wandb":
         try:
             import wandb as _wandb
-            from rsl_rl.utils.wandb_utils import WandbSummaryWriter as _WandbSW
+            import torch.distributed as _dist
             from torch.utils.tensorboard.writer import SummaryWriter as _SW
 
             _rank_names = os.environ.get(
@@ -561,64 +563,112 @@ def main():
                 "MIXED,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,FLAT",
             ).split(",")
             _rank_tag = _rank_names[local_rank] if local_rank < len(_rank_names) else f"r{local_rank}"
-            # group 必须跨 rank 一致, 不能用 log_dir basename (每 rank datetime.now() 差几秒).
-            # torchrun --standalone 会设 TORCHELASTIC_RUN_ID, 跨 rank 共享; fallback 用
-            # experiment_name (跨多次启动相同, 但仍能把单次启动的 8 rank 归一组).
-            _run_id = os.environ.get("TORCHELASTIC_RUN_ID", "")
-            _wandb_group = f"{experiment_name}_{_run_id}" if _run_id else experiment_name
-            _wandb_run_name = f"rank{local_rank}_{_rank_tag}"
+            _x_label = f"rank{local_rank}_{_rank_tag}"
+            # group 跨多次启动用 TORCHELASTIC_RUN_ID 区分, 也是跨 rank 一致的
+            _run_id_env = os.environ.get("TORCHELASTIC_RUN_ID", "")
+            _wandb_group = f"{experiment_name}_{_run_id_env}" if _run_id_env else experiment_name
 
-            class _PerRankWandbWriter(_WandbSW):
-                """Group-aware wandb writer: 跳过父类默认 wandb.init, 用 group + run_name."""
-                def __init__(self, log_dir, flush_secs, cfg, group, run_name):
-                    _SW.__init__(self, log_dir, flush_secs)
-                    try:
-                        project = cfg["wandb_project"]
-                    except KeyError:
-                        project = "rl_training"
-                    entity = os.environ.get("WANDB_USERNAME")
-                    # 多进程 wandb fix 1: 默认 service mode 在同机多 rank 时会 dedupe
-                    # → 强制 thread mode 让每进程独立 init
-                    os.environ.setdefault("WANDB_START_METHOD", "thread")
-                    # 多进程 wandb fix 2: wandb 检测 LOCAL_RANK/RANK/WORLD_SIZE 后会
-                    # auto-disable 非 master rank (它假设用户只在 rank 0 调 init)。
-                    # 我们要每 rank 都建 run, 所以 init 期间临时藏起来这些 env var,
-                    # 让 wandb 把每进程当独立单卡 run 处理。init 后立刻恢复。
-                    _rank_for_cfg = os.environ.get("RANK", "0")
-                    _hidden = {}
-                    for _v in ("LOCAL_RANK", "RANK", "WORLD_SIZE"):
-                        if _v in os.environ:
-                            _hidden[_v] = os.environ.pop(_v)
-                    try:
-                        _wandb.init(project=project, entity=entity, group=group, name=run_name)
-                    finally:
-                        for _k, _val in _hidden.items():
-                            os.environ[_k] = _val
-                    _wandb.config.update({"log_dir": log_dir, "rank": int(_rank_for_cfg)})
+            try:
+                _project = train_cfg_dict["wandb_project"]
+            except KeyError:
+                _project = "rl_training"
+            _entity = os.environ.get("WANDB_USERNAME")
+            _run_name = experiment_name  # 共享 run 的人类可读名
 
-            runner.writer = _PerRankWandbWriter(
-                log_dir=log_dir, flush_secs=10, cfg=train_cfg_dict,
-                group=_wandb_group, run_name=_wandb_run_name,
-            )
-            # rsl_rl 的 log() 会引用 self.logger_type (本来在 _prepare_logging_writer
-            # 里设, 但我们让它跳过了, 所以必须手动设)
+            # --- step 1: rank 0 init primary ---
+            if local_rank == 0:
+                _wandb_run = _wandb.init(
+                    project=_project, entity=_entity, group=_wandb_group, name=_run_name,
+                    settings=_wandb.Settings(
+                        mode="shared",
+                        x_label=_x_label,
+                        x_primary=True,
+                    ),
+                )
+                _shared_run_id = _wandb_run.id
+            else:
+                _shared_run_id = None
+
+            # --- step 2: broadcast run_id (rank 0 → others) ---
+            _obj_list = [_shared_run_id]
+            _dist.broadcast_object_list(_obj_list, src=0)
+            _shared_run_id = _obj_list[0]
+
+            # --- step 3: workers attach with same id, x_primary=False ---
+            if local_rank != 0:
+                _wandb_run = _wandb.init(
+                    project=_project, entity=_entity, group=_wandb_group,
+                    id=_shared_run_id,
+                    settings=_wandb.Settings(
+                        mode="shared",
+                        x_label=_x_label,
+                        x_primary=False,
+                    ),
+                )
+
+            # --- step 4: writer wrapper that routes add_scalar → wandb.log ---
+            class _SharedWandbWriter(_SW):
+                """Writer for shared-mode wandb: add_scalar 写本进程的 wandb run.
+                由于所有 rank 共享 run, wandb 会自动用 x_label 把 metric 标记区分。"""
+                def __init__(self, log_dir, flush_secs):
+                    super().__init__(log_dir, flush_secs)
+
+                def add_scalar(self, tag, scalar_value, global_step=None, walltime=None, new_style=False):
+                    super().add_scalar(tag, scalar_value, global_step, walltime, new_style)
+                    try:
+                        _wandb.log({tag: scalar_value}, step=global_step)
+                    except Exception:
+                        pass
+
+                def stop(self):
+                    try:
+                        _wandb.finish()
+                    except Exception:
+                        pass
+
+                def save_file(self, path):
+                    # primary 才传文件
+                    if local_rank == 0:
+                        try:
+                            _wandb.save(path)
+                        except Exception:
+                            pass
+
+                def save_model(self, model_path, iter):
+                    if local_rank == 0:
+                        try:
+                            _wandb.save(model_path)
+                        except Exception:
+                            pass
+
+                def log_config(self, env_cfg, runner_cfg, alg_cfg, policy_cfg):
+                    if local_rank == 0:
+                        try:
+                            _cfg = {"runner_cfg": runner_cfg, "alg_cfg": alg_cfg, "policy_cfg": policy_cfg}
+                            try:
+                                _cfg["env_cfg"] = env_cfg.to_dict()
+                            except Exception:
+                                pass
+                            _wandb.config.update(_cfg)
+                        except Exception:
+                            pass
+
+            runner.writer = _SharedWandbWriter(log_dir, 10)
             runner.logger_type = "wandb"
             runner.disable_logs = False
-            # 关键: 让非 master rank 不写 ckpt (否则 8 rank 各存一份 → 8× 写盘 + 上传)
-            # disable_logs=False 后 rsl_rl 的 save 调用现在所有 rank 都走, 故必须显式 gate。
+
+            # --- step 5: 非 master rank 不存 ckpt + 静音 print ---
             if local_rank != 0:
-                runner.save = lambda *a, **kw: None  # no-op on non-master ranks
-                # 抑制非 master rank 的人类可读 print (rsl_rl log() 最后 print(log_string),
-                # 8 rank 都打就是 8× 屏幕刷屏)。wandb.log / writer.add_scalar 走内部通道, 不
-                # 通过 stdout, 因此 redirect_stdout 只屏蔽屏幕刷屏, 不影响 wandb 上传。
+                runner.save = lambda *a, **kw: None
                 import contextlib as _ctxlib
                 _devnull = open(os.devnull, "w")
-                _orig_log_for_silence = runner.log  # capture (可能已被 jsonl hook 包装过)
+                _orig_log_for_silence = runner.log
                 def _silent_log(locs, *a, **kw):
                     with _ctxlib.redirect_stdout(_devnull):
                         return _orig_log_for_silence(locs, *a, **kw)
                 runner.log = _silent_log
-            # 手动调 log_config (rsl_rl 通常在 _prepare_logging_writer 中调, 现在被跳过)
+
+            # 手动调 log_config (rsl_rl 的 _prepare_logging_writer 跳过了)
             try:
                 runner.writer.log_config(
                     env.unwrapped.cfg if hasattr(env, "unwrapped") and hasattr(env.unwrapped, "cfg") else {},
@@ -627,10 +677,11 @@ def main():
                     train_cfg_dict.get("policy", {}),
                 )
             except Exception as _e:
-                print(f"[wandb-per-rank rank={local_rank}] log_config skipped: {_e}")
-            print(f"[wandb-per-rank rank={local_rank}] group={_wandb_group}  name={_wandb_run_name}")
+                print(f"[wandb-shared rank={local_rank}] log_config skipped: {_e}")
+            print(f"[wandb-shared rank={local_rank}] run_id={_shared_run_id} "
+                  f"group={_wandb_group} x_label={_x_label} primary={local_rank==0}")
         except Exception as _e:
-            print(f"[wandb-per-rank rank={local_rank}] init FAILED, fallback to master-only: {_e}")
+            print(f"[wandb-shared rank={local_rank}] init FAILED, fallback to master-only: {_e}")
 
     runner.learn(num_learning_iterations=train_cfg_dict["max_iterations"], init_at_random_ep_len=True)
     
