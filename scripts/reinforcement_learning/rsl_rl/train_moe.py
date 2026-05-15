@@ -561,7 +561,11 @@ def main():
                 "MIXED,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,FLAT",
             ).split(",")
             _rank_tag = _rank_names[local_rank] if local_rank < len(_rank_names) else f"r{local_rank}"
-            _wandb_group = f"{experiment_name}_{os.path.basename(log_dir)}"
+            # group 必须跨 rank 一致, 不能用 log_dir basename (每 rank datetime.now() 差几秒).
+            # torchrun --standalone 会设 TORCHELASTIC_RUN_ID, 跨 rank 共享; fallback 用
+            # experiment_name (跨多次启动相同, 但仍能把单次启动的 8 rank 归一组).
+            _run_id = os.environ.get("TORCHELASTIC_RUN_ID", "")
+            _wandb_group = f"{experiment_name}_{_run_id}" if _run_id else experiment_name
             _wandb_run_name = f"rank{local_rank}_{_rank_tag}"
 
             class _PerRankWandbWriter(_WandbSW):
@@ -580,6 +584,9 @@ def main():
                 log_dir=log_dir, flush_secs=10, cfg=train_cfg_dict,
                 group=_wandb_group, run_name=_wandb_run_name,
             )
+            # rsl_rl 的 log() 会引用 self.logger_type (本来在 _prepare_logging_writer
+            # 里设, 但我们让它跳过了, 所以必须手动设)
+            runner.logger_type = "wandb"
             runner.disable_logs = False
             # 关键: 让非 master rank 不写 ckpt (否则 8 rank 各存一份 → 8× 写盘 + 上传)
             # disable_logs=False 后 rsl_rl 的 save 调用现在所有 rank 都走, 故必须显式 gate。
