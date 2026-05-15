@@ -607,16 +607,22 @@ def main():
                 )
 
             # --- step 4: writer wrapper that routes add_scalar → wandb.log ---
+            # 关键: wandb 的 x_label 只 tag system metrics / 控制台日志, **不会** 自动
+            # tag 用户 wandb.log({tag: value}) 的指标。8 个 rank 都写 'Train/mean_reward'
+            # 会互相覆盖。官方建议: 手动在 metric key 加 rank 前缀, 让 wandb UI 按
+            # rank 自动归到不同 folder。
+            _per_rank_prefix = _x_label  # 比如 "rank3_SCAN"
             class _SharedWandbWriter(_SW):
-                """Writer for shared-mode wandb: add_scalar 写本进程的 wandb run.
-                由于所有 rank 共享 run, wandb 会自动用 x_label 把 metric 标记区分。"""
+                """Writer for shared-mode wandb: 写本进程的 wandb run, metric key 加
+                rank 前缀避免 8 rank 同 key 互相覆盖。"""
                 def __init__(self, log_dir, flush_secs):
                     super().__init__(log_dir, flush_secs)
 
                 def add_scalar(self, tag, scalar_value, global_step=None, walltime=None, new_style=False):
                     super().add_scalar(tag, scalar_value, global_step, walltime, new_style)
                     try:
-                        _wandb.log({tag: scalar_value}, step=global_step)
+                        # 前缀 rank tag, wandb UI 自动按 prefix 分组到不同 folder
+                        _wandb.log({f"{_per_rank_prefix}/{tag}": scalar_value}, step=global_step)
                     except Exception:
                         pass
 
