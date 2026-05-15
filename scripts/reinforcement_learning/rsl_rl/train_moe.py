@@ -537,6 +537,68 @@ def main():
         except: pass
         print("="*80 + "\n")
 
+    # =========================================================================
+    # Per-rank wandb: 每 rank 自己一个 wandb run, 同一次启动用同一 group, 上传后
+    # 在 wandb UI 中自动归组 (Group 视图里 8 个 rank 折叠成一组). 不同启动天然
+    # 不同 group, 无需手动维护。
+    #
+    # 工作原理:
+    # - 子类 WandbSummaryWriter, 跳过其默认 wandb.init (无 group), 用我们带
+    #   group + run_name 的 init 替代。
+    # - 在 runner.learn() 之前设 runner.writer = 自定义 writer,
+    #   rsl_rl 的 _prepare_logging_writer 检测 writer 非 None 就跳过自己的 init。
+    # - 强制 runner.disable_logs = False, 让所有 rank 的 runner.log() 都被调,
+    #   每 rank 各自写自己的 wandb run。
+    # =========================================================================
+    if args.distributed and train_cfg_dict.get("logger") == "wandb":
+        try:
+            import wandb as _wandb
+            from rsl_rl.utils.wandb_utils import WandbSummaryWriter as _WandbSW
+            from torch.utils.tensorboard.writer import SummaryWriter as _SW
+
+            _rank_names = os.environ.get(
+                "PER_RANK_NAMES",
+                "MIXED,STAIR_SLOPE,PLATFORM,SCAN,STONES,RAIL,NOISE,FLAT",
+            ).split(",")
+            _rank_tag = _rank_names[local_rank] if local_rank < len(_rank_names) else f"r{local_rank}"
+            _wandb_group = f"{experiment_name}_{os.path.basename(log_dir)}"
+            _wandb_run_name = f"rank{local_rank}_{_rank_tag}"
+
+            class _PerRankWandbWriter(_WandbSW):
+                """Group-aware wandb writer: 跳过父类默认 wandb.init, 用 group + run_name."""
+                def __init__(self, log_dir, flush_secs, cfg, group, run_name):
+                    _SW.__init__(self, log_dir, flush_secs)
+                    try:
+                        project = cfg["wandb_project"]
+                    except KeyError:
+                        project = "rl_training"
+                    entity = os.environ.get("WANDB_USERNAME")
+                    _wandb.init(project=project, entity=entity, group=group, name=run_name)
+                    _wandb.config.update({"log_dir": log_dir, "rank": int(os.environ.get("RANK", "0"))})
+
+            runner.writer = _PerRankWandbWriter(
+                log_dir=log_dir, flush_secs=10, cfg=train_cfg_dict,
+                group=_wandb_group, run_name=_wandb_run_name,
+            )
+            runner.disable_logs = False
+            # 关键: 让非 master rank 不写 ckpt (否则 8 rank 各存一份 → 8× 写盘 + 上传)
+            # disable_logs=False 后 rsl_rl 的 save 调用现在所有 rank 都走, 故必须显式 gate。
+            if local_rank != 0:
+                runner.save = lambda *a, **kw: None  # no-op on non-master ranks
+            # 手动调 log_config (rsl_rl 通常在 _prepare_logging_writer 中调, 现在被跳过)
+            try:
+                runner.writer.log_config(
+                    env.unwrapped.cfg if hasattr(env, "unwrapped") and hasattr(env.unwrapped, "cfg") else {},
+                    train_cfg_dict,
+                    train_cfg_dict.get("algorithm", {}),
+                    train_cfg_dict.get("policy", {}),
+                )
+            except Exception as _e:
+                print(f"[wandb-per-rank rank={local_rank}] log_config skipped: {_e}")
+            print(f"[wandb-per-rank rank={local_rank}] group={_wandb_group}  name={_wandb_run_name}")
+        except Exception as _e:
+            print(f"[wandb-per-rank rank={local_rank}] init FAILED, fallback to master-only: {_e}")
+
     runner.learn(num_learning_iterations=train_cfg_dict["max_iterations"], init_at_random_ep_len=True)
     
     if is_master:
