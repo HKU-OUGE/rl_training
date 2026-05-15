@@ -742,7 +742,7 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
             prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=MOE_ROUGH_TERRAINS_CFG,
-            max_init_terrain_level=0,
+            max_init_terrain_level=18,  # 高起点 — 借用已训 policy 的能力, 不从 level 0 重新爬
             collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
