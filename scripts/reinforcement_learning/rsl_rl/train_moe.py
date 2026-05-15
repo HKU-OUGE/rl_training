@@ -18,6 +18,11 @@ parser = argparse.ArgumentParser(description="Train H-MoE Policy (End-to-End)")
 parser.add_argument("--task", type=str, default="RobotLab-Isaac-Velocity-SiriusW-MoE-v0", help="Task name")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments")
 parser.add_argument("--seed", type=int, default=None, help="Random seed")
+parser.add_argument("--max_init_terrain_level", type=int, default=None,
+                    help="Override env_cfg.scene.terrain.max_init_terrain_level for ALL ranks. "
+                         "Default None = use env cfg value (typically 0). "
+                         "Use e.g. 18 to spawn robots on high-level terrain immediately "
+                         "(useful when resuming from a trained policy).")
 
 # H-MoE 参数
 parser.add_argument("--num_wheel_experts", type=int, default=None)
@@ -241,6 +246,12 @@ def main():
 
     if args.seed is not None:
         env_cfg.seed = args.seed + local_rank
+
+    # ---- max_init_terrain_level override (applies to all ranks, before per-rank terrain swap) ----
+    if args.max_init_terrain_level is not None:
+        env_cfg.scene.terrain.max_init_terrain_level = args.max_init_terrain_level
+        if local_rank == 0:
+            print(f"[INFO] max_init_terrain_level override: {args.max_init_terrain_level} (applies to all ranks)")
 
     # =========================================================================
     # Per-rank terrain dispatch (异构地形多卡训练) — port cfb9e3b
