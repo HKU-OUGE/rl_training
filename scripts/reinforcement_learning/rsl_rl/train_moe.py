@@ -321,6 +321,10 @@ def main():
                 from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_scan_rewards
                 apply_scan_rewards(env_cfg)
                 print(f"[rank={local_rank}] reward → SCAN (钻栏, port main)")
+            elif chosen is STAIR_SLOPE_TEACHER_TERRAINS_CFG:
+                from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_stair_slope_rewards
+                apply_stair_slope_rewards(env_cfg)
+                print(f"[rank={local_rank}] reward → STAIR_SLOPE (lin_vel_z 放宽 + undesired_contacts -0.5)")
 
 
     render_mode = "rgb_array" if args.video else None

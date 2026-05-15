@@ -251,3 +251,20 @@ def apply_scan_rewards(env_cfg) -> None:
     r.upward.weight = 0.08
 
     env_cfg.disable_zero_weight_rewards()
+
+
+def apply_stair_slope_rewards(env_cfg) -> None:
+    """STAIR_SLOPE rank: 楼梯/斜坡专项 reward 微调 (基于 main teacher_elevation 参考).
+
+    只调 2 个权重 (最小改动版, 不重建 reward cfg):
+      - lin_vel_z_l2: -2.0 → -0.05 (放宽 40×)
+          上下楼梯/斜坡必然产生大 Z 速度, baseline 的 -2.0 直接压制爬升能力.
+      - undesired_contacts: -0.1 → -0.5 (强化 5×)
+          baseline 的 -0.1 让 robot 可以用胫骨/底盘蹭过台阶; 强罚后逼着抬腿.
+          (不直接到 main 的 -1.0 因 "第一步过激跳两阶" 风险, 折中 -0.5.)
+
+    其余 reward 维持 baseline; mirror / track_*_curriculum 等是否调整看后续观察。
+    """
+    r = env_cfg.rewards
+    r.lin_vel_z_l2.weight = -0.05
+    r.undesired_contacts.weight = -0.5
