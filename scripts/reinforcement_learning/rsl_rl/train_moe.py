@@ -577,13 +577,24 @@ def main():
                     except KeyError:
                         project = "rl_training"
                     entity = os.environ.get("WANDB_USERNAME")
-                    # 多进程 wandb: 默认 service mode 在同机多 rank 时会 dedupe
-                    # (只有第一个 init 实际注册, 其他被吞)。强制 thread mode 让每
-                    # 进程独立 init, 8 个 wandb run 才会全部上传。必须在 wandb.init
-                    # 之前 setdefault (init 之后改无效)。
+                    # 多进程 wandb fix 1: 默认 service mode 在同机多 rank 时会 dedupe
+                    # → 强制 thread mode 让每进程独立 init
                     os.environ.setdefault("WANDB_START_METHOD", "thread")
-                    _wandb.init(project=project, entity=entity, group=group, name=run_name)
-                    _wandb.config.update({"log_dir": log_dir, "rank": int(os.environ.get("RANK", "0"))})
+                    # 多进程 wandb fix 2: wandb 检测 LOCAL_RANK/RANK/WORLD_SIZE 后会
+                    # auto-disable 非 master rank (它假设用户只在 rank 0 调 init)。
+                    # 我们要每 rank 都建 run, 所以 init 期间临时藏起来这些 env var,
+                    # 让 wandb 把每进程当独立单卡 run 处理。init 后立刻恢复。
+                    _rank_for_cfg = os.environ.get("RANK", "0")
+                    _hidden = {}
+                    for _v in ("LOCAL_RANK", "RANK", "WORLD_SIZE"):
+                        if _v in os.environ:
+                            _hidden[_v] = os.environ.pop(_v)
+                    try:
+                        _wandb.init(project=project, entity=entity, group=group, name=run_name)
+                    finally:
+                        for _k, _val in _hidden.items():
+                            os.environ[_k] = _val
+                    _wandb.config.update({"log_dir": log_dir, "rank": int(_rank_for_cfg)})
 
             runner.writer = _PerRankWandbWriter(
                 log_dir=log_dir, flush_secs=10, cfg=train_cfg_dict,
