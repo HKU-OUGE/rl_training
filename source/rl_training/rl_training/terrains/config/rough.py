@@ -218,6 +218,43 @@ STAIR_SLOPE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     },
 )
 
+# 拆分: STAIR_ONLY (rank 1, 配 T3 reward) + FLAT_SLOPE (rank 7, 配原 2 项 reward).
+# 目的: T3 (放开 joint_mirror / hipy / knee / joint_acc / action_rate) 对台阶有效,
+# 但对 slope 平滑度有轻微 jitter 风险 → slope 退到独立 rank 用 baseline+2 项轻调,
+# 同时让 50% plane 占位 (替原 rank 7 FLAT, 也给 slope 一个 stand-still anchor).
+STAIR_ONLY_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(8.0, 8.0), border_width=20.0,
+    num_rows=30, num_cols=10,
+    horizontal_scale=0.1, vertical_scale=0.005, slope_threshold=0.75,
+    use_cache=False, curriculum=True,
+    sub_terrains={
+        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.5, step_height_range=(0.05, 0.25),
+            step_width=0.3, platform_width=3.0, border_width=1.0, holes=False),
+        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.5, step_height_range=(0.05, 0.25),
+            step_width=0.3, platform_width=3.0, border_width=1.0, holes=False),
+    },
+)
+
+FLAT_SLOPE_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(8.0, 8.0), border_width=20.0,
+    num_rows=30, num_cols=10,
+    horizontal_scale=0.1, vertical_scale=0.005, slope_threshold=0.75,
+    use_cache=False, curriculum=True,
+    sub_terrains={
+        # 50% 平地 (替原 rank 7 FLAT 的功能, 给 slope rank 一个 stand-still anchor)
+        "plane": terrain_gen.trimesh.mesh_terrains_cfg.MeshPlaneTerrainCfg(proportion=0.5),
+        # 50% slope (上 25% + 下 25%, 跟 STAIR_SLOPE 同参数)
+        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=0.25, slope_range=(0.0, 0.55),
+            platform_width=2.0, border_width=0.25),
+        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+            proportion=0.25, slope_range=(0.0, 0.55),
+            platform_width=2.0, border_width=0.25),
+    },
+)
+
 PLATFORM_TEACHER_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0), border_width=20.0,
     num_rows=30, num_cols=10,

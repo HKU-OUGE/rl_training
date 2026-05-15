@@ -270,8 +270,8 @@ def main():
     # =========================================================================
     if args.distributed and os.environ.get("PER_RANK_TERRAIN", "0") == "1":
         from rl_training.terrains.config.rough import (
-            FLAT_TEACHER_TERRAINS_CFG,
-            STAIR_SLOPE_TEACHER_TERRAINS_CFG,
+            STAIR_ONLY_TEACHER_TERRAINS_CFG,
+            FLAT_SLOPE_TEACHER_TERRAINS_CFG,
             PLATFORM_TEACHER_TERRAINS_CFG,
             SCAN_TEACHER_TERRAINS_CFG,
             STEPPING_STONES_TEACHER_TERRAINS_CFG,
@@ -281,13 +281,13 @@ def main():
         )
         _RANK_TERRAIN_MAP = [
             MOE_ROUGH_TERRAINS_CFG,              # rank 0: MIXED (master rank, baseline-like 全局 anchor)
-            STAIR_SLOPE_TEACHER_TERRAINS_CFG,    # rank 1: STAIR_SLOPE
+            STAIR_ONLY_TEACHER_TERRAINS_CFG,     # rank 1: STAIR (纯台阶 50/50 ±), 配 T3 reward
             PLATFORM_TEACHER_TERRAINS_CFG,       # rank 2: PLATFORM (pit/box)
             SCAN_TEACHER_TERRAINS_CFG,           # rank 3: SCAN (hurdle)
             STEPPING_STONES_TEACHER_TERRAINS_CFG, # rank 4: STEPPING_STONES (替代 GAP)
             RAIL_TEACHER_TERRAINS_CFG,           # rank 5: RAIL
             NOISE_TEACHER_TERRAINS_CFG,          # rank 6: NOISE
-            FLAT_TEACHER_TERRAINS_CFG,           # rank 7: FLAT (侧移训练专项, 见下方 lin_vel_y gate)
+            FLAT_SLOPE_TEACHER_TERRAINS_CFG,     # rank 7: 50% plane + 25/25 slope±, 配原 2 项温和 reward
         ]
         if local_rank < len(_RANK_TERRAIN_MAP):
             chosen = _RANK_TERRAIN_MAP[local_rank]
@@ -321,10 +321,14 @@ def main():
                 from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_scan_rewards
                 apply_scan_rewards(env_cfg)
                 print(f"[rank={local_rank}] reward → SCAN (钻栏, port main)")
-            elif chosen is STAIR_SLOPE_TEACHER_TERRAINS_CFG:
+            elif chosen is STAIR_ONLY_TEACHER_TERRAINS_CFG:
+                from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_stair_rewards
+                apply_stair_rewards(env_cfg)
+                print(f"[rank={local_rank}] reward → STAIR (T3: lin_vel_z+undesired + joint_mirror/hipy/knee/joint_acc/action_rate 放宽)")
+            elif chosen is FLAT_SLOPE_TEACHER_TERRAINS_CFG:
                 from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_stair_slope_rewards
                 apply_stair_slope_rewards(env_cfg)
-                print(f"[rank={local_rank}] reward → STAIR_SLOPE (lin_vel_z 放宽 + undesired_contacts -0.5)")
+                print(f"[rank={local_rank}] reward → FLAT_SLOPE (T1: 仅 lin_vel_z 放宽 + undesired_contacts -0.5)")
 
 
     render_mode = "rgb_array" if args.video else None
