@@ -254,17 +254,35 @@ def apply_scan_rewards(env_cfg) -> None:
 
 
 def apply_stair_slope_rewards(env_cfg) -> None:
-    """STAIR_SLOPE rank: 楼梯/斜坡专项 reward 微调 (基于 main teacher_elevation 参考).
+    """STAIR_SLOPE rank: 楼梯/斜坡专项 reward 微调 (T3 tier).
 
-    只调 2 个权重 (最小改动版, 不重建 reward cfg):
-      - lin_vel_z_l2: -2.0 → -0.05 (放宽 40×)
-          上下楼梯/斜坡必然产生大 Z 速度, baseline 的 -2.0 直接压制爬升能力.
-      - undesired_contacts: -0.1 → -0.5 (强化 5×)
-          baseline 的 -0.1 让 robot 可以用胫骨/底盘蹭过台阶; 强罚后逼着抬腿.
-          (不直接到 main 的 -1.0 因 "第一步过激跳两阶" 风险, 折中 -0.5.)
+    诊断 "双脚同台阶才迈" 现象:
+      joint_mirror = (q[FL]-q[HR])^2 + (q[FR]-q[HL])^2 (同相约束, 见 mdp/rewards.py:259).
+      台阶上 FL/HR 必处于不同高度的台阶 → 关节角必不同 → mirror 罚很大,
+      策略学到的最优解就是 "先聚脚再迈步" 把 mirror 压到 0. 几何根因.
+      hipy/knee pos penalty 同时限制单腿大幅抬升 (台阶 riser ≈ 17cm 时关键).
 
-    其余 reward 维持 baseline; mirror / track_*_curriculum 等是否调整看后续观察。
+    本 helper 调 7 个权重:
+      (原 2 项)
+      - lin_vel_z_l2:           -2.0  → -0.05    (放宽 40×, 允许台阶起跳的 Z 速度)
+      - undesired_contacts:     -0.1  → -0.5     (强化 5×, 不许胫骨蹭台阶)
+      (新增 T3)
+      - joint_mirror:           -0.05 → -0.01    (放宽 5×, 允许 trot 单步上一阶)
+      - hipy_joint_pos_penalty: -0.3  → -0.1     (放宽 3×, hip pitch 允许大幅前甩)
+      - knee_joint_pos_penalty: -0.3  → -0.1     (放宽 3×, knee 允许大幅收缩)
+      - joint_acc_l2:           -4e-7 → -1.5e-7  (放宽 2.7×, swing 加速更快)
+      - action_rate_l2:         -0.01 → -0.005   (放宽 2×, lift-step-place 序列切换)
+
+    目标 gait: 对角 trot 爬楼 (FL+HR 同时跨到 N+1, 下一步 FR+HL 同时跨到 N+2),
+    每步上一阶, 而不是 "前脚先上, 后脚跟到同一阶, 再前脚上下一阶" 的 bound-shuffle.
     """
     r = env_cfg.rewards
+    # 原 2 项
     r.lin_vel_z_l2.weight = -0.05
     r.undesired_contacts.weight = -0.5
+    # T3 追加: 解几何根因 + 放开单腿大幅抬升 + 放开 swing 加速
+    r.joint_mirror.weight = -0.01
+    r.hipy_joint_pos_penalty.weight = -0.1
+    r.knee_joint_pos_penalty.weight = -0.1
+    r.joint_acc_l2.weight = -1.5e-7
+    r.action_rate_l2.weight = -0.005

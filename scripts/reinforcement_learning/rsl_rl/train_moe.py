@@ -387,11 +387,19 @@ def main():
                 if is_master: print(f"[Error] Failed to resolve checkpoint path from root {log_root_path}: {e}")
                 sys.exit(1)
 
-    log_dir = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    if getattr(args, "run_name", None): log_dir += f"_{args.run_name}"
-    elif getattr(args, "load_run", None): log_dir += f"_resume_{args.load_run}"
-        
-    log_dir = os.path.join(log_root_path, log_dir)
+    if args.distributed and local_rank != 0:
+        # 方案 C: 非 master rank 的 log_dir 重定向到 /tmp, 避免在项目 logs/ 里
+        # 生成 7 个无 ckpt 的空 dir (rank0 的 timestamp + 7 个不同 timestamp = 8 dir).
+        # ckpt 只在 rank0 写 (runner.save 已 patch 为 master-only), wandb 走 shared mode,
+        # 这里的 SummaryWriter 只是把 TB events 倒进 /tmp 不污染项目 logs.
+        log_dir = os.path.join("/tmp", "rl_training_noop_logs", f"rank_{local_rank}")
+        os.makedirs(log_dir, exist_ok=True)
+    else:
+        log_dir = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        if getattr(args, "run_name", None): log_dir += f"_{args.run_name}"
+        elif getattr(args, "load_run", None): log_dir += f"_resume_{args.load_run}"
+
+        log_dir = os.path.join(log_root_path, log_dir)
     
     if is_master: print(f"[INFO] Current run directory: {log_dir}")
     
