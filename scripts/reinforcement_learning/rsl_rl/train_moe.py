@@ -289,38 +289,16 @@ def main():
                   f"using default terrain from task cfg")
 
         # =====================================================================
-        # Per-rank command range override (lateral y velocity)
-        #   FLAT  → 纯侧移专项: lin_vel_x=(0,0), lin_vel_y=(-1,1).
-        #           给 shared actor 一个不被 x 稀释的干净 y 跟踪梯度;
-        #           x 跟踪由其余 7 rank 覆盖, 不损失.
-        #   NOISE → x+y 混合: lin_vel_y=(-1,1), x 保持 env 默认 → 训斜向运动.
-        #   其它  → lin_vel_y=(0,0), 专注前向:
-        #           PLATFORM/STEPPING_STONES/RAIL 侧移=掉坑/踩洞/撞轨;
-        #           SCAN(crawl) 侧移横漂稀释钻栏; STAIR_SLOPE/MIXED 楼梯方向性强易翻.
-        # heading_command 维持全局开启 (FLAT 也是边侧移边转向朝目标 heading).
-        # gate 用 terrain 身份判断, 地形放在任意 rank 都自动生效.
-        # DEBUG: 设 DEBUG_NO_LINVELY_OVERRIDE=1 跳过此 override (用于二分 hang)
+        # Per-rank command override
+        # y 命令全局关闭 (env default lin_vel_y=(0,0)), 所有 rank 都不发 y 命令;
+        # x 全局 ±1.0 (env default), 所有 rank 一致, 不再做 per-rank x override.
+        # 此前的 FLAT 纯侧移 / NOISE 宽 x 都已取消.
         # =====================================================================
-        if env_cfg.commands.base_velocity is not None \
-                and os.environ.get("DEBUG_NO_LINVELY_OVERRIDE", "0") != "1":
-            _ranges = env_cfg.commands.base_velocity.ranges
-            if chosen is FLAT_TEACHER_TERRAINS_CFG:
-                _ranges.lin_vel_x = (0.0, 0.0)
-                _ranges.lin_vel_y = (-1.0, 1.0)
-                print(f"[rank={local_rank}] FLAT: lin_vel_x=(0,0) lin_vel_y=(-1,1) (pure lateral)")
-            elif chosen is NOISE_TEACHER_TERRAINS_CFG:
-                _ranges.lin_vel_y = (-1.0, 1.0)
-                print(f"[rank={local_rank}] NOISE: lin_vel_y=(-1,1) (x+y blend)")
-            else:
-                _ranges.lin_vel_y = (0.0, 0.0)
-                print(f"[rank={local_rank}] lin_vel_y = (0, 0) (forward only)")
 
         # =====================================================================
         # Per-rank reward override
         #   PLATFORM → 高台攀爬 reward (port main); SCAN → 钻栏 reward (port main).
-        #   FLAT     → 纯侧移微调: 关 joint_mirror/joint_mirror_lr (和 crab-walk 冲突)
-        #              + is_terminated=-100 摔倒惩罚.
-        # 只换 reward, terrain/command/curriculum 维持本分支配置.
+        #   其他 rank (FLAT/MIXED/STAIR_SLOPE/STONES/RAIL/NOISE) 用共享 baseline reward.
         # DEBUG: 设 DEBUG_NO_PERRANK_REWARD=1 跳过 (退回全 rank 共享 baseline reward)
         # =====================================================================
         if os.environ.get("DEBUG_NO_PERRANK_REWARD", "0") != "1":
@@ -332,10 +310,6 @@ def main():
                 from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_scan_rewards
                 apply_scan_rewards(env_cfg)
                 print(f"[rank={local_rank}] reward → SCAN (钻栏, port main)")
-            elif chosen is FLAT_TEACHER_TERRAINS_CFG:
-                from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.teacher_per_rank_rewards import apply_flat_rewards
-                apply_flat_rewards(env_cfg)
-                print(f"[rank={local_rank}] reward → FLAT (纯侧移: mirror off + 摔倒惩罚 -100)")
 
 
     render_mode = "rgb_array" if args.video else None

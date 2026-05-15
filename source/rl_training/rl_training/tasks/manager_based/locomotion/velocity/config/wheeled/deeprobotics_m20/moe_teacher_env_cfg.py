@@ -880,9 +880,12 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        self.rewards.track_lin_vel_xy_exp.weight = 2.5 # 1.8
+        # track_lin_vel: 精准 (pre_exp) 权重并入粗略, 简化 reward landscape.
+        # y 关闭走的是命令侧: lin_vel_y 全局 = (0, 0), 自动让 track_lin_vel_xy_exp
+        # 退化成"x 跟踪 + 横向漂移惩罚", 不需要改 reward func。
+        self.rewards.track_lin_vel_xy_exp.weight = 3.0   # was 2.5 (合并了 pre_exp 的 0.5)
+        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.0  # was 0.5, 已合并入 xy_exp
         self.rewards.track_ang_vel_z_exp.weight = 1.5 # 1.2
-        self.rewards.track_lin_vel_xy_pre_exp.weight = 0.5
         self.rewards.track_ang_vel_z_pre_exp.weight = 1.5
 
         self.rewards.feet_air_time.weight = 1.0
@@ -917,9 +920,11 @@ class DeeproboticsM20MoETeacherEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.2, 1.0)
         self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.6, 1.0) 
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
-        # env 默认启用侧移命令; per-rank 训练时 train_moe.py 会把非 FLAT rank 覆盖回 (0, 0)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
+        # env 默认 lin_vel_x 收紧到 ±1.0 (was ±1.5), 对齐 main, 减少硬地形上"高速失稳".
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
+        # y 命令暂时全局关掉 (lateral 训练没起效, 简化目标先做好 x). 命令为 0 时
+        # track_lin_vel_xy_exp 自动惩罚横向漂移 (跟踪误差 = |actual_vy|).
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
         
         # self.rewards.base_height_l2.params["sensor_cfg"] = None
