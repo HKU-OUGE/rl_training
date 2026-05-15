@@ -577,6 +577,11 @@ def main():
                     except KeyError:
                         project = "rl_training"
                     entity = os.environ.get("WANDB_USERNAME")
+                    # 多进程 wandb: 默认 service mode 在同机多 rank 时会 dedupe
+                    # (只有第一个 init 实际注册, 其他被吞)。强制 thread mode 让每
+                    # 进程独立 init, 8 个 wandb run 才会全部上传。必须在 wandb.init
+                    # 之前 setdefault (init 之后改无效)。
+                    os.environ.setdefault("WANDB_START_METHOD", "thread")
                     _wandb.init(project=project, entity=entity, group=group, name=run_name)
                     _wandb.config.update({"log_dir": log_dir, "rank": int(os.environ.get("RANK", "0"))})
 
@@ -592,6 +597,16 @@ def main():
             # disable_logs=False 后 rsl_rl 的 save 调用现在所有 rank 都走, 故必须显式 gate。
             if local_rank != 0:
                 runner.save = lambda *a, **kw: None  # no-op on non-master ranks
+                # 抑制非 master rank 的人类可读 print (rsl_rl log() 最后 print(log_string),
+                # 8 rank 都打就是 8× 屏幕刷屏)。wandb.log / writer.add_scalar 走内部通道, 不
+                # 通过 stdout, 因此 redirect_stdout 只屏蔽屏幕刷屏, 不影响 wandb 上传。
+                import contextlib as _ctxlib
+                _devnull = open(os.devnull, "w")
+                _orig_log_for_silence = runner.log  # capture (可能已被 jsonl hook 包装过)
+                def _silent_log(locs, *a, **kw):
+                    with _ctxlib.redirect_stdout(_devnull):
+                        return _orig_log_for_silence(locs, *a, **kw)
+                runner.log = _silent_log
             # 手动调 log_config (rsl_rl 通常在 _prepare_logging_writer 中调, 现在被跳过)
             try:
                 runner.writer.log_config(
