@@ -314,6 +314,58 @@ def plot_leg_wheel_coactivation(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_gate_entropy_per_terrain(raw, summary, plots_dir):
+    gate_leg = raw["gate_leg"].astype(np.float32)
+    gate_wheel = raw["gate_wheel"].astype(np.float32)
+    term_step = raw["term_step"]
+    types = raw["terrain_types"]
+    sub_names = summary["sub_terrain_names"]
+
+    T = gate_leg.shape[1]
+    am = alive_mask(term_step, T)
+    eps = 1e-8
+
+    def entropy(g):  # g: (N, T, K)
+        return -(g * np.log(g + eps)).sum(axis=-1)  # (N, T)
+
+    H_leg = entropy(gate_leg)
+    H_wheel = entropy(gate_wheel)
+    sub_per_env = env_subterrain_name(types, summary)
+
+    def avg_by_subterrain(H):
+        out = np.full(len(sub_names), np.nan)
+        for i, name in enumerate(sub_names):
+            mask = sub_per_env == name
+            if not mask.any():
+                continue
+            vals = H[mask][am[mask]]
+            out[i] = vals.mean() if vals.size > 0 else np.nan
+        return out
+
+    leg_H_per = avg_by_subterrain(H_leg)
+    wheel_H_per = avg_by_subterrain(H_wheel)
+
+    nL = gate_leg.shape[-1]; nW = gate_wheel.shape[-1]
+    max_leg_H = np.log(nL); max_wheel_H = np.log(nW)
+
+    fig, (ax_l, ax_w) = plt.subplots(2, 1, figsize=(max(8, 0.7 * len(sub_names)), 6), sharex=True)
+    ax_l.bar(range(len(sub_names)), leg_H_per, color="#1f77b4")
+    ax_l.axhline(max_leg_H, ls="--", color="red", label=f"log({nL})={max_leg_H:.2f} (max)")
+    ax_l.set_ylabel("leg gate entropy [nats]"); ax_l.legend(fontsize=8)
+    ax_l.set_title("Gate entropy per sub-terrain (lower = more decisive routing)")
+
+    ax_w.bar(range(len(sub_names)), wheel_H_per, color="#2ca02c")
+    ax_w.axhline(max_wheel_H, ls="--", color="red", label=f"log({nW})={max_wheel_H:.2f} (max)")
+    ax_w.set_ylabel("wheel gate entropy [nats]"); ax_w.legend(fontsize=8)
+    ax_w.set_xticks(range(len(sub_names)))
+    ax_w.set_xticklabels(sub_names, rotation=45, ha="right", fontsize=8)
+
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "06_gate_entropy_per_terrain.png")
+    plt.savefig(out, dpi=140); plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -333,6 +385,7 @@ def main():
     plot_velocity_tracking_box(raw, summary, plots_dir)
     plot_termination_reward_breakdown(raw, summary, plots_dir)
     plot_leg_wheel_coactivation(raw, summary, plots_dir)
+    plot_gate_entropy_per_terrain(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
