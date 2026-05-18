@@ -161,6 +161,21 @@ def _zero_obs_noise(observations):
                 term.noise = None
 
 
+def _reached_goal_x(env, threshold: float) -> torch.Tensor:
+    """Termination: +x displacement from env spawn anchor exceeds threshold."""
+    disp_x = env.scene["robot"].data.root_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    return disp_x >= threshold
+
+
+def inject_reached_goal_term(env_cfg, threshold: float):
+    """Add reached_goal as a new termination term in env_cfg."""
+    env_cfg.terminations.reached_goal = DoneTerm(
+        func=_reached_goal_x,
+        params={"threshold": float(threshold)},
+    )
+    print(f"[eval] terminations.reached_goal injected (threshold={threshold}m)")
+
+
 def main():
     if args.strict_per_terrain:
         raise NotImplementedError("--strict_per_terrain is reserved for v2 (loops 13 sub-terrains with sim restart).")
@@ -170,8 +185,11 @@ def main():
     env_cfg = parse_env_cfg(args.task, device=DEVICE, num_envs=args.num_envs)
     env_cfg.seed = args.seed
     env_cfg = apply_eval_overrides(env_cfg, args)
+    inject_reached_goal_term(env_cfg, args.success_dist)
 
-    print("[eval_moe] env_cfg overrides applied.")
+    env = gym.make(args.task, cfg=env_cfg)
+    print(f"[eval_moe] env created. num_envs={env.unwrapped.num_envs}")
+    env.close()
 
 
 if __name__ == "__main__":
