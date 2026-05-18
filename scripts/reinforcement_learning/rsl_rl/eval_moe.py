@@ -300,6 +300,75 @@ def allocate_buffers(N, T, model, args):
     }
 
 
+TERM_NAME_TO_ENUM = {
+    "time_out": 0,
+    "illegal_contact": 1,
+    "terrain_out_of_bounds": 2,
+    "bad_orientation": 3,
+    "reached_goal": 4,
+    # bad_orientation_2 is disabled in env_cfg but keep map just in case
+    "bad_orientation_2": 3,
+}
+
+
+def handle_dones(t, dones, info, bufs):
+    """For envs that just done for the first time, populate term_cause, term_step, reward_terms."""
+    if not dones.any():
+        return None  # no key discovery this step
+
+    log = info.get("log", info)  # rsl_rl may wrap differently
+    fresh = dones & (~bufs["first_done"])
+    if not fresh.any():
+        return None
+    fresh_idx = torch.where(fresh)[0]
+
+    # ---- discover reward term names on first opportunity ----
+    discovered = None
+    if bufs["reward_terms"] is None:
+        rew_keys = [k for k in log.keys() if k.startswith("Episode_Reward/")]
+        rew_names = [k.replace("Episode_Reward/", "") for k in rew_keys]
+        N = bufs["term_cause"].shape[0]
+        bufs["reward_terms"] = torch.zeros(N, len(rew_names), dtype=torch.float32, device=DEVICE)
+        bufs["_reward_term_names"] = rew_names
+        discovered = ("reward_terms", rew_names)
+        print(f"[eval] discovered {len(rew_names)} reward terms")
+
+    # ---- discover termination names on first opportunity ----
+    if "_term_keys" not in bufs:
+        term_keys = [k for k in log.keys() if k.startswith("Episode_Termination/")]
+        bufs["_term_keys"] = term_keys
+        print(f"[eval] discovered termination keys: {[k.replace('Episode_Termination/', '') for k in term_keys]}")
+
+    # ---- per-env: find which termination fired ----
+    for term_key in bufs["_term_keys"]:
+        name = term_key.replace("Episode_Termination/", "")
+        enum_val = TERM_NAME_TO_ENUM.get(name, 255)
+        val = log[term_key]
+        if not isinstance(val, torch.Tensor):
+            continue  # scalar episode-mean (not per-env); skip
+        # val is (N,) bool; assign enum for fresh envs where val=True
+        hit = val.to(torch.bool) & fresh
+        bufs["term_cause"][hit] = enum_val
+
+    # default: any fresh env still with term_cause==-1 → time_out (episode_length hit)
+    still_unset = fresh & (bufs["term_cause"] == -1)
+    bufs["term_cause"][still_unset] = 0  # time_out
+
+    # ---- term_step ----
+    bufs["term_step"][fresh] = t
+
+    # ---- reward_terms ----
+    rew_names = bufs.get("_reward_term_names", [])
+    for col_i, name in enumerate(rew_names):
+        key = f"Episode_Reward/{name}"
+        val = log.get(key)
+        if isinstance(val, torch.Tensor) and val.shape[0] == bufs["term_cause"].shape[0]:
+            bufs["reward_terms"][fresh_idx, col_i] = val[fresh_idx].to(torch.float32)
+
+    bufs["first_done"][fresh] = True
+    return discovered
+
+
 def main():
     if args.strict_per_terrain:
         raise NotImplementedError("--strict_per_terrain is reserved for v2 (loops 13 sub-terrains with sim restart).")
