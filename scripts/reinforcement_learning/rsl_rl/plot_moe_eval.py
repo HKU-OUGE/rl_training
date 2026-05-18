@@ -366,6 +366,47 @@ def plot_gate_entropy_per_terrain(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_expert_switching_freq(raw, summary, plots_dir):
+    """Per sub-terrain avg number of dominant-expert switches per episode (leg / wheel)."""
+    gate_leg = raw["gate_leg"].astype(np.float32)
+    gate_wheel = raw["gate_wheel"].astype(np.float32)
+    term_step = raw["term_step"]
+    types = raw["terrain_types"]
+    sub_names = summary["sub_terrain_names"]
+
+    T = gate_leg.shape[1]
+    am = alive_mask(term_step, T)
+    N = gate_leg.shape[0]
+
+    dom_leg = gate_leg.argmax(axis=-1)    # (N, T)
+    dom_wheel = gate_wheel.argmax(axis=-1)
+
+    # count switches: changes between consecutive alive steps
+    def switch_count(dom):
+        diff = (dom[:, 1:] != dom[:, :-1]) & am[:, 1:] & am[:, :-1]
+        return diff.sum(axis=1)
+
+    sw_leg = switch_count(dom_leg).astype(np.float32)
+    sw_wheel = switch_count(dom_wheel).astype(np.float32)
+    sub_per_env = env_subterrain_name(types, summary)
+
+    sw_leg_per = aggregate_by_subterrain(sw_leg, sub_per_env, sub_names)
+    sw_wheel_per = aggregate_by_subterrain(sw_wheel, sub_per_env, sub_names)
+
+    x = np.arange(len(sub_names))
+    fig, ax = plt.subplots(figsize=(max(8, 0.7 * len(sub_names)), 5))
+    ax.bar(x - 0.2, sw_leg_per, width=0.4, label="leg expert switches", color="#1f77b4")
+    ax.bar(x + 0.2, sw_wheel_per, width=0.4, label="wheel expert switches", color="#2ca02c")
+    ax.set_xticks(x); ax.set_xticklabels(sub_names, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("avg switches / episode")
+    ax.set_title("Dominant expert switching frequency per sub-terrain")
+    ax.legend()
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "07_expert_switching_freq.png")
+    plt.savefig(out, dpi=140); plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -386,6 +427,7 @@ def main():
     plot_termination_reward_breakdown(raw, summary, plots_dir)
     plot_leg_wheel_coactivation(raw, summary, plots_dir)
     plot_gate_entropy_per_terrain(raw, summary, plots_dir)
+    plot_expert_switching_freq(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
