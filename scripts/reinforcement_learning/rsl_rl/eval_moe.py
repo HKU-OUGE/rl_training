@@ -384,21 +384,21 @@ def save_outputs(bufs, env_cfg, args, ckpt_path, experiment_name, iter_num):
     tgen = env_cfg.scene.terrain.terrain_generator
     sub_terrain_names = list(tgen.sub_terrains.keys())  # 13 unique, in declaration order
 
-    # 18-col → sub-terrain name mapping: terrain_types col i belongs to which named sub-terrain?
-    # IsaacLab assigns cols by proportion: build cumulative col-index → name map
+    # 18-col → sub-terrain name mapping using cumulative allocation.
+    # Last sub-terrain gets remainder so total always equals num_cols (no overshoot/undershoot).
     proportions = [(name, c.proportion) for name, c in tgen.sub_terrains.items()]
-    total = sum(p for _, p in proportions)
+    total = sum(p for _, p in proportions) or 1.0
     col_to_subterrain = []
-    cur_col = 0
-    for name, p in proportions:
-        n_cols = max(1, round(p / total * tgen.num_cols))
-        for _ in range(n_cols):
-            col_to_subterrain.append(name)
-            cur_col += 1
-    # pad to num_cols
+    for i, (name, p) in enumerate(proportions):
+        if i == len(proportions) - 1:
+            n_cols = tgen.num_cols - len(col_to_subterrain)
+        else:
+            n_cols = max(1, round(p / total * tgen.num_cols))
+        col_to_subterrain.extend([name] * n_cols)
+    # Safety clamp (shouldn't trigger after the cumulative logic but cheap insurance)
+    col_to_subterrain = col_to_subterrain[:tgen.num_cols]
     while len(col_to_subterrain) < tgen.num_cols:
         col_to_subterrain.append(proportions[-1][0])
-    col_to_subterrain = col_to_subterrain[:tgen.num_cols]
 
     # --- raw.npz ---
     np_buf = {}
