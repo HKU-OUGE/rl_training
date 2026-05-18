@@ -369,6 +369,79 @@ def handle_dones(t, dones, info, bufs):
     return discovered
 
 
+def save_outputs(bufs, env_cfg, args, ckpt_path, experiment_name, iter_num):
+    """Write raw.npz and summary.json to logs/moe_eval/<exp>/<ts>_iter<N>/"""
+    # Output dir
+    if args.output_dir:
+        out_dir = args.output_dir
+    else:
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        out_dir = os.path.join("logs", "moe_eval", experiment_name, f"{ts}_iter{iter_num}")
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.join(out_dir, "plots"), exist_ok=True)
+
+    # Sub-terrain name list from terrain_generator
+    tgen = env_cfg.scene.terrain.terrain_generator
+    sub_terrain_names = list(tgen.sub_terrains.keys())  # 13 unique, in declaration order
+
+    # 18-col → sub-terrain name mapping: terrain_types col i belongs to which named sub-terrain?
+    # IsaacLab assigns cols by proportion: build cumulative col-index → name map
+    proportions = [(name, c.proportion) for name, c in tgen.sub_terrains.items()]
+    total = sum(p for _, p in proportions)
+    col_to_subterrain = []
+    cur_col = 0
+    for name, p in proportions:
+        n_cols = max(1, round(p / total * tgen.num_cols))
+        for _ in range(n_cols):
+            col_to_subterrain.append(name)
+            cur_col += 1
+    # pad to num_cols
+    while len(col_to_subterrain) < tgen.num_cols:
+        col_to_subterrain.append(proportions[-1][0])
+    col_to_subterrain = col_to_subterrain[:tgen.num_cols]
+
+    # --- raw.npz ---
+    np_buf = {}
+    for k, v in bufs.items():
+        if isinstance(v, torch.Tensor):
+            np_buf[k] = v.cpu().numpy()
+        elif k in ("t_stride",):
+            np_buf[k] = np.int32(v)
+    raw_path = os.path.join(out_dir, "raw.npz")
+    np.savez_compressed(raw_path, **np_buf)
+    print(f"[eval] raw.npz written ({os.path.getsize(raw_path)/1e6:.1f} MB) → {raw_path}")
+
+    # --- summary.json ---
+    summary = {
+        "task": args.task,
+        "experiment_name": experiment_name,
+        "ckpt_path": ckpt_path,
+        "iter": iter_num,
+        "num_envs": int(args.num_envs),
+        "num_steps": int(args.num_steps),
+        "success_dist": float(args.success_dist),
+        "cmd_vx": float(args.cmd_vx),
+        "seed": int(args.seed),
+        "sub_terrain_names": sub_terrain_names,
+        "col_to_subterrain": col_to_subterrain,
+        "num_rows": int(tgen.num_rows),
+        "num_cols": int(tgen.num_cols),
+        "term_enum": {v: k for k, v in TERM_NAME_TO_ENUM.items()},
+        "reward_term_names": bufs.get("_reward_term_names", []),
+        "model": {
+            "num_leg_experts": int(bufs["gate_leg"].shape[-1]),
+            "num_wheel_experts": int(bufs["gate_wheel"].shape[-1]),
+            "latent_dim": int(bufs["gru_latent_sample"].shape[-1]),
+        },
+        "tstamp": datetime.now().isoformat(),
+    }
+    with open(os.path.join(out_dir, "summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"[eval] summary.json written → {out_dir}/summary.json")
+
+    return out_dir
+
+
 def main():
     if args.strict_per_terrain:
         raise NotImplementedError("--strict_per_terrain is reserved for v2 (loops 13 sub-terrains with sim restart).")
@@ -484,6 +557,8 @@ def main():
         print(f"[eval] {never_done.sum().item()} envs never terminated — marked time_out")
 
     print(f"[eval] rollout complete.")
+    out_dir = save_outputs(bufs, env_cfg, args, ckpt_path, experiment_name, iter_num)
+    print(f"[eval] ALL DONE. results at {out_dir}")
     env_wrapped.close()
 
 
