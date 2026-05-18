@@ -342,7 +342,7 @@ def handle_dones(t, dones, info, bufs):
     # ---- per-env: find which termination fired ----
     for term_key in bufs["_term_keys"]:
         name = term_key.replace("Episode_Termination/", "")
-        enum_val = TERM_NAME_TO_ENUM.get(name, 255)
+        enum_val = TERM_NAME_TO_ENUM.get(name, 127)
         val = log[term_key]
         if not isinstance(val, torch.Tensor):
             continue  # scalar episode-mean (not per-env); skip
