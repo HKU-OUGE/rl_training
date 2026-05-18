@@ -233,6 +233,38 @@ def build_and_load_runner(env_wrapped, train_cfg_dict, ckpt_path):
     return runner, model
 
 
+def install_hooks(model):
+    """Register forward hooks on leg_gate, wheel_gate, and the RNN.
+
+    Returns a dict that gets overwritten in-place each step:
+      {"leg_logits": Tensor[B, num_leg],
+       "wheel_logits": Tensor[B, num_wheel],
+       "rnn_out": Tensor[B, latent_dim]}
+    """
+    sink = {}
+
+    def make_hook(key):
+        def _h(module, inp, out):
+            # gate output: (B, num_expert) or (T, B, num_expert); take last frame if 3D
+            t = out
+            if t.ndim == 3:
+                t = t[-1]
+            sink[key] = t.detach()
+        return _h
+
+    def rnn_hook(module, inp, out):
+        # GRU returns (rnn_out, hidden); rnn_out is (T, B, latent)
+        rnn_out = out[0] if isinstance(out, tuple) else out
+        if rnn_out.ndim == 3:
+            rnn_out = rnn_out[-1]
+        sink["rnn_out"] = rnn_out.detach()
+
+    model.leg_gate.register_forward_hook(make_hook("leg_logits"))
+    model.wheel_gate.register_forward_hook(make_hook("wheel_logits"))
+    model.rnn.register_forward_hook(rnn_hook)
+    return sink
+
+
 def main():
     if args.strict_per_terrain:
         raise NotImplementedError("--strict_per_terrain is reserved for v2 (loops 13 sub-terrains with sim restart).")
@@ -269,6 +301,16 @@ def main():
     runner, model = build_and_load_runner(env_wrapped, train_cfg_dict, ckpt_path)
     print(f"[eval] model loaded. num_leg_experts={model.num_leg_experts} "
           f"num_wheel_experts={model.num_wheel_experts} latent_dim={model.latent_dim}")
+
+    sink = install_hooks(model)
+    obs, _ = env_wrapped.reset()
+    policy = runner.get_inference_policy(device=DEVICE)
+    with torch.inference_mode():
+        _ = policy(obs)
+    print(f"[eval] hook test: "
+          f"leg_logits={tuple(sink['leg_logits'].shape)} "
+          f"wheel_logits={tuple(sink['wheel_logits'].shape)} "
+          f"rnn_out={tuple(sink['rnn_out'].shape)}")
 
     env_wrapped.close()
 
