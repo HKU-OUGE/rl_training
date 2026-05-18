@@ -204,6 +204,82 @@ def plot_velocity_tracking_box(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_termination_reward_breakdown(raw, summary, plots_dir):
+    term_cause = raw["term_cause"]
+    types = raw["terrain_types"]
+    sub_names = summary["sub_terrain_names"]
+    term_enum = {int(k): v for k, v in summary["term_enum"].items()}
+    sub_per_env = env_subterrain_name(types, summary)
+
+    # ---- top: stacked bar termination cause % per sub-terrain ----
+    cause_names = ["time_out", "illegal_contact", "terrain_out_of_bounds", "bad_orientation", "reached_goal"]
+    cause_enums = [0, 1, 2, 3, 4]
+    cause_share = np.zeros((len(sub_names), len(cause_enums)))
+    for i, name in enumerate(sub_names):
+        mask = sub_per_env == name
+        if not mask.any():
+            continue
+        for j, e in enumerate(cause_enums):
+            cause_share[i, j] = (term_cause[mask] == e).mean()
+
+    # ---- bottom: reward terms heatmap (sub-terrain × top-8 reward terms) ----
+    reward_terms_arr = raw["reward_terms"].astype(np.float32) if "reward_terms" in raw.files else None
+    rew_names = summary.get("reward_term_names", [])
+
+    if reward_terms_arr is not None and len(rew_names) > 0:
+        rew_per_sub = np.zeros((len(sub_names), len(rew_names)))
+        for i, name in enumerate(sub_names):
+            mask = sub_per_env == name
+            if mask.any():
+                rew_per_sub[i] = reward_terms_arr[mask].mean(axis=0)
+        # pick top-8 by absolute magnitude
+        top_idx = np.argsort(-np.abs(rew_per_sub).mean(axis=0))[:8]
+        rew_top = rew_per_sub[:, top_idx]
+        rew_top_names = [rew_names[i] for i in top_idx]
+    else:
+        rew_top = None
+        rew_top_names = []
+
+    n_axes = 2 if rew_top is not None else 1
+    fig, axes = plt.subplots(n_axes, 1, figsize=(max(8, 0.7 * len(sub_names)), 4 + 3 * n_axes))
+    if n_axes == 1:
+        axes = [axes]
+
+    # top
+    ax_t = axes[0]
+    colors = ["#666", "#d62728", "#9467bd", "#bcbd22", "#2ca02c"]
+    bottom = np.zeros(len(sub_names))
+    for j, (cname, col) in enumerate(zip(cause_names, colors)):
+        ax_t.bar(range(len(sub_names)), cause_share[:, j], bottom=bottom,
+                 label=cname, color=col, edgecolor="white", linewidth=0.5)
+        bottom += cause_share[:, j]
+    ax_t.set_ylim(0, 1)
+    ax_t.set_ylabel("episode fraction")
+    ax_t.set_title("Termination cause per sub-terrain")
+    ax_t.legend(loc="upper right", fontsize=8, ncol=5)
+    ax_t.set_xticks(range(len(sub_names)))
+    ax_t.set_xticklabels(sub_names if n_axes == 1 else [""] * len(sub_names),
+                         rotation=45, ha="right", fontsize=8)
+
+    # bottom
+    if rew_top is not None:
+        ax_r = axes[1]
+        im = ax_r.imshow(rew_top.T, cmap="RdBu_r", aspect="auto",
+                         vmin=-np.abs(rew_top).max(), vmax=np.abs(rew_top).max())
+        ax_r.set_yticks(range(len(rew_top_names)))
+        ax_r.set_yticklabels(rew_top_names, fontsize=8)
+        ax_r.set_xticks(range(len(sub_names)))
+        ax_r.set_xticklabels(sub_names, rotation=45, ha="right", fontsize=8)
+        ax_r.set_title("Top-8 reward terms (mean per env per sub-terrain)")
+        plt.colorbar(im, ax=ax_r, label="reward (Episode_Reward sum)")
+
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "04_termination_reward_breakdown.png")
+    plt.savefig(out, dpi=140)
+    plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -221,6 +297,7 @@ def main():
     plot_success_heatmap(raw, summary, plots_dir)
     plot_expert_activation_bars(raw, summary, plots_dir)
     plot_velocity_tracking_box(raw, summary, plots_dir)
+    plot_termination_reward_breakdown(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
