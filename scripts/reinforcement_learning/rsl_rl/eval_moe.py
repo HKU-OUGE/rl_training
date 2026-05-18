@@ -317,7 +317,9 @@ def handle_dones(t, dones, info, bufs):
         return None  # no key discovery this step
 
     log = info.get("log", info)  # rsl_rl may wrap differently
-    fresh = dones & (~bufs["first_done"])
+    # dones is dtype=torch.long (0/1) from RslRlVecEnvWrapper; convert to bool so
+    # that subsequent mask operations (indexing, &) behave correctly.
+    fresh = dones.bool() & (~bufs["first_done"])
     if not fresh.any():
         return None
     fresh_idx = torch.where(fresh)[0]
@@ -343,7 +345,9 @@ def handle_dones(t, dones, info, bufs):
     for term_key in bufs["_term_keys"]:
         name = term_key.replace("Episode_Termination/", "")
         enum_val = TERM_NAME_TO_ENUM.get(name, 127)
-        val = log[term_key]
+        val = log.get(term_key)
+        if val is None:
+            continue
         if not isinstance(val, torch.Tensor):
             continue  # scalar episode-mean (not per-env); skip
         # val is (N,) bool; assign enum for fresh envs where val=True
@@ -358,12 +362,23 @@ def handle_dones(t, dones, info, bufs):
     bufs["term_step"][fresh] = t
 
     # ---- reward_terms ----
+    # IsaacLab's reward_manager.reset() returns per-key scalar means (averaged over
+    # the env_ids that just reset), NOT per-env tensors.  So val is either a 0-d
+    # tensor or a Python float.  Store that mean for every fresh env — it's the best
+    # available signal when a batch resets together (e.g., all time_out at step T).
     rew_names = bufs.get("_reward_term_names", [])
     for col_i, name in enumerate(rew_names):
         key = f"Episode_Reward/{name}"
         val = log.get(key)
+        if val is None:
+            continue
         if isinstance(val, torch.Tensor) and val.ndim > 0 and val.shape[0] == bufs["term_cause"].shape[0]:
+            # Per-env tensor (future-proof / custom wrappers that expose per-env sums)
             bufs["reward_terms"][fresh_idx, col_i] = val[fresh_idx].to(torch.float32)
+        else:
+            # Scalar mean over the resetting batch — broadcast to all fresh envs
+            scalar = float(val.item() if isinstance(val, torch.Tensor) else val)
+            bufs["reward_terms"][fresh_idx, col_i] = scalar
 
     bufs["first_done"][fresh] = True
     return discovered
@@ -549,12 +564,30 @@ def main():
                 print(f"[eval] all envs done at step {t + 1} — early exit")
                 break
 
-    # Safety: envs that never died → mark as time_out
+        # Drain: 2 extra env.step() calls past the loop so IsaacLab fires the
+        # pending time_out termination at episode_length_buf == max. Without this,
+        # ~all envs hit the safety pass (term_cause=time_out but reward_terms=0)
+        # because the boundary step is never observed. handle_dones picks up
+        # Episode_Reward/* on the natural done and fills reward_terms properly.
+        # Per-step buffers (root_pos_xy, gate_*, etc.) are NOT recorded for drain
+        # steps — only termination/reward events are captured.
+        n_drain = 2
+        pre_drain_done = bufs["first_done"].sum().item()
+        for d in range(n_drain):
+            if bufs["first_done"].all():
+                break
+            actions = policy(obs)
+            obs, _, dones, info = env_wrapped.step(actions)
+            handle_dones(T + d, dones, info, bufs)
+        post_drain_done = bufs["first_done"].sum().item()
+        print(f"[eval] drain steps captured {post_drain_done - pre_drain_done} extra dones")
+
+    # Safety: envs that STILL never died after drain → mark as time_out (no reward)
     never_done = ~bufs["first_done"]
     if never_done.any():
         bufs["term_cause"][never_done] = 0  # time_out
         bufs["term_step"][never_done] = T - 1
-        print(f"[eval] {never_done.sum().item()} envs never terminated — marked time_out")
+        print(f"[eval] {never_done.sum().item()} envs never terminated even after drain — marked time_out (no reward data)")
 
     print(f"[eval] rollout complete.")
     out_dir = save_outputs(bufs, env_cfg, args, ckpt_path, experiment_name, iter_num)
