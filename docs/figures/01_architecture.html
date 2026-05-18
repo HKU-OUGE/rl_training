@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Figure 1 — SplitMoE Architecture</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+  <div class="figure-meta">
+    <span class="label">Figure&nbsp;1</span>
+    <span class="title">SplitMoE Teacher Policy &mdash; Architecture Overview</span>
+    <span class="sub">Rough-MoE-Teacher-Deeprobotics-M20-v0</span>
+  </div>
+
+  <div class="canvas">
+  <svg viewBox="0 0 1240 700" xmlns="http://www.w3.org/2000/svg" aria-label="SplitMoE architecture diagram">
+
+    <defs>
+      <!-- Arrowhead -->
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#1c1917"/>
+      </marker>
+      <marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#0a6b6b"/>
+      </marker>
+      <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#b85c38"/>
+      </marker>
+
+      <!-- Dotted recurrent self-loop -->
+      <pattern id="dots" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+        <circle cx="1" cy="1" r="0.8" fill="#0a6b6b"/>
+      </pattern>
+    </defs>
+
+    <!-- ============================================================
+         STAGE HEADERS (column labels along the top)
+         ============================================================ -->
+    <g class="svg-text-tiny" text-anchor="middle">
+      <text x="140" y="50">OBSERVATIONS</text>
+      <text x="380" y="50">PER-STREAM ENCODERS</text>
+      <text x="600" y="50">FUSE &amp; RECURRENT BACKBONE</text>
+      <text x="800" y="50">GATING</text>
+      <text x="1000" y="50">EXPERTS (MLP)</text>
+      <text x="1175" y="50">ACTION</text>
+
+      <line x1="40"  y1="58" x2="240" y2="58" stroke="#a8a29e" stroke-width="0.5"/>
+      <line x1="290" y1="58" x2="470" y2="58" stroke="#a8a29e" stroke-width="0.5"/>
+      <line x1="520" y1="58" x2="680" y2="58" stroke="#a8a29e" stroke-width="0.5"/>
+      <line x1="730" y1="58" x2="870" y2="58" stroke="#a8a29e" stroke-width="0.5"/>
+      <line x1="920" y1="58" x2="1080" y2="58" stroke="#a8a29e" stroke-width="0.5"/>
+      <line x1="1130" y1="58" x2="1220" y2="58" stroke="#a8a29e" stroke-width="0.5"/>
+    </g>
+
+    <!-- ============================================================
+         STAGE A — Observations  (x: 40..240)
+         ============================================================ -->
+
+    <g id="obs">
+      <!-- A1: policy / proprio -->
+      <rect x="40" y="120" width="200" height="60" rx="2"
+            fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="50" y="143">policy (proprio)</text>
+      <text class="svg-text-mono"  x="50" y="159">ω · g · cmd · q · q̇ · a_prev</text>
+      <text class="svg-text-accent" x="232" y="174" text-anchor="end">56-D</text>
+
+      <!-- A2: noisy_elevation -->
+      <rect x="40" y="300" width="200" height="80" rx="2"
+            fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="50" y="323">noisy_elevation</text>
+      <text class="svg-text-mono"  x="50" y="339">height_scan 11×17</text>
+      <text class="svg-text-mono"  x="50" y="353">+ forward_lidar 12×21</text>
+      <text class="svg-text-mono"  x="50" y="367">+ backward_lidar 12×21</text>
+      <text class="svg-text-accent" x="232" y="378" text-anchor="end">691-D</text>
+
+      <!-- A3: estimator -->
+      <rect x="40" y="470" width="200" height="70" rx="2"
+            fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="50" y="493">estimator</text>
+      <text class="svg-text-mono"  x="50" y="509">history flatten (T=15)</text>
+      <text class="svg-text-mono"  x="50" y="523">of proprio (no cmd) terms</text>
+      <text class="svg-text-accent" x="232" y="535" text-anchor="end">15×50-D</text>
+    </g>
+
+    <!-- ============================================================
+         STAGE B — Encoders  (x: 290..470)
+         ============================================================ -->
+
+    <g id="encoders">
+      <!-- pass-through for proprio -->
+      <rect x="290" y="120" width="180" height="60" rx="2"
+            fill="none" stroke="#1c1917" stroke-width="1" stroke-dasharray="3 2"/>
+      <text class="svg-text-title" x="380" y="143" text-anchor="middle">— pass-through —</text>
+      <text class="svg-text-mono"  x="380" y="159" text-anchor="middle">EmpiricalNormalization</text>
+      <text class="svg-text-accent" x="462" y="174" text-anchor="end">56-D</text>
+
+      <!-- ElevationAE + MultiLayerScanAE share frame -->
+      <rect x="290" y="300" width="180" height="80" rx="2"
+            fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="380" y="320" text-anchor="middle">ElevationAE</text>
+      <text class="svg-text-mono"  x="380" y="335" text-anchor="middle">Conv2d ×2 → fc</text>
+      <line x1="300" y1="345" x2="460" y2="345" stroke="#a8a29e" stroke-width="0.5" stroke-dasharray="2 2"/>
+      <text class="svg-text-title" x="380" y="361" text-anchor="middle">MultiLayerScanAE</text>
+      <text class="svg-text-mono"  x="380" y="375" text-anchor="middle">Conv1d ×2 → fc</text>
+      <text class="svg-text-accent" x="462" y="299" text-anchor="end">64 + 64</text>
+
+      <!-- ProprioVAE -->
+      <rect x="290" y="470" width="180" height="70" rx="2"
+            fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="380" y="493" text-anchor="middle">ProprioVAE</text>
+      <text class="svg-text-mono"  x="380" y="509" text-anchor="middle">MLP enc → μ, log σ²</text>
+      <text class="svg-text-mono"  x="380" y="523" text-anchor="middle">+ velocity head (3-D)</text>
+      <text class="svg-text-accent" x="462" y="535" text-anchor="end">μ 64 + v̂ 3</text>
+    </g>
+
+    <!-- Obs → Encoder arrows -->
+    <g stroke="#1c1917" stroke-width="1" fill="none" marker-end="url(#arrow)">
+      <line x1="240" y1="150" x2="288" y2="150"/>
+      <line x1="240" y1="340" x2="288" y2="340"/>
+      <line x1="240" y1="505" x2="288" y2="505"/>
+    </g>
+
+    <!-- ============================================================
+         STAGE C — Fuse + GRU  (x: 520..680)
+         ============================================================ -->
+
+    <g id="fuse-gru">
+      <!-- Concat funnel (3 lines collapse into 1) -->
+      <g stroke="#1c1917" stroke-width="1" fill="none">
+        <line x1="470" y1="150" x2="520" y2="320"/>
+        <line x1="470" y1="340" x2="520" y2="330"/>
+        <line x1="470" y1="505" x2="520" y2="340"/>
+      </g>
+      <circle cx="525" cy="330" r="4" fill="#1c1917"/>
+      <text class="svg-text-mono" x="500" y="280" text-anchor="end">concat</text>
+      <text class="svg-text-mono" x="500" y="294" text-anchor="end" fill="#0a6b6b">56 + 67 + 128 = 251-D</text>
+
+      <!-- GRU box -->
+      <rect x="540" y="290" width="140" height="80" rx="3"
+            fill="#e3ece9" stroke="#0a6b6b" stroke-width="1.5"/>
+      <text class="svg-text-title" x="610" y="315" text-anchor="middle" fill="#0a6b6b">GRU</text>
+      <text class="svg-text-mono"  x="610" y="333" text-anchor="middle">in=251 · hidden=256</text>
+      <text class="svg-text-mono"  x="610" y="347" text-anchor="middle">unroll over T_BPTT</text>
+      <text class="svg-text-accent" x="672" y="364" text-anchor="end">h_t 256-D</text>
+
+      <!-- Recurrent self-loop -->
+      <path d="M 540 300 Q 510 250, 540 220 Q 570 200, 610 220 Q 620 230, 615 240"
+            stroke="#0a6b6b" stroke-width="1" stroke-dasharray="2 2" fill="none"
+            marker-end="url(#arrow-teal)"/>
+      <text class="svg-text-mono" x="540" y="208" text-anchor="middle" fill="#0a6b6b">h_{t-1}</text>
+
+      <!-- concat → GRU connector -->
+      <line x1="528" y1="330" x2="540" y2="330" stroke="#1c1917" stroke-width="1"/>
+    </g>
+
+    <!-- ============================================================
+         STAGE D — Gates (x: 730..870)
+         ============================================================ -->
+
+    <g id="gates">
+      <!-- LayerNorm -->
+      <rect x="730" y="305" width="80" height="42" rx="2"
+            fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="770" y="324" text-anchor="middle">LayerNorm</text>
+      <text class="svg-text-mono"  x="770" y="338" text-anchor="middle">on h_t</text>
+
+      <!-- GRU → LayerNorm -->
+      <line x1="680" y1="326" x2="729" y2="326" stroke="#1c1917" stroke-width="1" marker-end="url(#arrow)"/>
+
+      <!-- leg_gate -->
+      <rect x="830" y="200" width="100" height="60" rx="2"
+            fill="#fff" stroke="#b85c38" stroke-width="1.5"/>
+      <text class="svg-text-title" x="880" y="223" text-anchor="middle" fill="#b85c38">leg_gate</text>
+      <text class="svg-text-mono"  x="880" y="238" text-anchor="middle">MLP → softmax</text>
+      <text class="svg-text-accent" x="922" y="254" text-anchor="end" fill="#b85c38">w^leg ∈ Δ⁶</text>
+
+      <!-- wheel_gate -->
+      <rect x="830" y="392" width="100" height="60" rx="2"
+            fill="#fff" stroke="#b85c38" stroke-width="1.5"/>
+      <text class="svg-text-title" x="880" y="415" text-anchor="middle" fill="#b85c38">wheel_gate</text>
+      <text class="svg-text-mono"  x="880" y="430" text-anchor="middle">MLP → softmax</text>
+      <text class="svg-text-accent" x="922" y="446" text-anchor="end" fill="#b85c38">w^wheel ∈ Δ³</text>
+
+      <!-- LayerNorm → gates -->
+      <g stroke="#1c1917" stroke-width="1" fill="none" marker-end="url(#arrow)">
+        <path d="M 810 320 Q 820 320, 820 270 L 829 230"/>
+        <path d="M 810 333 Q 820 333, 820 385 L 829 422"/>
+      </g>
+    </g>
+
+    <!-- ============================================================
+         STAGE E — Experts (x: 920..1080)
+         ============================================================ -->
+
+    <g id="experts">
+      <!-- 6 leg experts -->
+      <g>
+        <text class="svg-text-mono" x="1000" y="140" text-anchor="middle">6 leg experts</text>
+        <text class="svg-text-tiny" x="1000" y="153" text-anchor="middle">MLP [256, 128, 128] → 12-D</text>
+      </g>
+      <g id="leg-experts">
+        <!-- each leg expert is a small box stacked vertically -->
+        <g>
+          <rect x="950" y="172" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="187" text-anchor="middle" fill="#0a6b6b">leg expert · L₁</text>
+        </g>
+        <g>
+          <rect x="950" y="198" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="213" text-anchor="middle" fill="#0a6b6b">leg expert · L₂</text>
+        </g>
+        <g>
+          <rect x="950" y="224" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="239" text-anchor="middle" fill="#0a6b6b">leg expert · L₃</text>
+        </g>
+        <g>
+          <rect x="950" y="250" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="265" text-anchor="middle" fill="#0a6b6b">leg expert · L₄</text>
+        </g>
+        <g>
+          <rect x="950" y="276" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="291" text-anchor="middle" fill="#0a6b6b">leg expert · L₅</text>
+        </g>
+        <g>
+          <rect x="950" y="302" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="317" text-anchor="middle" fill="#0a6b6b">leg expert · L₆</text>
+        </g>
+      </g>
+
+      <!-- 3 wheel experts -->
+      <g>
+        <text class="svg-text-mono" x="1000" y="362" text-anchor="middle">3 wheel experts</text>
+        <text class="svg-text-tiny" x="1000" y="375" text-anchor="middle">MLP [256, 128, 128] → 4-D</text>
+      </g>
+      <g id="wheel-experts">
+        <g>
+          <rect x="950" y="392" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="407" text-anchor="middle" fill="#0a6b6b">wheel expert · W₁</text>
+        </g>
+        <g>
+          <rect x="950" y="418" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="433" text-anchor="middle" fill="#0a6b6b">wheel expert · W₂</text>
+        </g>
+        <g>
+          <rect x="950" y="444" width="100" height="22" rx="2" fill="none" stroke="#0a6b6b" stroke-width="0.8"/>
+          <text class="svg-text-mono" x="1000" y="459" text-anchor="middle" fill="#0a6b6b">wheel expert · W₃</text>
+        </g>
+      </g>
+
+      <!-- h_t → experts (faint) -->
+      <g stroke="#0a6b6b" stroke-width="0.5" fill="none" opacity="0.4">
+        <line x1="680" y1="326" x2="948" y2="183"/>
+        <line x1="680" y1="326" x2="948" y2="403"/>
+      </g>
+      <text class="svg-text-tiny" x="700" y="200" fill="#0a6b6b">h_t broadcast</text>
+    </g>
+
+    <!-- ============================================================
+         STAGE F — Action (x: 1120..1240)
+         ============================================================ -->
+
+    <g id="action">
+      <!-- weighted sum nodes -->
+      <circle cx="1100" cy="245" r="9" fill="#b85c38" stroke="#1c1917" stroke-width="0.8"/>
+      <text class="svg-text-mono" x="1100" y="249" text-anchor="middle" fill="#fff" font-weight="600">Σ</text>
+      <circle cx="1100" cy="418" r="9" fill="#b85c38" stroke="#1c1917" stroke-width="0.8"/>
+      <text class="svg-text-mono" x="1100" y="422" text-anchor="middle" fill="#fff" font-weight="600">Σ</text>
+
+      <!-- gate → Σ thin arrows -->
+      <g stroke="#b85c38" stroke-width="0.8" fill="none" marker-end="url(#arrow-amber)" stroke-dasharray="2 1.5">
+        <path d="M 930 230 Q 1020 230, 1090 240"/>
+        <path d="M 930 422 Q 1020 422, 1090 418"/>
+      </g>
+
+      <!-- expert → Σ -->
+      <g stroke="#0a6b6b" stroke-width="0.6" fill="none">
+        <line x1="1050" y1="183" x2="1093" y2="240"/>
+        <line x1="1050" y1="209" x2="1093" y2="242"/>
+        <line x1="1050" y1="235" x2="1093" y2="244"/>
+        <line x1="1050" y1="261" x2="1093" y2="247"/>
+        <line x1="1050" y1="287" x2="1093" y2="249"/>
+        <line x1="1050" y1="313" x2="1093" y2="251"/>
+        <line x1="1050" y1="403" x2="1093" y2="416"/>
+        <line x1="1050" y1="429" x2="1093" y2="418"/>
+        <line x1="1050" y1="455" x2="1093" y2="420"/>
+      </g>
+
+      <!-- Σ → output -->
+      <line x1="1110" y1="245" x2="1138" y2="245" stroke="#1c1917" stroke-width="1" marker-end="url(#arrow)"/>
+      <line x1="1110" y1="418" x2="1138" y2="418" stroke="#1c1917" stroke-width="1" marker-end="url(#arrow)"/>
+
+      <!-- Action output box -->
+      <rect x="1138" y="225" width="72" height="40" rx="2"
+            fill="#fff" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="1174" y="243" text-anchor="middle">a^leg</text>
+      <text class="svg-text-mono"  x="1174" y="257" text-anchor="middle">12-D joint pos</text>
+
+      <rect x="1138" y="398" width="72" height="40" rx="2"
+            fill="#fff" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-title" x="1174" y="416" text-anchor="middle">a^wheel</text>
+      <text class="svg-text-mono"  x="1174" y="430" text-anchor="middle">4-D joint vel</text>
+
+      <!-- concat brace into 16-D action -->
+      <path d="M 1213 245 Q 1223 245 1223 320 Q 1223 418 1213 418"
+            stroke="#1c1917" stroke-width="1" fill="none"/>
+      <text class="svg-text-accent" x="1228" y="324" text-anchor="start" fill="#0a6b6b">a ∈ ℝ¹⁶</text>
+    </g>
+
+    <!-- ============================================================
+         CRITIC branch (subtle, beneath the actor flow)
+         ============================================================ -->
+
+    <g id="critic" opacity="0.55">
+      <rect x="540" y="600" width="140" height="38" rx="2"
+            fill="#efece2" stroke="#57534e" stroke-width="0.8" stroke-dasharray="2 2"/>
+      <text class="svg-text-title" x="610" y="617" text-anchor="middle">Critic GRU</text>
+      <text class="svg-text-mono"  x="610" y="631" text-anchor="middle">privileged obs</text>
+
+      <rect x="730" y="606" width="80" height="26" rx="2"
+            fill="#efece2" stroke="#57534e" stroke-width="0.8" stroke-dasharray="2 2"/>
+      <text class="svg-text-title" x="770" y="622" text-anchor="middle">MLP</text>
+
+      <rect x="830" y="606" width="80" height="26" rx="2"
+            fill="#efece2" stroke="#57534e" stroke-width="0.8" stroke-dasharray="2 2"/>
+      <text class="svg-text-title" x="870" y="623" text-anchor="middle">V(s)</text>
+
+      <g stroke="#57534e" stroke-width="0.7" fill="none" marker-end="url(#arrow)" stroke-dasharray="2 2">
+        <line x1="680" y1="619" x2="729" y2="619"/>
+        <line x1="810" y1="619" x2="829" y2="619"/>
+      </g>
+
+      <text class="svg-text-tiny" x="40" y="619">CRITIC PATH</text>
+      <text class="svg-text-tiny" x="40" y="632">used at training only</text>
+      <line x1="40" y1="640" x2="540" y2="640" stroke="#a8a29e" stroke-width="0.4" stroke-dasharray="2 3"/>
+    </g>
+
+    <!-- ============================================================
+         Aux loss callouts
+         ============================================================ -->
+    <g class="svg-text-tiny" fill="#b85c38">
+      <text x="990" y="500" text-anchor="middle">
+        load-balancing aux loss
+      </text>
+      <text x="990" y="513" text-anchor="middle">
+        on mean of w^leg, w^wheel
+      </text>
+    </g>
+    <path d="M 880 460 Q 920 480, 950 495" stroke="#b85c38" stroke-width="0.6" fill="none" stroke-dasharray="2 2"/>
+  </svg>
+  </div>
+
+  <div class="caption">
+    <b>Figure 1.</b>
+    SplitMoE teacher policy. Three observation groups
+    (proprioception, noisy elevation + multi-pitch LiDAR, history)
+    are independently encoded; latent representations are concatenated
+    (251-D) and processed by a single-layer GRU (hidden 256).
+    LayerNorm-projected RNN state feeds two independent gating networks
+    that emit softmax weights over <i>6 leg experts</i> and
+    <i>3 wheel experts</i>. Each expert is an MLP[256, 128, 128]
+    whose outputs are mixed by the gate to produce a 12-D joint-position
+    command (legs) and a 4-D joint-velocity command (wheels),
+    concatenated into the 16-D action vector. A separate critic GRU is
+    used only at training time.
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Figure 2 — Per-Rank Training Topology</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+  <div class="figure-meta">
+    <span class="label">Figure&nbsp;2</span>
+    <span class="title">Per-Rank Heterogeneous Terrain Training</span>
+    <span class="sub">torchrun --nproc_per_node 8 · PER_RANK_TERRAIN=1</span>
+  </div>
+
+  <div class="canvas">
+  <svg viewBox="0 0 1240 720" xmlns="http://www.w3.org/2000/svg" aria-label="Per-rank training topology">
+
+    <defs>
+      <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#1c1917"/>
+      </marker>
+      <marker id="arrow-up" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#0a6b6b"/>
+      </marker>
+    </defs>
+
+    <!-- ============================================================
+         TOP: shared policy
+         ============================================================ -->
+    <g id="shared-policy">
+      <rect x="420" y="50" width="400" height="80" rx="3"
+            fill="#e3ece9" stroke="#0a6b6b" stroke-width="1.5"/>
+      <text class="svg-text-title" x="620" y="78" text-anchor="middle" fill="#0a6b6b">
+        SplitMoEActorCritic — shared parameters
+      </text>
+      <text class="svg-text-mono" x="620" y="96" text-anchor="middle">
+        actor + critic + estimator + AE/scan encoders + gates + experts
+      </text>
+      <text class="svg-text-accent" x="620" y="114" text-anchor="middle">
+        DDP-wrapped · param avg via NCCL all-reduce every backward pass
+      </text>
+    </g>
+
+    <!-- Down-arrow: replication -->
+    <g stroke="#1c1917" stroke-width="0.9" fill="none">
+      <line x1="170" y1="160" x2="170" y2="195" marker-end="url(#arrow2)"/>
+      <line x1="305" y1="160" x2="305" y2="195" marker-end="url(#arrow2)"/>
+      <line x1="440" y1="160" x2="440" y2="195" marker-end="url(#arrow2)"/>
+      <line x1="575" y1="160" x2="575" y2="195" marker-end="url(#arrow2)"/>
+      <line x1="710" y1="160" x2="710" y2="195" marker-end="url(#arrow2)"/>
+      <line x1="845" y1="160" x2="845" y2="195" marker-end="url(#arrow2)"/>
+      <line x1="980" y1="160" x2="980" y2="195" marker-end="url(#arrow2)"/>
+      <line x1="1115" y1="160" x2="1115" y2="195" marker-end="url(#arrow2)"/>
+      <!-- horizontal bus -->
+      <path d="M 170 160 L 1115 160" stroke="#1c1917" stroke-width="0.9"/>
+      <path d="M 620 130 L 620 160" stroke="#1c1917" stroke-width="0.9"/>
+    </g>
+    <text class="svg-text-mono" x="620" y="153" text-anchor="middle" fill="#57534e">
+      forward pass: each rank uses local copy
+    </text>
+
+    <!-- ============================================================
+         MIDDLE: 8 rank tiles
+         ============================================================ -->
+
+    <!-- Helper: each rank tile is 110 wide, centered at x=170, 305, 440, ... -->
+
+    <g id="tile-0" transform="translate(115 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 0</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 0</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">MIXED</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">MOE_ROUGH</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">all 12 sub-terrains</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">— (baseline) —</text>
+      <line x1="10" y1="138" x2="100" y2="138" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank0_MIXED</text>
+      <text class="svg-text-tiny" x="10" y="170">illegal_contact: keep</text>
+      <text class="svg-text-tiny" x="10" y="186">x cmd: ±1.0  y cmd: 0</text>
+    </g>
+
+    <g id="tile-1" transform="translate(250 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 1</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 1</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">STAIR_ONLY</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">+50% / −50% stairs</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">no flat baseline</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">T3: lin_vel_z↑</text>
+      <text class="svg-text-mono" x="10" y="138">undesired_contacts↑</text>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank1_STAIR</text>
+      <text class="svg-text-tiny" x="10" y="170" fill="#b85c38">illegal_contact: OFF</text>
+      <text class="svg-text-tiny" x="10" y="186">hipy/knee penalty↓</text>
+    </g>
+
+    <g id="tile-2" transform="translate(385 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 2</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 2</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">PLATFORM</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">pit + boxes</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">platform-up / -down</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">apply_platform</text>
+      <text class="svg-text-mono" x="10" y="138">rewards()  (main)</text>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank2_PLAT</text>
+      <text class="svg-text-tiny" x="10" y="170" fill="#b85c38">illegal_contact: OFF</text>
+      <text class="svg-text-tiny" x="10" y="186">crawl-friendly</text>
+    </g>
+
+    <g id="tile-3" transform="translate(520 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 3</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 3</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">SCAN</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">3 hurdle thicknesses</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">pole · board · wall</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">apply_scan_rewards</text>
+      <text class="svg-text-mono" x="10" y="138">crawl-mode</text>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank3_SCAN</text>
+      <text class="svg-text-tiny" x="10" y="170" fill="#b85c38">illegal_contact: OFF</text>
+      <text class="svg-text-tiny" x="10" y="186">base_roll penalty</text>
+    </g>
+
+    <g id="tile-4" transform="translate(655 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 4</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 4</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">STONES</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">stepping_stones</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">gap_range 0.1–0.8 m</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">— (shared baseline) —</text>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank4_STONES</text>
+      <text class="svg-text-tiny" x="10" y="170" fill="#b85c38">illegal_contact: OFF</text>
+    </g>
+
+    <g id="tile-5" transform="translate(790 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 5</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 5</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">RAIL</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">parallel bars</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">thickness 5-10 cm</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">— (shared baseline) —</text>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank5_RAIL</text>
+      <text class="svg-text-tiny" x="10" y="170" fill="#b85c38">illegal_contact: OFF</text>
+    </g>
+
+    <g id="tile-6" transform="translate(925 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 6</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 6</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">NOISE</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">random_rough</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">noise 2–16 cm</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">— (shared baseline) —</text>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank6_NOISE</text>
+      <text class="svg-text-tiny" x="10" y="170">illegal_contact: keep</text>
+    </g>
+
+    <g id="tile-7" transform="translate(1060 195)">
+      <rect width="110" height="200" rx="3" fill="#efece2" stroke="#1c1917" stroke-width="1"/>
+      <text class="svg-text-mono" x="10" y="18" fill="#0a6b6b">rank 7</text>
+      <text class="svg-text-tiny" x="100" y="18" text-anchor="end" fill="#a8a29e">GPU 7</text>
+      <line x1="10" y1="26" x2="100" y2="26" stroke="#a8a29e" stroke-width="0.4"/>
+      <text class="svg-text-title" x="55" y="48" text-anchor="middle">FLAT_SLOPE</text>
+      <text class="svg-text-mono"  x="55" y="64" text-anchor="middle">plane + ± slope</text>
+      <text class="svg-text-tiny"  x="55" y="80" text-anchor="middle">50/25/25 split</text>
+      <line x1="10" y1="92" x2="100" y2="92" stroke="#a8a29e" stroke-width="0.3"/>
+      <text class="svg-text-tiny" x="10" y="108" fill="#b85c38">reward override</text>
+      <text class="svg-text-mono" x="10" y="124">T1: lin_vel_z↑</text>
+      <text class="svg-text-mono" x="10" y="138">und_contacts -0.5</text>
+      <text class="svg-text-tiny" x="10" y="154">log group: rank7_FLAT</text>
+      <text class="svg-text-tiny" x="10" y="170">illegal_contact: keep</text>
+    </g>
+
+    <!-- ============================================================
+         BOTTOM: envs + gradient backflow
+         ============================================================ -->
+
+    <!-- Env strip -->
+    <g id="envs">
+      <g transform="translate(115 415)">
+        <rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/>
+        <text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text>
+        <text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text>
+      </g>
+      <g transform="translate(250 415)"><rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/><text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text><text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text></g>
+      <g transform="translate(385 415)"><rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/><text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text><text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text></g>
+      <g transform="translate(520 415)"><rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/><text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text><text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text></g>
+      <g transform="translate(655 415)"><rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/><text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text><text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text></g>
+      <g transform="translate(790 415)"><rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/><text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text><text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text></g>
+      <g transform="translate(925 415)"><rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/><text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text><text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text></g>
+      <g transform="translate(1060 415)"><rect width="110" height="50" rx="2" fill="#fff" stroke="#1c1917" stroke-width="0.8"/><text class="svg-text-title" x="55" y="22" text-anchor="middle">env × 2000</text><text class="svg-text-mono" x="55" y="40" text-anchor="middle">IsaacLab vec env</text></g>
+    </g>
+
+    <!-- Tile → env arrows -->
+    <g stroke="#1c1917" stroke-width="0.7" fill="none" marker-end="url(#arrow2)">
+      <line x1="170" y1="395" x2="170" y2="413"/>
+      <line x1="305" y1="395" x2="305" y2="413"/>
+      <line x1="440" y1="395" x2="440" y2="413"/>
+      <line x1="575" y1="395" x2="575" y2="413"/>
+      <line x1="710" y1="395" x2="710" y2="413"/>
+      <line x1="845" y1="395" x2="845" y2="413"/>
+      <line x1="980" y1="395" x2="980" y2="413"/>
+      <line x1="1115" y1="395" x2="1115" y2="413"/>
+    </g>
+
+    <!-- Backward gradient flow path -->
+    <g stroke="#0a6b6b" stroke-width="1.2" fill="none" stroke-dasharray="5 3">
+      <!-- vertical risers from envs back up -->
+      <path d="M 195 415 Q 215 415, 215 510 L 215 555"/>
+      <path d="M 330 415 Q 350 415, 350 510 L 350 555"/>
+      <path d="M 465 415 Q 485 415, 485 510 L 485 555"/>
+      <path d="M 600 415 Q 620 415, 620 510 L 620 555"/>
+      <path d="M 735 415 Q 755 415, 755 510 L 755 555"/>
+      <path d="M 870 415 Q 890 415, 890 510 L 890 555"/>
+      <path d="M 1005 415 Q 1025 415, 1025 510 L 1025 555"/>
+      <path d="M 1140 415 Q 1160 415, 1160 510 L 1160 555"/>
+
+      <!-- horizontal bus into ring -->
+      <path d="M 215 555 L 1160 555"/>
+    </g>
+
+    <!-- Gradient all-reduce ring -->
+    <g id="all-reduce">
+      <rect x="420" y="555" width="400" height="50" rx="25"
+            fill="#fff" stroke="#0a6b6b" stroke-width="1.5"/>
+      <text class="svg-text-title" x="620" y="580" text-anchor="middle" fill="#0a6b6b">
+        NCCL all-reduce — gradient sync
+      </text>
+      <text class="svg-text-mono" x="620" y="596" text-anchor="middle">
+        averaged across actor / critic / encoder params (every PPO backward)
+      </text>
+
+      <!-- back to shared policy -->
+      <path d="M 620 555 L 620 130" stroke="#0a6b6b" stroke-width="1" stroke-dasharray="5 3" fill="none"
+            marker-end="url(#arrow-up)"/>
+    </g>
+
+    <!-- ============================================================
+         Side note: shared wandb + jsonl per-rank logging
+         ============================================================ -->
+    <g id="sidenote">
+      <rect x="40" y="640" width="1160" height="56" rx="2"
+            fill="#efece2" stroke="#a8a29e" stroke-width="0.6" stroke-dasharray="2 2"/>
+      <text class="svg-text-mono" x="56" y="660" fill="#0a6b6b">
+        LOGGING
+      </text>
+      <text class="svg-text-mono" x="135" y="660">
+        ·  wandb shared-mode run (rank-0 primary, others workers; metric keys prefixed with rank_id_NAME)
+      </text>
+      <text class="svg-text-mono" x="135" y="676">
+        ·  jsonl per-rank scratch at /tmp/per_rank_train_&lt;NAME&gt;_rank&lt;N&gt;.jsonl  (no NCCL involved — avoids prior all_gather deadlock)
+      </text>
+      <text class="svg-text-mono" x="135" y="692">
+        ·  ckpt + tb events written only from rank 0;  workers redirected to /tmp/rl_training_noop_logs/
+      </text>
+    </g>
+
+  </svg>
+  </div>
+
+  <div class="caption">
+    <b>Figure 2.</b>
+    Per-rank heterogeneous terrain training. A single
+    <i>SplitMoEActorCritic</i> is replicated to 8 GPUs via PyTorch DDP.
+    Each rank instantiates the <i>same</i> network but a
+    <i>different</i> terrain generator (mixed baseline · stair-only
+    · pit/box platform · hurdle scan · stepping stones · rails ·
+    random rough · flat + slope), and three ranks (1, 2, 3) apply
+    targeted reward overrides that match the locomotion regime of
+    their assigned terrain. Hard-terrain ranks disable
+    <i>illegal_contact</i> termination to permit a
+    "crash-then-climb" exploration strategy. Gradients are averaged
+    across all 8 ranks via NCCL all-reduce on every PPO backward
+    pass; logging is split between a shared wandb run and per-rank
+    jsonl scratch files (the latter avoids a prior all-gather
+    deadlock observed during development).
+  </div>
+
+</div>
+</body>
+</html>

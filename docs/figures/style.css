@@ -1,0 +1,121 @@
+/* Shared paper-figure stylesheet
+ * Aesthetic: refined editorial, NeurIPS/Nature-style
+ * Palette: ink + warm paper + single teal accent
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --paper: #f8f6f0;
+  --paper-deep: #efece2;
+  --ink: #1c1917;
+  --ink-soft: #57534e;
+  --ink-faint: #a8a29e;
+  --rule: #d6d3d1;
+  --teal: #0a6b6b;
+  --teal-soft: #c5d9d6;
+  --teal-faint: #e3ece9;
+  --amber: #b85c38;
+  --amber-soft: #e6c5b3;
+
+  --serif: 'IBM Plex Serif', Georgia, serif;
+  --sans: 'IBM Plex Sans', sans-serif;
+  --mono: 'IBM Plex Mono', 'Courier New', monospace;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  padding: 48px 64px 64px;
+}
+
+.page {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+/* Figure caption block at top — like a paper figure */
+.figure-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 32px;
+}
+
+.figure-meta .label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--teal);
+  white-space: nowrap;
+}
+
+.figure-meta .title {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.figure-meta .sub {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* Caption / legend at bottom */
+.caption {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--serif);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+.caption b {
+  font-weight: 600;
+  font-style: normal;
+  color: var(--ink);
+}
+
+/* Figure canvas wrapper */
+.canvas {
+  position: relative;
+  width: 100%;
+}
+
+svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Reusable SVG class hooks for cross-figure consistency */
+.svg-text-label  { font-family: var(--sans); font-size: 11px; fill: var(--ink); }
+.svg-text-mono   { font-family: var(--mono); font-size: 10px; fill: var(--ink-soft); }
+.svg-text-title  { font-family: var(--serif); font-size: 13px; font-weight: 500; fill: var(--ink); }
+.svg-text-tiny   { font-family: var(--mono); font-size: 9px; fill: var(--ink-faint); }
+.svg-text-accent { font-family: var(--mono); font-size: 10px; fill: var(--teal); font-weight: 500; }
+
+/* Print-friendly */
+@media print {
+  body { padding: 0; background: white; }
+  .figure-meta { page-break-after: avoid; }
+}
