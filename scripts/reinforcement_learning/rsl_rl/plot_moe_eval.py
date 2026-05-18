@@ -407,6 +407,66 @@ def plot_expert_switching_freq(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_gru_latent_tsne(raw, summary, plots_dir):
+    """t-SNE of GRU latent (one point per latent-sampled env, last alive frame), colored by sub-terrain."""
+    try:
+        from sklearn.manifold import TSNE
+    except ImportError:
+        print("[plot] sklearn not installed — skipping plot 8 (t-SNE)")
+        return
+
+    latents = raw["gru_latent_sample"].astype(np.float32)  # (N', T', L)
+    latent_env_idx = raw["latent_env_idx"]                  # (N',)
+    term_step = raw["term_step"]                            # (N,)
+    types = raw["terrain_types"]                            # (N,)
+    t_stride = int(raw["t_stride"])
+    sub_names = summary["sub_terrain_names"]
+
+    # For each sampled env, take the latent at the last alive sampled frame
+    points = []
+    labels = []
+    sub_per_env = env_subterrain_name(types, summary)
+    for i, env_i in enumerate(latent_env_idx):
+        ts = int(term_step[env_i])
+        last_t = ts if ts >= 0 else latents.shape[1] * t_stride - 1
+        last_l_idx = min(last_t // t_stride, latents.shape[1] - 1)
+        points.append(latents[i, last_l_idx])
+        labels.append(sub_per_env[env_i])
+    X = np.stack(points, axis=0)
+    print(f"[plot] t-SNE input: {X.shape}")
+
+    import sklearn
+    tsne_kwargs = dict(
+        n_components=2,
+        perplexity=min(30, max(5, X.shape[0] // 5)),
+        random_state=0,
+        init="pca",
+    )
+    # n_iter was renamed to max_iter in sklearn >= 1.4
+    sk_version = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
+    if sk_version >= (1, 4):
+        tsne_kwargs["max_iter"] = 1000
+    else:
+        tsne_kwargs["n_iter"] = 1000
+    Y = TSNE(**tsne_kwargs).fit_transform(X)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    cmap = plt.get_cmap("tab20")
+    for i, name in enumerate(sub_names):
+        mask = np.array([l == name for l in labels])
+        if not mask.any():
+            continue
+        ax.scatter(Y[mask, 0], Y[mask, 1], color=cmap(i / max(1, len(sub_names) - 1)),
+                   label=name, alpha=0.7, s=20)
+    ax.set_title("GRU latent t-SNE (last alive frame per env, colored by sub-terrain)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7)
+    ax.set_xlabel("tSNE-1"); ax.set_ylabel("tSNE-2")
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "08_gru_latent_tsne.png")
+    plt.savefig(out, dpi=140); plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -428,6 +488,7 @@ def main():
     plot_leg_wheel_coactivation(raw, summary, plots_dir)
     plot_gate_entropy_per_terrain(raw, summary, plots_dir)
     plot_expert_switching_freq(raw, summary, plots_dir)
+    plot_gru_latent_tsne(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
