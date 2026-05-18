@@ -915,6 +915,113 @@ def plot_gating_tsne(raw, summary, plots_dir):
 
 
 # ===========================================================================
+# PLOT 08b – Gating t-SNE variants (2-panel: terrain-level color + snapshot)
+# ===========================================================================
+
+def plot_gating_tsne_variants(raw, summary, plots_dir):
+    try:
+        from sklearn.manifold import TSNE
+    except ImportError:
+        print("[plot] sklearn not installed — skipping plot 08b (gating t-SNE variants)")
+        return
+
+    try:
+        gate_leg = raw["gate_leg"].astype(np.float32)    # (N, T, nL)
+        gate_wheel = raw["gate_wheel"].astype(np.float32)  # (N, T, nW)
+        term_step = raw["term_step"]
+        types = raw["terrain_types"]
+        terrain_levels = raw["terrain_levels"]           # (N,) int
+        sub_names = summary["sub_terrain_names"]
+        num_rows = summary["num_rows"]
+        T = gate_leg.shape[1]
+
+        import sklearn
+        sk_version = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
+
+        def _make_tsne_kwargs(n_samples):
+            kw = dict(
+                n_components=2,
+                perplexity=min(30, max(5, n_samples // 10)),
+                random_state=0,
+                init="pca",
+            )
+            if sk_version >= (1, 4):
+                kw["max_iter"] = 1000
+            else:
+                kw["n_iter"] = 1000
+            return kw
+
+        # ── Panel 1: mean gate vector over alive steps, colored by terrain level ──
+        leg_means = compute_per_env_alive_means(gate_leg, term_step, T)    # (N, nL)
+        wheel_means = compute_per_env_alive_means(gate_wheel, term_step, T)  # (N, nW)
+        X_mean = np.concatenate([leg_means, wheel_means], axis=1)  # (N, nL+nW)
+        print(f"[plot] 08b panel1 t-SNE input: {X_mean.shape}")
+        Y_mean = TSNE(**_make_tsne_kwargs(X_mean.shape[0])).fit_transform(X_mean)
+
+        # ── Panel 2: snapshot at t_snap, only alive envs ──
+        t_snap = min(100, T - 1)
+        am = alive_mask(term_step, T)            # (N, T) bool
+        alive_at_snap = am[:, t_snap]            # (N,) bool
+        leg_snap = gate_leg[alive_at_snap, t_snap, :]    # (M, nL)
+        wheel_snap = gate_wheel[alive_at_snap, t_snap, :]  # (M, nW)
+        X_snap = np.concatenate([leg_snap, wheel_snap], axis=1)  # (M, nL+nW)
+        types_snap = types[alive_at_snap]
+        sub_per_snap = env_subterrain_name(types_snap, summary)
+        n_sub = len(sub_names)
+        print(f"[plot] 08b panel2 t-SNE input: {X_snap.shape}  (alive at t={t_snap})")
+        Y_snap = TSNE(**_make_tsne_kwargs(X_snap.shape[0])).fit_transform(X_snap)
+
+        # ── Figure ──
+        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(15, 7))
+
+        # Panel 1 — colored by terrain level (viridis, sequential)
+        sc = ax_left.scatter(
+            Y_mean[:, 0], Y_mean[:, 1],
+            c=terrain_levels,
+            cmap="viridis",
+            vmin=0, vmax=max(num_rows - 1, 1),
+            alpha=0.6, s=18,
+        )
+        cbar = fig.colorbar(sc, ax=ax_left, label="terrain level", pad=0.03)
+        cbar.set_ticks([0, max(num_rows - 1, 1)])
+        cbar.set_ticklabels(["0", str(num_rows - 1)])
+        ax_left.set_title("Colored by terrain level (mean gate)", fontsize=11)
+        ax_left.set_xlabel("tSNE-1"); ax_left.set_ylabel("tSNE-2")
+        ax_left.set_aspect("equal")
+        _despine(ax_left)
+
+        # Panel 2 — snapshot at t_snap, colored by sub-terrain (categorical)
+        for i, name in enumerate(sub_names):
+            mask = sub_per_snap == name
+            if not mask.any():
+                continue
+            ax_right.scatter(
+                Y_snap[mask, 0], Y_snap[mask, 1],
+                color=SUBTERRAIN_CMAP(i / max(1, n_sub - 1)),
+                label=name, alpha=0.6, s=18,
+            )
+        ax_right.set_title(
+            f"Snapshot at t={t_snap} steps ({t_snap * 0.02:.1f}s) — colored by sub-terrain",
+            fontsize=11,
+        )
+        ax_right.set_xlabel("tSNE-1"); ax_right.set_ylabel("tSNE-2")
+        ax_right.set_aspect("equal")
+        ax_right.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7,
+                        frameon=False, borderaxespad=0)
+        _despine(ax_right)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        add_title_strip(fig, summary)
+        out = os.path.join(plots_dir, "08b_gating_tsne_variants.png")
+        _save(fig, out)
+
+    except Exception as exc:
+        print(f"[plot] WARN: plot_gating_tsne_variants failed — {type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exc()
+
+
+# ===========================================================================
 # PLOT 09 – Progress & survival (2-panel: median +x displacement + IQR, survival)
 # ===========================================================================
 
@@ -1012,6 +1119,7 @@ def main():
         ("06_gate_entropy",             plot_gate_entropy),
         ("07_expert_switching_dominance", plot_expert_switching_dominance),
         ("08_gating_tsne",              plot_gating_tsne),
+        ("08b_gating_tsne_variants",    plot_gating_tsne_variants),
         ("09_progress_survival",        plot_progress_survival),
     ]
 
