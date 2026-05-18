@@ -165,6 +165,45 @@ def plot_expert_activation_bars(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_velocity_tracking_box(raw, summary, plots_dir):
+    """3-subplot boxplot of |cmd - actual| for vx, vy, wz, grouped by sub-terrain."""
+    cmd = raw["cmd"].astype(np.float32)            # (N, T, 3)
+    actual = raw["actual_vel"].astype(np.float32)  # (N, T, 3)
+    term_step = raw["term_step"]
+    types = raw["terrain_types"]
+    sub_names = summary["sub_terrain_names"]
+
+    T = cmd.shape[1]
+    am = alive_mask(term_step, T)
+    err = np.abs(cmd - actual)  # (N, T, 3)
+
+    sub_per_env = env_subterrain_name(types, summary)
+
+    # collect per-sub-terrain error samples (flatten over env+time where alive)
+    fig, axes = plt.subplots(3, 1, figsize=(max(8, 0.7 * len(sub_names)), 9), sharex=True)
+    labels = ["vx_err [m/s]", "vy_err [m/s]", "wz_err [rad/s]"]
+    for ax_i, ax in enumerate(axes):
+        data = []
+        for name in sub_names:
+            mask = sub_per_env == name
+            if not mask.any():
+                data.append(np.array([]))
+                continue
+            vals = err[mask, :, ax_i][am[mask]]
+            data.append(vals)
+        ax.boxplot(data, showfliers=False, widths=0.6)
+        ax.set_ylabel(labels[ax_i])
+        ax.grid(axis="y", alpha=0.3)
+    axes[-1].set_xticks(range(1, len(sub_names) + 1))
+    axes[-1].set_xticklabels(sub_names, rotation=45, ha="right", fontsize=8)
+    axes[0].set_title(f"Velocity tracking error per sub-terrain (cmd_vx={summary['cmd_vx']:.2f} m/s)")
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "03_velocity_tracking_box.png")
+    plt.savefig(out, dpi=140)
+    plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -181,6 +220,7 @@ def main():
     # 9 plots implemented in Tasks 12-20
     plot_success_heatmap(raw, summary, plots_dir)
     plot_expert_activation_bars(raw, summary, plots_dir)
+    plot_velocity_tracking_box(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
