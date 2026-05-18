@@ -280,6 +280,40 @@ def plot_termination_reward_breakdown(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_leg_wheel_coactivation(raw, summary, plots_dir):
+    """Joint probability matrix: P(leg_expert=i, wheel_expert=j), averaged over (env, time, alive)."""
+    gate_leg = raw["gate_leg"].astype(np.float32)    # (N, T, nL)
+    gate_wheel = raw["gate_wheel"].astype(np.float32)
+    term_step = raw["term_step"]
+
+    T = gate_leg.shape[1]
+    am = alive_mask(term_step, T)
+    am3 = am[:, :, None, None]
+
+    # outer product per (env, t)
+    co = gate_leg[:, :, :, None] * gate_wheel[:, :, None, :]  # (N, T, nL, nW)
+    co_sum = (co * am3).sum(axis=(0, 1))
+    norm = max(am.sum(), 1)
+    co_avg = co_sum / norm
+
+    nL, nW = co_avg.shape
+    fig, ax = plt.subplots(figsize=(max(5, 0.8 * nW + 2), max(5, 0.6 * nL + 2)))
+    im = ax.imshow(co_avg, cmap="magma", aspect="auto")
+    ax.set_xticks(range(nW)); ax.set_xticklabels([f"W{j}" for j in range(nW)])
+    ax.set_yticks(range(nL)); ax.set_yticklabels([f"L{i}" for i in range(nL)])
+    ax.set_xlabel("wheel expert"); ax.set_ylabel("leg expert")
+    ax.set_title("Leg × Wheel expert co-activation (joint avg weight)")
+    for i in range(nL):
+        for j in range(nW):
+            ax.text(j, i, f"{co_avg[i, j]:.2f}", ha="center", va="center",
+                    fontsize=8, color="white" if co_avg[i, j] < co_avg.max() / 2 else "black")
+    plt.colorbar(im, ax=ax)
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "05_leg_wheel_coactivation.png")
+    plt.savefig(out, dpi=140); plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -298,6 +332,7 @@ def main():
     plot_expert_activation_bars(raw, summary, plots_dir)
     plot_velocity_tracking_box(raw, summary, plots_dir)
     plot_termination_reward_breakdown(raw, summary, plots_dir)
+    plot_leg_wheel_coactivation(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
