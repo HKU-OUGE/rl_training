@@ -467,6 +467,35 @@ def plot_gru_latent_tsne(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_survival_curve(raw, summary, plots_dir):
+    """% of envs alive vs step, one curve per sub-terrain."""
+    term_step = raw["term_step"]
+    types = raw["terrain_types"]
+    sub_names = summary["sub_terrain_names"]
+    T = summary["num_steps"]
+    sub_per_env = env_subterrain_name(types, summary)
+    am = alive_mask(term_step, T)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    cmap = plt.get_cmap("tab20")
+    dt = 0.02
+    t_axis = np.arange(T) * dt
+    for i, name in enumerate(sub_names):
+        mask = sub_per_env == name
+        if not mask.any():
+            continue
+        surv = am[mask].mean(axis=0)
+        ax.plot(t_axis, surv, label=name, color=cmap(i / max(1, len(sub_names) - 1)), lw=1.5)
+    ax.set_xlabel("time [s]"); ax.set_ylabel("fraction alive (first episode)")
+    ax.set_title("Survival curve per sub-terrain")
+    ax.set_ylim(0, 1.02); ax.grid(alpha=0.3)
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7)
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "09_survival_curve.png")
+    plt.savefig(out, dpi=140); plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -489,6 +518,7 @@ def main():
     plot_gate_entropy_per_terrain(raw, summary, plots_dir)
     plot_expert_switching_freq(raw, summary, plots_dir)
     plot_gru_latent_tsne(raw, summary, plots_dir)
+    plot_survival_curve(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
