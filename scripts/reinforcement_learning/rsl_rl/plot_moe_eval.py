@@ -36,7 +36,7 @@ mpl.rcParams.update({
     "figure.dpi": 160,
     "savefig.dpi": 160,
     "savefig.bbox": "tight",
-    "savefig.pad_inches": 0.15,
+    "savefig.pad_inches": 0.2,
     "font.size": 9,
     "axes.titlesize": 11,
     "axes.labelsize": 9,
@@ -118,7 +118,7 @@ def add_title_strip(fig, summary):
     fig.suptitle(
         f"Rough-MoE-Teacher-Deeprobotics-M20-v0   ·   iter {iter_num}   ·   "
         f"N={N}   ·   cmd_vx={cmd_vx} m/s",
-        fontsize=9, color="#555555", y=0.995, x=0.5,
+        fontsize=9, color="#555555", y=1.02, x=0.5,
     )
 
 
@@ -230,13 +230,14 @@ def plot_dashboard(raw, summary, plots_dir):
         cause_fracs[non_zero],
         labels=[cause_labels[i] for i in range(len(cause_labels)) if non_zero[i]],
         colors=[cause_colors[i] for i in range(len(cause_colors)) if non_zero[i]],
-        autopct=lambda p: f"{p:.1f}%" if p > 2 else "",
+        autopct=lambda p: f"{p:.0f}%" if p > 3 else "",
         wedgeprops={"width": 0.45, "edgecolor": "white", "linewidth": 1.5},
         startangle=90,
         textprops={"fontsize": 8},
     )
     for at in autotexts:
-        at.set_fontsize(7)
+        at.set_fontsize(10)
+        at.set_color("white")
     ax_dn.set_title("Termination Causes", fontsize=11)
 
     # ── Bottom-left: cmd vs actual vx hexbin ───────────────────────────────
@@ -274,6 +275,8 @@ def plot_dashboard(raw, summary, plots_dir):
     tbl.scale(1.2, 1.8)
     ax_tb.set_title("Gate Entropy Summary", fontsize=11)
 
+    fig.subplots_adjust(top=0.92, bottom=0.08, left=0.08, right=0.95,
+                        hspace=0.45, wspace=0.35)
     add_title_strip(fig, summary)
     out = os.path.join(plots_dir, "00_dashboard.png")
     _save(fig, out)
@@ -308,14 +311,20 @@ def plot_success_heatmap(raw, summary, plots_dir):
     row_mean = np.nanmean(M, axis=1)
     col_mean = np.nanmean(M, axis=0)
 
-    fig_w = max(10, 0.7 * n_sub + 3)
+    all_zero = np.nanmax(M) == 0
+
+    fig_w = max(10, 0.9 * n_sub + 3)
     fig_h = max(7, 0.22 * num_rows + 1.5)
     fig = plt.figure(figsize=(fig_w, fig_h))
 
-    # Leave space on right for row marginal strip and bottom for col strip
-    ax = fig.add_axes([0.08, 0.18, 0.76, 0.72])
-    ax_row = fig.add_axes([0.86, 0.18, 0.06, 0.72])  # right marginal
-    ax_col = fig.add_axes([0.08, 0.06, 0.76, 0.10])  # bottom marginal
+    if all_zero:
+        # No successes — single heatmap, no marginal strips
+        ax = fig.add_axes([0.08, 0.22, 0.84, 0.68])
+    else:
+        # Leave space on right for row marginal strip and bottom for col strip
+        ax = fig.add_axes([0.08, 0.22, 0.76, 0.68])
+        ax_row = fig.add_axes([0.86, 0.22, 0.06, 0.68])  # right marginal
+        ax_col = fig.add_axes([0.08, 0.08, 0.76, 0.10])  # bottom marginal
 
     im = ax.imshow(M, cmap=SEQUENTIAL_CMAP, vmin=0, vmax=1,
                    aspect="auto", origin="lower", interpolation="nearest")
@@ -340,26 +349,29 @@ def plot_success_heatmap(raw, summary, plots_dir):
     ax.set_yticklabels([f"L{r}" for r in range(0, num_rows, 5)], fontsize=6)
     ax.set_xlabel("sub-terrain")
     ax.set_ylabel("difficulty level")
-    ax.set_title(
+    title_str = (
         f"Success Rate  (goal = +{summary['success_dist']:.1f} m  "
-        f"within {summary['num_steps']*0.02:.0f} s)",
-        fontsize=11,
+        f"within {summary['num_steps']*0.02:.0f} s)"
     )
-    plt.colorbar(im, ax=ax, label="success rate", shrink=0.8)
+    if all_zero:
+        title_str += "  [no successes recorded]"
+    ax.set_title(title_str, fontsize=11)
+    plt.colorbar(im, ax=ax, label="success rate", fraction=0.046, pad=0.04)
 
-    # Row marginal
-    ax_row.barh(range(num_rows), row_mean, color="#1f77b4", height=0.8, alpha=0.8)
-    ax_row.set_xlim(0, 1); ax_row.set_ylim(-0.5, num_rows - 0.5)
-    ax_row.set_yticks([]); ax_row.set_xlabel("mean", fontsize=7)
-    ax_row.tick_params(labelsize=6)
-    _despine(ax_row)
+    if not all_zero:
+        # Row marginal
+        ax_row.barh(range(num_rows), row_mean, color="#1f77b4", height=0.8, alpha=0.8)
+        ax_row.set_xlim(0, 1); ax_row.set_ylim(-0.5, num_rows - 0.5)
+        ax_row.set_yticks([]); ax_row.set_xlabel("mean", fontsize=7)
+        ax_row.tick_params(labelsize=6)
+        _despine(ax_row)
 
-    # Col marginal
-    ax_col.bar(range(n_sub), col_mean, color="#1f77b4", alpha=0.8)
-    ax_col.set_xlim(-0.5, n_sub - 0.5)
-    ax_col.set_ylim(0, 1); ax_col.set_xticks([]); ax_col.set_ylabel("mean", fontsize=7)
-    ax_col.tick_params(labelsize=6)
-    _despine(ax_col)
+        # Col marginal
+        ax_col.bar(range(n_sub), col_mean, color="#1f77b4", alpha=0.8)
+        ax_col.set_xlim(-0.5, n_sub - 0.5)
+        ax_col.set_ylim(0, 1); ax_col.set_xticks([]); ax_col.set_ylabel("mean", fontsize=7)
+        ax_col.tick_params(labelsize=6)
+        _despine(ax_col)
 
     add_title_strip(fig, summary)
     out = os.path.join(plots_dir, "01_success_heatmap.png")
@@ -545,7 +557,7 @@ def plot_routing_heatmap(raw, summary, plots_dir):
             wheel_mat[i] = wheel_means[mask].mean(axis=0)
 
     fig, (ax_l, ax_w) = plt.subplots(1, 2,
-                                      figsize=(max(10, 0.9 * (nL + nW) + 3), max(5, 0.55 * n_sub + 2)),
+                                      figsize=(max(14, 0.9 * (nL + nW) + 3), max(7, 0.55 * n_sub + 2)),
                                       gridspec_kw={"width_ratios": [nL, nW]})
 
     def draw_heatmap(ax, mat, col_labels, title, cmap):
@@ -575,8 +587,8 @@ def plot_routing_heatmap(raw, summary, plots_dir):
                         [f"W{k}" for k in range(nW)],
                         "Wheel Routing Weights", HEATMAP_CMAP)
 
-    plt.colorbar(im_l, ax=ax_l, label="mean gate weight", shrink=0.7)
-    plt.colorbar(im_w, ax=ax_w, label="mean gate weight", shrink=0.7)
+    plt.colorbar(im_l, ax=ax_l, label="mean gate weight", fraction=0.046, pad=0.04)
+    plt.colorbar(im_w, ax=ax_w, label="mean gate weight", fraction=0.046, pad=0.04)
 
     plt.tight_layout()
     add_title_strip(fig, summary)
@@ -881,16 +893,18 @@ def plot_gating_tsne(raw, summary, plots_dir):
 
     Y = TSNE(**tsne_kwargs).fit_transform(X)
 
-    fig, ax = plt.subplots(figsize=(9, 7))
+    fig, ax = plt.subplots(figsize=(11, 7))
     for i, name in enumerate(sub_names):
         mask = sub_per_env == name
         if not mask.any():
             continue
         ax.scatter(Y[mask, 0], Y[mask, 1],
                    color=SUBTERRAIN_CMAP(i / max(1, n_sub - 1)),
-                   label=name, alpha=0.7, s=25)
+                   label=name, alpha=0.6, s=20)
     ax.set_title("Gating Output t-SNE (mean gate vector per env)", fontsize=11)
-    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7)
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7,
+              frameon=False, borderaxespad=0)
+    ax.set_aspect("equal")
     ax.set_xlabel("tSNE-1"); ax.set_ylabel("tSNE-2")
     _despine(ax)
 
@@ -923,7 +937,8 @@ def plot_progress_survival(raw, summary, plots_dir):
     dt = 0.02
     t_axis = np.arange(T) * dt
 
-    fig, (ax_prog, ax_surv) = plt.subplots(2, 1, figsize=(11, 9), sharex=True)
+    fig, (ax_prog, ax_surv) = plt.subplots(2, 1, figsize=(11, 9), sharex=True,
+                                            gridspec_kw={"height_ratios": [2, 1]})
 
     for i, name in enumerate(sub_names):
         mask = sub_per_env == name
