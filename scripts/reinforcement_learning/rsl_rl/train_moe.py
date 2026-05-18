@@ -330,6 +330,22 @@ def main():
                 apply_stair_slope_rewards(env_cfg)
                 print(f"[rank={local_rank}] reward → FLAT_SLOPE (T1: 仅 lin_vel_z 放宽 + undesired_contacts -0.5)")
 
+        # =====================================================================
+        # Per-rank termination override
+        #   硬地形 rank (STAIR/PLATFORM/SCAN/STONES/RAIL) 关掉 illegal_contact,
+        #   让 base_link 撞击不致死, 鼓励"撞了再爬"探索更激进的通过策略.
+        #   FLAT/SLOPE/NOISE/MIXED 仍保留 base-die, 维持基础步态学习信号.
+        #   bad_orientation_2 全局保持 None (env_cfg 默认), 不在此恢复.
+        # 启用: PER_RANK_NO_ILLEGAL_CONTACT=1 (与 PER_RANK_TERRAIN=1 一起用)
+        # =====================================================================
+        if os.environ.get("PER_RANK_NO_ILLEGAL_CONTACT", "0") == "1":
+            HARD_RANKS = {1, 2, 3, 4, 5}  # STAIR, PLATFORM, SCAN, STONES, RAIL
+            if local_rank in HARD_RANKS:
+                env_cfg.terminations.illegal_contact = None
+                print(f"[rank={local_rank}] termination → illegal_contact DISABLED (hard terrain)")
+            else:
+                print(f"[rank={local_rank}] termination → illegal_contact KEPT (base-die on flat/slope/noise/mixed)")
+
 
     render_mode = "rgb_array" if args.video else None
     env = gym.make(args.task, cfg=env_cfg, render_mode=render_mode)
