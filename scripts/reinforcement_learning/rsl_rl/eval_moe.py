@@ -362,7 +362,7 @@ def handle_dones(t, dones, info, bufs):
     for col_i, name in enumerate(rew_names):
         key = f"Episode_Reward/{name}"
         val = log.get(key)
-        if isinstance(val, torch.Tensor) and val.shape[0] == bufs["term_cause"].shape[0]:
+        if isinstance(val, torch.Tensor) and val.ndim > 0 and val.shape[0] == bufs["term_cause"].shape[0]:
             bufs["reward_terms"][fresh_idx, col_i] = val[fresh_idx].to(torch.float32)
 
     bufs["first_done"][fresh] = True
@@ -425,6 +425,65 @@ def main():
     print(f"[eval] buffers allocated. N={N} T={T} latent_sample shape={tuple(bufs['gru_latent_sample'].shape)}")
     print(f"[eval] terrain_types unique = {torch.unique(bufs['terrain_types']).cpu().tolist()}")
 
+    # =========================================================================
+    # Collection loop
+    # =========================================================================
+    policy = runner.get_inference_policy(device=DEVICE)
+    robot = base_env.scene["robot"]
+    cmd_mgr = base_env.command_manager
+    t_stride = bufs["t_stride"]
+    latent_env_idx = bufs["latent_env_idx"]
+
+    print(f"[eval] starting rollout: N={N} T={T} ...")
+    with torch.inference_mode():
+        for t in range(T):
+            # Step policy
+            actions = policy(obs)
+
+            # Hook outputs reflect the most-recent forward pass (already populated)
+            leg_logits = sink["leg_logits"]    # (N, nL)
+            wheel_logits = sink["wheel_logits"]  # (N, nW)
+            rnn_out = sink["rnn_out"]            # (N, L)
+            gate_leg = torch.softmax(leg_logits, dim=-1)
+            gate_wheel = torch.softmax(wheel_logits, dim=-1)
+
+            # Record per-step (only for envs not yet first_done)
+            active = ~bufs["first_done"]
+            bufs["root_pos_xy"][active, t] = robot.data.root_pos_w[active, :2]
+            bufs["cmd"][active, t] = cmd_mgr.get_command("base_velocity")[active]
+            actual = torch.cat([robot.data.root_lin_vel_b[:, :2],
+                                robot.data.root_ang_vel_b[:, 2:3]], dim=-1)
+            bufs["actual_vel"][active, t] = actual[active]
+            bufs["gate_leg"][active, t] = gate_leg[active].to(torch.float16)
+            bufs["gate_wheel"][active, t] = gate_wheel[active].to(torch.float16)
+
+            # Latent subsample
+            if t % t_stride == 0:
+                t_l = t // t_stride
+                bufs["gru_latent_sample"][:, t_l] = rnn_out[latent_env_idx].to(torch.float16)
+
+            # Step env
+            obs, _, dones, info = env_wrapped.step(actions)
+
+            # Event handling
+            handle_dones(t, dones, info, bufs)
+
+            if (t + 1) % 50 == 0:
+                done_frac = bufs["first_done"].float().mean().item()
+                print(f"[eval] step {t + 1}/{T}  first_done = {100*done_frac:.1f}%")
+
+            if bufs["first_done"].all():
+                print(f"[eval] all envs done at step {t + 1} — early exit")
+                break
+
+    # Safety: envs that never died → mark as time_out
+    never_done = ~bufs["first_done"]
+    if never_done.any():
+        bufs["term_cause"][never_done] = 0  # time_out
+        bufs["term_step"][never_done] = T - 1
+        print(f"[eval] {never_done.sum().item()} envs never terminated — marked time_out")
+
+    print(f"[eval] rollout complete.")
     env_wrapped.close()
 
 
