@@ -265,6 +265,41 @@ def install_hooks(model):
     return sink
 
 
+def allocate_buffers(N, T, model, args):
+    """Return dict of GPU buffers (zeros)."""
+    nL = model.num_leg_experts
+    nW = model.num_wheel_experts
+    L = model.latent_dim
+
+    # latent subsample: pick min(args.latent_sample_envs, N) envs evenly; every args.latent_sample_stride steps
+    n_latent = min(args.latent_sample_envs, N)
+    latent_env_idx = torch.linspace(0, N - 1, n_latent, device=DEVICE).long()
+    t_stride = max(1, args.latent_sample_stride)
+    T_latent = (T + t_stride - 1) // t_stride
+
+    return {
+        # constants per env (filled after reset)
+        "terrain_types": torch.zeros(N, dtype=torch.int32, device=DEVICE),
+        "terrain_levels": torch.zeros(N, dtype=torch.int32, device=DEVICE),
+        # episode tracking
+        "term_cause": torch.full((N,), -1, dtype=torch.int8, device=DEVICE),
+        "term_step": torch.full((N,), -1, dtype=torch.int32, device=DEVICE),
+        "first_done": torch.zeros(N, dtype=torch.bool, device=DEVICE),
+        # per-step traces
+        "root_pos_xy": torch.zeros(N, T, 2, dtype=torch.float32, device=DEVICE),
+        "cmd": torch.zeros(N, T, 3, dtype=torch.float32, device=DEVICE),
+        "actual_vel": torch.zeros(N, T, 3, dtype=torch.float32, device=DEVICE),
+        "gate_leg": torch.zeros(N, T, nL, dtype=torch.float16, device=DEVICE),
+        "gate_wheel": torch.zeros(N, T, nW, dtype=torch.float16, device=DEVICE),
+        # latent subsample buffer
+        "gru_latent_sample": torch.zeros(n_latent, T_latent, L, dtype=torch.float16, device=DEVICE),
+        "latent_env_idx": latent_env_idx,
+        "t_stride": t_stride,
+        # reward_terms: filled after key discovery (Task 7)
+        "reward_terms": None,
+    }
+
+
 def main():
     if args.strict_per_terrain:
         raise NotImplementedError("--strict_per_terrain is reserved for v2 (loops 13 sub-terrains with sim restart).")
@@ -304,13 +339,22 @@ def main():
 
     sink = install_hooks(model)
     obs, _ = env_wrapped.reset()
-    policy = runner.get_inference_policy(device=DEVICE)
-    with torch.inference_mode():
-        _ = policy(obs)
-    print(f"[eval] hook test: "
-          f"leg_logits={tuple(sink['leg_logits'].shape)} "
-          f"wheel_logits={tuple(sink['wheel_logits'].shape)} "
-          f"rnn_out={tuple(sink['rnn_out'].shape)}")
+
+    N = env_wrapped.num_envs
+    T = args.num_steps
+    bufs = allocate_buffers(N, T, model, args)
+
+    # Capture terrain constants
+    base_env = env_wrapped.unwrapped
+    while hasattr(base_env, "env"):
+        base_env = base_env.env
+    if hasattr(base_env, "unwrapped"):
+        base_env = base_env.unwrapped
+    bufs["terrain_types"].copy_(base_env.scene.terrain.terrain_types.to(torch.int32))
+    bufs["terrain_levels"].copy_(base_env.scene.terrain.terrain_levels.to(torch.int32))
+
+    print(f"[eval] buffers allocated. N={N} T={T} latent_sample shape={tuple(bufs['gru_latent_sample'].shape)}")
+    print(f"[eval] terrain_types unique = {torch.unique(bufs['terrain_types']).cpu().tolist()}")
 
     env_wrapped.close()
 
