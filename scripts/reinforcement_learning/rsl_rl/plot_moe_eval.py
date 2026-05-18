@@ -109,6 +109,62 @@ def plot_success_heatmap(raw, summary, plots_dir):
     print(f"[plot] {out}")
 
 
+def plot_expert_activation_bars(raw, summary, plots_dir):
+    """Per sub-terrain stacked bar of avg leg/wheel expert weights."""
+    gate_leg = raw["gate_leg"].astype(np.float32)    # (N, T, nL)
+    gate_wheel = raw["gate_wheel"].astype(np.float32)  # (N, T, nW)
+    term_step = raw["term_step"]
+    types = raw["terrain_types"]
+    sub_names = summary["sub_terrain_names"]
+
+    T = gate_leg.shape[1]
+    am = alive_mask(term_step, T)  # (N, T)
+
+    # mean over (env, time) where alive
+    def avg_by_subterrain(gate):
+        # gate: (N, T, K)
+        am3 = am[:, :, None]
+        per_env_avg = (gate * am3).sum(axis=1) / np.maximum(am.sum(axis=1, keepdims=True), 1)  # (N, K)
+        sub_per_env = env_subterrain_name(types, summary)
+        nK = gate.shape[-1]
+        out = np.zeros((len(sub_names), nK))
+        for i, name in enumerate(sub_names):
+            mask = sub_per_env == name
+            if mask.any():
+                out[i] = per_env_avg[mask].mean(axis=0)
+        return out
+
+    leg_share = avg_by_subterrain(gate_leg)      # (13, nL)
+    wheel_share = avg_by_subterrain(gate_wheel)  # (13, nW)
+
+    fig, (ax_l, ax_w) = plt.subplots(2, 1, figsize=(max(8, 0.7 * len(sub_names)), 7), sharex=True)
+
+    def stacked(ax, data, prefix, cmap_name):
+        cmap = plt.get_cmap(cmap_name)
+        nK = data.shape[1]
+        bottom = np.zeros(data.shape[0])
+        for k in range(nK):
+            ax.bar(range(data.shape[0]), data[:, k], bottom=bottom,
+                   color=cmap(k / max(1, nK - 1)), label=f"{prefix}{k}", edgecolor="white", linewidth=0.5)
+            bottom += data[:, k]
+        ax.set_ylim(0, 1)
+        ax.set_ylabel("avg gate weight")
+        ax.legend(loc="upper right", fontsize=7, ncol=nK)
+
+    stacked(ax_l, leg_share, "L", "tab10")
+    ax_l.set_title("Leg expert activation per sub-terrain")
+    stacked(ax_w, wheel_share, "W", "Set2")
+    ax_w.set_title("Wheel expert activation per sub-terrain")
+    ax_w.set_xticks(range(len(sub_names)))
+    ax_w.set_xticklabels(sub_names, rotation=45, ha="right", fontsize=8)
+
+    plt.tight_layout()
+    out = os.path.join(plots_dir, "02_expert_activation_bars.png")
+    plt.savefig(out, dpi=140)
+    plt.close()
+    print(f"[plot] {out}")
+
+
 def main():
     args = parse_args()
     raw, summary = load_data(args.data_dir)
@@ -124,6 +180,7 @@ def main():
 
     # 9 plots implemented in Tasks 12-20
     plot_success_heatmap(raw, summary, plots_dir)
+    plot_expert_activation_bars(raw, summary, plots_dir)
 
 
 if __name__ == "__main__":
