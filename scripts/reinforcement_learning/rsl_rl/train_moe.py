@@ -215,14 +215,14 @@ class CustomRecordVideo(RecordVideo):
 # === 导入自定义模块 ===
 try:
     sys.path.append(os.getcwd())
-    from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO
+    from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, MlpHeadActorCritic
     print("[Info] Imported H-MoE classes from current directory.")
 except ImportError:
     try:
-        from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO
+        from rl_training.tasks.manager_based.locomotion.velocity.config.wheeled.deeprobotics_m20.agents.moe_terrain import SplitMoEActorCritic, SplitMoEPPO, MlpHeadActorCritic
         print("[Info] Imported H-MoE classes from project path.")
     except ImportError:
-        raise ImportError("Could not import SplitMoEActorCritic/PPO from moe_terrain.py")
+        raise ImportError("Could not import SplitMoEActorCritic/PPO/MlpHeadActorCritic from moe_terrain.py")
 
 # === 注入到 RSL-RL ===
 import rsl_rl.modules as rsl_modules
@@ -230,8 +230,10 @@ import rsl_rl.runners.on_policy_runner as runner_module
 
 rsl_modules.SplitMoEActorCritic = SplitMoEActorCritic
 runner_module.SplitMoEActorCritic = SplitMoEActorCritic
-rsl_modules.SharedBackboneMoEActorCritic = SplitMoEActorCritic 
+rsl_modules.SharedBackboneMoEActorCritic = SplitMoEActorCritic
 runner_module.SplitMoEPPO = SplitMoEPPO
+rsl_modules.MlpHeadActorCritic = MlpHeadActorCritic
+runner_module.MlpHeadActorCritic = MlpHeadActorCritic
 
 def main():
     device = f"cuda:{local_rank}"
@@ -364,9 +366,12 @@ def main():
             else: 
                 train_cfg_dict = train_cfg
 
+    # Honor the cfg's policy class_name (set by task registry). E.g.
+    # SplitMoEPPOCfg → "SplitMoEActorCritic", MlpBaselinePPOCfg → "MlpHeadActorCritic".
+    policy_class = train_cfg_dict["policy"].get("class_name", "SplitMoEActorCritic")
+    train_cfg_dict["policy"]["class_name"] = policy_class
     if is_master:
-        print(f"\n[Info] Switching Policy Class to: SplitMoEActorCritic")
-    train_cfg_dict["policy"]["class_name"] = "SplitMoEActorCritic"
+        print(f"\n[Info] Policy Class: {policy_class}")
     train_cfg_dict["device"] = device
 
     train_cfg_dict["logger"] = getattr(args, "logger", "wandb") or "wandb"

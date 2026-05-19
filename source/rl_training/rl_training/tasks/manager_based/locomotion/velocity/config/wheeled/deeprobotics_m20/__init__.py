@@ -98,6 +98,17 @@ gym.register(
 
 
 gym.register(
+    id="Rough-MlpBaseline-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:MlpBaselinePPOCfg",
+    },
+)
+
+
+gym.register(
     id="Flat-MLP2MoE-Student-Deeprobotics-M20-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,

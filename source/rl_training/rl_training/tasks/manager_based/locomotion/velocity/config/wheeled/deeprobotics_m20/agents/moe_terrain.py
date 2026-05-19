@@ -2361,3 +2361,124 @@ class ScanMoEPPOCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+# ==============================================================================
+# MLP Baseline — same obs/encoders/GRU as SplitMoE, but single MLP head
+# replaces (6 leg + 3 wheel experts + 2 gates + gate_input_norm).
+# Param target: ~1.08M (SplitMoE head) → MLP head [1024,512,512] ≈ 1.06M (97.9%).
+# ==============================================================================
+
+class MlpHeadActorCritic(SplitMoEActorCritic):
+    is_recurrent = True
+
+    def __init__(self, obs, obs_groups, num_actions,
+                 mlp_head_hidden_dims=[1024, 512, 512],
+                 mlp_head_output_gain=0.01,
+                 activation='elu',
+                 **kwargs):
+        super().__init__(obs, obs_groups, num_actions, activation=activation, **kwargs)
+
+        del self.leg_gate
+        del self.wheel_gate
+        del self.gate_input_norm
+        del self.actor_leg_experts
+        del self.actor_wheel_experts
+
+        self.actor_mlp = MLP(
+            input_dim=self.latent_dim,
+            output_dim=num_actions,
+            hidden_dims=mlp_head_hidden_dims,
+            activation=activation,
+            output_gain=mlp_head_output_gain,
+        )
+
+        self.aux_loss_coef = 0.0
+        self.latest_weights = {}
+
+        n_head = sum(p.numel() for p in self.actor_mlp.parameters())
+        print(f"[MlpHead] Single MLP head replaces SplitMoE experts+gates. "
+              f"hidden={mlp_head_hidden_dims}, head_params={n_head:,}")
+
+    def _compute_actor_output(self, latent, obs_dict=None, return_aux_loss=False):
+        action = self.actor_mlp(latent)
+        if return_aux_loss:
+            return action, torch.tensor(0.0, device=latent.device)
+        return action
+
+    def _calculate_load_balancing_loss(self, *args, **kwargs):
+        return torch.tensor(0.0)
+
+
+@configclass
+class MlpHeadActorCriticCfg(SplitMoEActorCriticCfg):
+    class_name: str = "MlpHeadActorCritic"
+    mlp_head_hidden_dims: list = field(default_factory=lambda: [1024, 512, 512])
+    mlp_head_output_gain: float = 0.01
+    aux_loss_coef: float = 0.0
+
+
+@configclass
+class MlpBaselinePPOCfg(RslRlOnPolicyRunnerCfg):
+    """MLP-head baseline trained on the same moe_teacher_env for fair vs SplitMoE comparison."""
+    num_steps_per_env = 36
+    max_iterations = 20000
+    save_interval = 200
+    experiment_name = "mlp_baseline_teacher_parallel"
+    empirical_normalization = False
+
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
+
+    policy = MlpHeadActorCriticCfg(
+        init_noise_std=1.0,
+        init_noise_legs=0.2,
+        init_noise_wheels=1.5,
+        actor_hidden_dims=[256, 128, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=3,
+        num_leg_experts=6,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.0,
+
+        blind_vision=False,
+        use_elevation_ae=True,
+        elevation_dim=187,
+        use_cnn=False,
+
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+
+        use_multilayer_scan=True,
+        num_scan_channels=24,
+        num_scan_rays=21,
+
+        actor_obs_normalization=True,
+        critic_obs_normalization=True,
+
+        feed_estimator_to_policy=True,
+        feed_ae_to_policy=True,
+
+        mlp_head_hidden_dims=[1024, 512, 512],
+        mlp_head_output_gain=0.01,
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        class_name="SplitMoEPPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
