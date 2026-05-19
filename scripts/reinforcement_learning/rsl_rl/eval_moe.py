@@ -22,7 +22,13 @@ parser.add_argument("--task", type=str, default="Rough-MoE-Teacher-Deeprobotics-
 parser.add_argument("--num_envs", type=int, default=2000)
 parser.add_argument("--num_steps", type=int, default=500, help="Control steps (= 10s at dt=0.02)")
 parser.add_argument("--success_dist", type=float, default=4.0, help="+x displacement threshold (m) for reached_goal")
-parser.add_argument("--cmd_vx", type=float, default=1.0, help="Fixed +x velocity command (m/s)")
+parser.add_argument("--cmd_vx", type=float, default=1.0, help="Fixed +x velocity command (m/s); ignored if --cmd_vx_bidir")
+parser.add_argument("--cmd_vx_bidir", action="store_true",
+                    help="Sample cmd_vx uniformly from [-cmd_vx_max, -cmd_vx_min_abs] U [cmd_vx_min_abs, cmd_vx_max].")
+parser.add_argument("--cmd_vx_min_abs", type=float, default=0.5,
+                    help="Minimum |cmd_vx| when --cmd_vx_bidir (m/s).")
+parser.add_argument("--cmd_vx_max", type=float, default=1.0,
+                    help="Maximum |cmd_vx| when --cmd_vx_bidir (m/s).")
 parser.add_argument("--load_run", type=str, default=None, help="Run dir name or absolute path; default = latest")
 parser.add_argument("--checkpoint", type=str, default="model_*.pt", help="Checkpoint glob")
 parser.add_argument("--output_dir", type=str, default=None, help="Override output dir")
@@ -88,7 +94,12 @@ def apply_eval_overrides(env_cfg, args):
     cmds.rel_standing_envs = 0.0
     cmds.resampling_time_range = (100.0, 100.0)
     cmds.ranges.heading = (0.0, 0.0)
-    cmds.ranges.lin_vel_x = (float(args.cmd_vx), float(args.cmd_vx))
+    if args.cmd_vx_bidir:
+        # Set broad range so IsaacLab's built-in resample picks any sign;
+        # we will overwrite with our exact distribution after env.reset().
+        cmds.ranges.lin_vel_x = (-float(args.cmd_vx_max), float(args.cmd_vx_max))
+    else:
+        cmds.ranges.lin_vel_x = (float(args.cmd_vx), float(args.cmd_vx))
     cmds.ranges.lin_vel_y = (0.0, 0.0)
     cmds.ranges.ang_vel_z = (0.0, 0.0)
     cmds.debug_vis = False
@@ -167,13 +178,23 @@ def _reached_goal_x(env, threshold: float) -> torch.Tensor:
     return disp_x >= threshold
 
 
-def inject_reached_goal_term(env_cfg, threshold: float):
+def _reached_goal_signed(env, threshold: float) -> torch.Tensor:
+    """Direction-aware reached_goal: success when |disp_x|>=threshold AND in cmd direction."""
+    disp_x = env.scene["robot"].data.root_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    cmd_vx = env.command_manager.get_command("base_velocity")[:, 0]
+    return ((cmd_vx > 0) & (disp_x >= threshold)) | \
+           ((cmd_vx < 0) & (disp_x <= -threshold))
+
+
+def inject_reached_goal_term(env_cfg, threshold: float, signed: bool = False):
     """Add reached_goal as a new termination term in env_cfg."""
+    func = _reached_goal_signed if signed else _reached_goal_x
     env_cfg.terminations.reached_goal = DoneTerm(
-        func=_reached_goal_x,
+        func=func,
         params={"threshold": float(threshold)},
     )
-    print(f"[eval] terminations.reached_goal injected (threshold={threshold}m)")
+    print(f"[eval] terminations.reached_goal injected "
+          f"(threshold={threshold}m, signed={signed})")
 
 
 def resolve_checkpoint(experiment_name: str, load_run, ckpt_glob: str):
@@ -466,7 +487,7 @@ def main():
     env_cfg = parse_env_cfg(args.task, device=DEVICE, num_envs=args.num_envs)
     env_cfg.seed = args.seed
     env_cfg = apply_eval_overrides(env_cfg, args)
-    inject_reached_goal_term(env_cfg, args.success_dist)
+    inject_reached_goal_term(env_cfg, args.success_dist, signed=args.cmd_vx_bidir)
 
     # --- train cfg ---
     train_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
@@ -500,6 +521,28 @@ def main():
     N = env_wrapped.num_envs
     T = args.num_steps
     bufs = allocate_buffers(N, T, model, args)
+
+    # Bidirectional cmd_vx override: sample sign*[cmd_vx_min_abs, cmd_vx_max]
+    # uniformly per env. Episode-stable (resampling_time_range >> episode len).
+    if args.cmd_vx_bidir:
+        base_env_tmp = env_wrapped.unwrapped
+        while hasattr(base_env_tmp, "env"):
+            base_env_tmp = base_env_tmp.env
+        if hasattr(base_env_tmp, "unwrapped"):
+            base_env_tmp = base_env_tmp.unwrapped
+        vel_cmd = base_env_tmp.command_manager.get_command("base_velocity")
+        gen = torch.Generator(device=vel_cmd.device).manual_seed(args.seed)
+        sign = torch.where(torch.rand(N, generator=gen, device=vel_cmd.device) < 0.5,
+                           -1.0, 1.0)
+        mag = (torch.rand(N, generator=gen, device=vel_cmd.device)
+               * (args.cmd_vx_max - args.cmd_vx_min_abs)) + args.cmd_vx_min_abs
+        vel_cmd[:, 0] = sign * mag
+        vel_cmd[:, 1] = 0.0
+        vel_cmd[:, 2] = 0.0
+        n_fwd = int((vel_cmd[:, 0] > 0).sum())
+        n_bwd = int((vel_cmd[:, 0] < 0).sum())
+        print(f"[eval] cmd_vx_bidir override: {n_fwd} forward, {n_bwd} backward "
+              f"(|vx| in [{args.cmd_vx_min_abs}, {args.cmd_vx_max}])")
 
     # Capture terrain constants
     base_env = env_wrapped.unwrapped

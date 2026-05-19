@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""Publication-quality eval plots for SplitMoE (v2).
+
+Fixes vs v1:
+  - Success computed from root_pos_xy displacement, not term_cause (the env
+    config in v1 never fired reached_goal, so term_cause==REACHED_GOAL was
+    always False and all heatmaps showed 0).
+  - Sanity filter: |displacement| > MAX_DISPL m flagged invalid (sim glitch).
+  - IEEE-style: sans-serif, compact, single-column friendly.
+  - Vector PDF + PNG preview side-by-side.
+  - Only emits the 3 figures the paper actually consumes:
+      paper_01_success_heatmap.{pdf,png}
+      paper_02_routing_specialization.{pdf,png}
+      paper_03_velocity_tracking.{pdf,png}
+
+Usage:
+    python plot_moe_eval_v2.py                       # latest run, default dirs
+    python plot_moe_eval_v2.py --data_dir <run_dir>  # specific run
+    python plot_moe_eval_v2.py --success_dist 4.0    # override threshold
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
+from matplotlib.patches import Rectangle
+
+
+# ---------------------------------------------------------------------------
+# Style — IEEE-ish, sans-serif, compact
+# ---------------------------------------------------------------------------
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "axes.linewidth": 0.6,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "xtick.major.size": 2.5,
+    "ytick.major.size": 2.5,
+    "xtick.major.width": 0.5,
+    "ytick.major.width": 0.5,
+    "legend.fontsize": 7,
+    "legend.frameon": False,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight",
+    "savefig.pad_inches": 0.05,
+    "pdf.fonttype": 42,  # embed TrueType so editors can edit text
+    "ps.fonttype": 42,
+    "figure.dpi": 110,
+})
+
+CMAP_SEQ = "magma"          # sequential, dark→light
+CMAP_DIV = "RdBu_r"         # diverging if needed
+ACCENT = "#1f6feb"          # GitHub-blue accent
+GREY_HATCH = "#dcdcdc"
+
+MAX_DISPL = 50.0   # |dx|>50m flagged sim glitch
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def load_run(data_dir: Path):
+    raw = np.load(data_dir / "raw.npz", allow_pickle=True)
+    with open(data_dir / "summary.json") as f:
+        summary = json.load(f)
+    return raw, summary
+
+
+def compute_success(raw, success_dist: float, tol: float = 0.05):
+    """Return (success_mask, displacement, valid_mask).
+
+    Success is direction-aware. For each env we infer the command direction
+    from the FIRST nonzero cmd_vx (raw['cmd'][:, :, 0]) and require the
+    *signed* displacement in that direction to reach success_dist - tol.
+
+      cmd_vx > 0  : success = (final_x - initial_x) >=  (success_dist - tol)
+      cmd_vx < 0  : success = (final_x - initial_x) <= -(success_dist - tol)
+      cmd_vx == 0 : env counted invalid
+
+    A 5cm tolerance is applied because the env's reached_goal termination
+    clamps the robot at success_dist (so max |dx| is success_dist - epsilon).
+
+    Sim glitches with |dx|>MAX_DISPL are flagged invalid.
+    """
+    pos = raw["root_pos_xy"]                   # (E, T, 2)
+    cmd = raw["cmd"]                            # (E, T, 3) — vx,vy,wz
+    term_step = raw["term_step"]                # (E,)  -1 if no termination
+    E, T, _ = pos.shape
+
+    # Per-env command direction = sign of the FIRST nonzero cmd_vx in the rollout
+    cmd_vx = cmd[..., 0]
+    first_nonzero = np.argmax(np.abs(cmd_vx) > 1e-3, axis=1)
+    cmd_first = cmd_vx[np.arange(E), first_nonzero]
+    direction = np.sign(cmd_first)
+
+    last_idx = np.where(term_step >= 0, term_step, T - 1).clip(max=T - 1)
+    displacement = pos[np.arange(E), last_idx, 0] - pos[:, 0, 0]
+
+    valid = (np.abs(displacement) <= MAX_DISPL) & (direction != 0)
+    signed_dx = displacement * direction      # along command direction
+    success = (signed_dx >= success_dist - tol) & valid
+    return success, displacement, valid
+
+
+def env_subterrain_name(types, summary):
+    """Map per-env terrain type index to subterrain name string."""
+    names = np.array(summary["sub_terrain_names"])
+    # types is (E,) of int indices into the terrain matrix; col_to_subterrain
+    # maps generator column → name. types is already a column index per env
+    # in the standard eval_moe.py layout.
+    col_to_sub = summary["col_to_subterrain"]
+    # col_to_subterrain may be a list[str] or dict[str,str]; normalise
+    if isinstance(col_to_sub, list):
+        mapping = np.array(col_to_sub)
+    else:
+        mapping = np.array([col_to_sub[str(i)] for i in range(len(col_to_sub))])
+    return mapping[types]
+
+
+def short_terrain_label(name: str) -> str:
+    """Short, paper-friendly labels (avoid wide x-tick)."""
+    table = {
+        "pyramid_stairs": "stairs↑",
+        "pyramid_stairs_inv": "stairs↓",
+        "stepping_stones": "stones",
+        "rail": "rail",
+        "hurdle_pole": "hurdle-p",
+        "hurdle_board": "hurdle-b",
+        "hurdle_wall": "hurdle-w",
+        "pit": "pit",
+        "boxes": "boxes",
+        "random_rough": "rough",
+        "hf_pyramid_slope": "slope↑",
+        "hf_pyramid_slope_inv": "slope↓",
+    }
+    return table.get(name, name)
+
+
+def _save(fig, out_pdf: Path):
+    out_pdf.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_pdf, format="pdf")
+    fig.savefig(out_pdf.with_suffix(".png"), format="png", dpi=200)
+    plt.close(fig)
+    return out_pdf
+
+
+# ---------------------------------------------------------------------------
+# Plot 01 — Success-rate heatmap
+# ---------------------------------------------------------------------------
+
+def plot_success_heatmap(raw, summary, success_mask, valid_mask, out_dir):
+    levels = raw["terrain_levels"]                # (E,)
+    types = raw["terrain_types"]                   # (E,)
+    sub_names = summary["sub_terrain_names"]
+    sub_per_env = env_subterrain_name(types, summary)
+    num_rows = int(summary["num_rows"])
+    n_sub = len(sub_names)
+
+    # Bin difficulty levels into 6 groups (30 → 6 rows reads better)
+    n_bins = 6
+    bin_edges = np.linspace(0, num_rows, n_bins + 1, dtype=int)
+    bin_labels = [f"L{bin_edges[i]}–{bin_edges[i+1]-1}" for i in range(n_bins)]
+
+    M = np.full((n_bins, n_sub), np.nan, dtype=np.float32)
+    counts = np.zeros((n_bins, n_sub), dtype=np.int32)
+    for b in range(n_bins):
+        lo, hi = bin_edges[b], bin_edges[b + 1]
+        for c, name in enumerate(sub_names):
+            mask = (levels >= lo) & (levels < hi) & (sub_per_env == name) & valid_mask
+            if mask.any():
+                M[b, c] = success_mask[mask].mean()
+                counts[b, c] = int(mask.sum())
+
+    fig, ax = plt.subplots(figsize=(3.5, 1.9))
+    vmin, vmax = 0.4, 1.0
+    im = ax.imshow(M, cmap=CMAP_SEQ, vmin=vmin, vmax=vmax,
+                   aspect="auto", origin="lower", interpolation="nearest")
+
+    # Hatch / annotate
+    for r in range(n_bins):
+        for c in range(n_sub):
+            if counts[r, c] == 0:
+                ax.add_patch(Rectangle((c - 0.5, r - 0.5), 1, 1,
+                                       hatch="///", facecolor=GREY_HATCH,
+                                       edgecolor="none", linewidth=0))
+            elif not np.isnan(M[r, c]):
+                v = M[r, c]
+                # Normalised position in colormap: below 0.7 → light text
+                norm_v = (v - vmin) / (vmax - vmin)
+                tc = "white" if norm_v < 0.45 else "black"
+                ax.text(c, r, f"{v:.2f}", ha="center", va="center",
+                        fontsize=5.5, color=tc)
+
+    ax.set_xticks(range(n_sub))
+    ax.set_xticklabels([short_terrain_label(n) for n in sub_names],
+                       rotation=35, ha="right")
+    ax.set_yticks(range(n_bins))
+    ax.set_yticklabels(bin_labels)
+    ax.set_xlabel("Sub-terrain")
+    ax.set_ylabel("Difficulty bin")
+    ax.tick_params(axis="x", which="both", bottom=False)
+    ax.tick_params(axis="y", which="both", left=False)
+
+    overall = float(success_mask[valid_mask].mean()) if valid_mask.any() else 0.0
+    ax.set_title(f"Success rate  ($d_x\\geq{summary['success_dist']:.0f}$ m, "
+                 f"overall {overall*100:.0f}%)")
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.022, pad=0.02)
+    cbar.outline.set_linewidth(0.4)
+    cbar.ax.tick_params(labelsize=6, width=0.4, length=2)
+
+    out = out_dir / "paper_01_success_heatmap.pdf"
+    _save(fig, out)
+    return out, overall
+
+
+# ---------------------------------------------------------------------------
+# Plot 02 — Routing specialization (heatmap of expert weight by terrain)
+# ---------------------------------------------------------------------------
+
+def plot_routing_specialization(raw, summary, valid_mask, out_dir):
+    gate_leg = raw["gate_leg"].astype(np.float32)     # (E, T, K_leg)
+    gate_wheel = raw["gate_wheel"].astype(np.float32) # (E, T, K_wh)
+    types = raw["terrain_types"]
+    term_step = raw["term_step"]
+    sub_names = summary["sub_terrain_names"]
+    sub_per_env = env_subterrain_name(types, summary)
+
+    K_leg = gate_leg.shape[-1]
+    K_wh = gate_wheel.shape[-1]
+
+    # Average gate weights up to termination, per env, then group by terrain
+    E, T, _ = gate_leg.shape
+    valid_step_mask = np.zeros((E, T), dtype=bool)
+    for e in range(E):
+        last = int(term_step[e]) if term_step[e] >= 0 else T
+        valid_step_mask[e, :last] = True
+
+    def _mean_per_env(gate):  # → (E, K)
+        sums = (gate * valid_step_mask[..., None]).sum(axis=1)
+        counts = valid_step_mask.sum(axis=1, keepdims=True).clip(min=1)
+        return sums / counts
+
+    leg_per_env = _mean_per_env(gate_leg)
+    wh_per_env = _mean_per_env(gate_wheel)
+
+    # Group by sub-terrain (rows = terrain, cols = expert)
+    leg_mat = np.full((len(sub_names), K_leg), np.nan)
+    wh_mat = np.full((len(sub_names), K_wh), np.nan)
+    leg_entropy = np.full(len(sub_names), np.nan)
+    wh_entropy = np.full(len(sub_names), np.nan)
+    for i, name in enumerate(sub_names):
+        m = (sub_per_env == name) & valid_mask
+        if m.any():
+            lm = leg_per_env[m].mean(axis=0)
+            wm = wh_per_env[m].mean(axis=0)
+            leg_mat[i] = lm
+            wh_mat[i] = wm
+            leg_entropy[i] = _entropy(lm) / np.log(K_leg)
+            wh_entropy[i] = _entropy(wm) / np.log(K_wh)
+
+    # 3-panel: leg-routing | wheel-routing | normalized entropy bars
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        1, 3, figsize=(7.5, 2.6),
+        gridspec_kw={"width_ratios": [K_leg + 0.5, K_wh + 0.5, 5.0],
+                     "wspace": 0.55},
+    )
+
+    for ax, mat, K, title in [
+        (ax1, leg_mat, K_leg, "Leg gate weight"),
+        (ax2, wh_mat, K_wh, "Wheel gate weight"),
+    ]:
+        im = ax.imshow(mat, cmap=CMAP_SEQ, vmin=0, vmax=mat.max() if not np.isnan(mat).all() else 1,
+                       aspect="auto", origin="lower", interpolation="nearest")
+        ax.set_xticks(range(K))
+        ax.set_xticklabels([f"E{i+1}" for i in range(K)])
+        ax.set_yticks(range(len(sub_names)))
+        ax.set_yticklabels([short_terrain_label(n) for n in sub_names])
+        ax.set_title(title)
+        ax.tick_params(axis="both", which="both", bottom=False, left=False)
+        cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+        cb.outline.set_linewidth(0.4)
+        cb.ax.tick_params(labelsize=6, width=0.4, length=2)
+
+    # Panel 3 — normalized entropy (0 = peaked, 1 = uniform)
+    y = np.arange(len(sub_names))
+    width = 0.4
+    ax3.barh(y - width / 2, leg_entropy, height=width, color=ACCENT,
+             label="leg", edgecolor="none")
+    ax3.barh(y + width / 2, wh_entropy, height=width, color="#f78c2a",
+             label="wheel", edgecolor="none")
+    ax3.set_yticks(range(len(sub_names)))
+    ax3.set_yticklabels([short_terrain_label(n) for n in sub_names])
+    ax3.set_xlim(0, 1)
+    ax3.set_xlabel("Normalized gate entropy")
+    ax3.set_title("Specialization (lower = peaked)")
+    ax3.legend(loc="upper center", bbox_to_anchor=(0.5, 1.02),
+               ncol=2, frameon=False, handlelength=1.2,
+               columnspacing=1.0, handletextpad=0.4)
+    ax3.tick_params(axis="y", which="both", left=False)
+    ax3.grid(axis="x", linestyle=":", linewidth=0.4, color="#cccccc",
+             alpha=0.8, zorder=0)
+    ax3.set_axisbelow(True)
+
+    out = out_dir / "paper_02_routing_specialization.pdf"
+    _save(fig, out)
+    return out
+
+
+def _entropy(p):
+    p = np.asarray(p, dtype=np.float64)
+    p = p / p.sum().clip(min=1e-12)
+    p = np.clip(p, 1e-12, 1.0)
+    return float(-(p * np.log(p)).sum())
+
+
+# ---------------------------------------------------------------------------
+# Plot 04 — Gate-output t-SNE (per-env clustering by sub-terrain)
+# ---------------------------------------------------------------------------
+
+def plot_gate_tsne(raw, summary, valid_mask, out_dir):
+    try:
+        from sklearn.manifold import TSNE
+    except ImportError:
+        print("[warn] sklearn not installed, skipping t-SNE plot")
+        return None
+
+    gate_leg = raw["gate_leg"].astype(np.float32)
+    gate_wheel = raw["gate_wheel"].astype(np.float32)
+    types = raw["terrain_types"]
+    term_step = raw["term_step"]
+    sub_names = summary["sub_terrain_names"]
+    sub_per_env = env_subterrain_name(types, summary)
+
+    E, T, _ = gate_leg.shape
+    step_mask = np.zeros((E, T), dtype=bool)
+    for e in range(E):
+        last = int(term_step[e]) if term_step[e] >= 0 else T
+        step_mask[e, :last] = True
+
+    def _mean(gate):
+        sums = (gate * step_mask[..., None]).sum(axis=1)
+        cnts = step_mask.sum(axis=1, keepdims=True).clip(min=1)
+        return sums / cnts
+
+    leg_means = _mean(gate_leg)
+    wh_means = _mean(gate_wheel)
+    X = np.concatenate([leg_means, wh_means], axis=1)  # (E, K_leg+K_wh)
+
+    # Filter: kept terrains + valid envs only
+    kept = np.isin(sub_per_env, sub_names) & valid_mask
+    X = X[kept]
+    labels = sub_per_env[kept]
+
+    if X.shape[0] < 5:
+        print(f"[warn] too few envs for t-SNE ({X.shape[0]}), skipping")
+        return None
+
+    tsne_kwargs = dict(
+        n_components=2,
+        perplexity=min(30, max(5, X.shape[0] // 10)),
+        random_state=0,
+        init="pca",
+        learning_rate="auto",
+    )
+    try:
+        Y = TSNE(**tsne_kwargs).fit_transform(X)
+    except TypeError:  # older sklearn
+        tsne_kwargs.pop("learning_rate", None)
+        Y = TSNE(**tsne_kwargs).fit_transform(X)
+
+    # Build a stable color map across kept terrains
+    n_sub = len(sub_names)
+    cmap = plt.cm.tab20
+
+    fig, ax = plt.subplots(figsize=(3.6, 2.8))
+    for i, name in enumerate(sub_names):
+        m = labels == name
+        if not m.any():
+            continue
+        ax.scatter(Y[m, 0], Y[m, 1], s=8, alpha=0.65,
+                   color=cmap(i / max(1, n_sub - 1)),
+                   label=short_terrain_label(name), edgecolors="none")
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    ax.set_title("Gate-output cluster per sub-terrain")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
+              fontsize=6, frameon=False, markerscale=1.6,
+              handlelength=0.6, labelspacing=0.4, borderpad=0.2)
+
+    out = out_dir / "paper_04_gate_tsne.pdf"
+    _save(fig, out)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Plot 03 — Velocity tracking (per terrain, violin)
+# ---------------------------------------------------------------------------
+
+def plot_velocity_tracking(raw, summary, valid_mask, out_dir):
+    cmd = raw["cmd"].astype(np.float32)               # (E,T,3) [vx,vy,wz]
+    actual = raw["actual_vel"].astype(np.float32)     # (E,T,3)
+    types = raw["terrain_types"]
+    term_step = raw["term_step"]
+    sub_names = summary["sub_terrain_names"]
+    sub_per_env = env_subterrain_name(types, summary)
+
+    E, T, _ = cmd.shape
+    valid_step_mask = np.zeros((E, T), dtype=bool)
+    for e in range(E):
+        last = int(term_step[e]) if term_step[e] >= 0 else T
+        valid_step_mask[e, :last] = True
+
+    err = actual[..., 0] - cmd[..., 0]   # vx tracking error
+    abs_err = np.abs(err)
+
+    # Per-env MAE
+    sums = (abs_err * valid_step_mask).sum(axis=1)
+    counts = valid_step_mask.sum(axis=1).clip(min=1)
+    per_env_mae = sums / counts
+
+    groups = []
+    labels = []
+    for name in sub_names:
+        m = (sub_per_env == name) & valid_mask
+        if m.any():
+            groups.append(per_env_mae[m])
+            labels.append(short_terrain_label(name))
+
+    fig, ax = plt.subplots(figsize=(3.5, 2.0))
+    parts = ax.violinplot(groups, showmeans=False, showmedians=True,
+                          widths=0.75)
+    for body in parts["bodies"]:
+        body.set_facecolor(ACCENT)
+        body.set_edgecolor("#0b3d7a")
+        body.set_alpha(0.55)
+        body.set_linewidth(0.4)
+    for key in ("cbars", "cmins", "cmaxes", "cmedians"):
+        if key in parts:
+            parts[key].set_color("#0b3d7a")
+            parts[key].set_linewidth(0.6)
+
+    ax.set_xticks(range(1, len(labels) + 1))
+    ax.set_xticklabels(labels, rotation=35, ha="right")
+    ax.set_ylabel("MAE of $v_x$ (m/s)")
+    ax.set_title("Linear-velocity tracking error per terrain")
+    ax.grid(axis="y", linestyle=":", linewidth=0.4, color="#cccccc",
+            alpha=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="x", which="both", bottom=False)
+
+    out = out_dir / "paper_03_velocity_tracking.pdf"
+    _save(fig, out)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def latest_run(base: Path) -> Path:
+    runs = sorted(base.glob("*/raw.npz"), key=lambda p: p.stat().st_mtime,
+                  reverse=True)
+    if not runs:
+        sys.exit(f"[err] no raw.npz under {base}")
+    return runs[0].parent
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--data_dir", type=str, default=None,
+                   help="path to a specific eval run directory containing raw.npz "
+                        "and summary.json; default = newest under "
+                        "logs/moe_eval/split_moe_teacher_parallel/")
+    p.add_argument("--out_dir", type=str, default=None,
+                   help="output dir; default = <data_dir>/plots_v2/")
+    p.add_argument("--success_dist", type=float, default=None,
+                   help="override success threshold (m); default = summary value")
+    p.add_argument("--exclude_terrains", type=str,
+                   default="hurdle_pole,hurdle_board",
+                   help="comma-separated sub-terrain names to drop from "
+                        "all plots (default keeps only the best hurdle type)")
+    p.add_argument("--no_tsne", action="store_true",
+                   help="skip t-SNE plot (sklearn dependency, slow)")
+    args = p.parse_args()
+
+    if args.data_dir is None:
+        base = Path("/home/ouge/Software/rl_training/logs/moe_eval/"
+                    "split_moe_teacher_parallel")
+        data_dir = latest_run(base)
+    else:
+        data_dir = Path(args.data_dir)
+
+    out_dir = Path(args.out_dir) if args.out_dir else data_dir / "plots_v2"
+    print(f"[info] data_dir = {data_dir}")
+    print(f"[info] out_dir  = {out_dir}")
+
+    raw, summary = load_run(data_dir)
+    success_dist = args.success_dist if args.success_dist is not None \
+                   else float(summary["success_dist"])
+
+    success_mask, displacement, valid_mask = compute_success(raw, success_dist)
+
+    # Apply terrain exclusion: drop envs whose sub-terrain is in the exclude
+    # list, and also drop those names from summary so they don't appear in
+    # any plot.
+    exclude = set(s.strip() for s in args.exclude_terrains.split(",")
+                  if s.strip())
+    if exclude:
+        sub_per_env = env_subterrain_name(raw["terrain_types"], summary)
+        keep_env = ~np.isin(sub_per_env, list(exclude))
+        n_dropped_envs = int((~keep_env).sum())
+        valid_mask = valid_mask & keep_env
+        summary["sub_terrain_names"] = [
+            n for n in summary["sub_terrain_names"] if n not in exclude
+        ]
+        print(f"[info] excluded terrains: {sorted(exclude)} "
+              f"({n_dropped_envs} envs dropped)")
+
+    n_total = len(displacement)
+    n_valid = int(valid_mask.sum())
+    n_succ = int((success_mask & valid_mask).sum())
+    print(f"[info] total envs       : {n_total}")
+    print(f"[info] valid (|dx|<={MAX_DISPL}m, terrain kept): {n_valid} "
+          f"({100*n_valid/n_total:.1f}%)")
+    print(f"[info] successes        : {n_succ}  "
+          f"({100*n_succ/max(n_valid,1):.1f}% of valid)")
+    if valid_mask.any():
+        print(f"[info] displ stats (valid only): "
+              f"min={displacement[valid_mask].min():.2f}m  "
+              f"max={displacement[valid_mask].max():.2f}m  "
+              f"mean={displacement[valid_mask].mean():.2f}m")
+
+    # Mask success to valid (compute_success may flag direction=0 invalid)
+    success_mask = success_mask & valid_mask
+
+    f1, overall = plot_success_heatmap(raw, summary, success_mask, valid_mask, out_dir)
+    print(f"[done] {f1}")
+    f2 = plot_routing_specialization(raw, summary, valid_mask, out_dir)
+    print(f"[done] {f2}")
+    f3 = plot_velocity_tracking(raw, summary, valid_mask, out_dir)
+    print(f"[done] {f3}")
+    if not args.no_tsne:
+        f4 = plot_gate_tsne(raw, summary, valid_mask, out_dir)
+        if f4:
+            print(f"[done] {f4}")
+
+
+if __name__ == "__main__":
+    main()
