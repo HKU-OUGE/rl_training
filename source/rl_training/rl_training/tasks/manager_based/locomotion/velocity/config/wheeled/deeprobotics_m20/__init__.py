@@ -44,6 +44,18 @@ gym.register(
     },
 )
 
+# v1: reduced experts (4 leg + 2 wheel) to force routing specialization.
+# Shares env cfg with v0; only policy class capacity differs.
+gym.register(
+    id="Rough-MoE-Teacher-Deeprobotics-M20-v1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitMoEReducedPPOCfg",
+    },
+)
+
 
 gym.register(
     id="Rough-EleMoE-Teacher-Deeprobotics-M20-v0",

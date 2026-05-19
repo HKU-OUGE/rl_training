@@ -1957,12 +1957,88 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     )
 
 @configclass
+class SplitMoEReducedPPOCfg(RslRlOnPolicyRunnerCfg):
+    """PPO Cfg for v1 (reduced experts: 4 leg + 2 wheel).
+
+    Rationale: in v0 (6 leg, 3 wheel) eval, leg-side routing failed to
+    specialize per terrain (E2 was top-1 winner on every sub-terrain, E5
+    never won). The hypothesis is that 6 leg experts is over-capacity, so
+    load-balancing aux loss can spread weight without any single expert
+    needing to specialize. v1 drops to 4 leg + 2 wheel to force each expert
+    into a heavier per-step role.
+
+    Everything else (env_cfg, observation, action, reward) is identical to
+    v0, so original v0 checkpoints remain playable on the v0 task; v1 ckpts
+    will go under a separate experiment dir.
+    """
+    num_steps_per_env = 36
+    max_iterations = 20000
+    save_interval = 200
+    experiment_name = "split_moe_teacher_4l2w"
+    empirical_normalization = False
+
+    obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
+
+    policy = SplitMoEActorCriticCfg(
+        init_noise_std=1.0,
+        init_noise_legs=0.2,
+        init_noise_wheels=1.5,
+        actor_hidden_dims=[256, 128, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        num_wheel_experts=2,
+        num_leg_experts=4,
+        num_leg_actions=12,
+        latent_dim=256,
+        rnn_type="gru",
+        aux_loss_coef=0.01,
+
+        blind_vision=False,
+        use_elevation_ae=True,
+        elevation_dim=187,
+        use_cnn=False,
+
+        estimator_output_dim=3,
+        estimator_hidden_dims=[128, 64],
+        estimator_target_indices=[0, 1, 2],
+        estimator_input_indices=list(range(3, 9)) + list(range(12, 56)),
+        estimator_obs_normalization=True,
+
+        use_multilayer_scan=True,
+        num_scan_channels=24,
+        num_scan_rays=21,
+
+        actor_obs_normalization=True,
+        critic_obs_normalization=True,
+
+        feed_estimator_to_policy=True,
+        feed_ae_to_policy=True,
+    )
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        class_name="SplitMoEPPO",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+
+@configclass
 class SplitCMPMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
     max_iterations = 25000
     save_interval = 200
-    experiment_name = "split_moe_teacher_parallel_cmp" 
+    experiment_name = "split_moe_teacher_parallel_cmp"
     empirical_normalization = False
     
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
