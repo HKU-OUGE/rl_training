@@ -284,8 +284,8 @@ class SplitMoEActorCritic(ActorCritic):
     def __init__(self, obs, obs_groups, num_actions, actor_hidden_dims=[256, 128, 128], 
                  critic_hidden_dims=[512, 256, 128], activation='elu', init_noise_std=1.0,
                  num_wheel_experts=2, num_leg_experts=2, num_leg_actions=12,
-                 latent_dim=256, rnn_type="gru", aux_loss_coef=0.01,
-                 blind_vision=True, use_elevation_ae=True, elevation_dim=187,     
+                 latent_dim=256, rnn_type="gru", aux_loss_coef=0.01, single_gate=False,
+                 blind_vision=True, use_elevation_ae=True, elevation_dim=187,
                  use_cnn=False, num_cameras=2, camera_height=58, camera_width=87,
                  forced_input_key=None, is_student_mode=False, 
                  feed_estimator_to_policy=False, feed_ae_to_policy=False, **kwargs):
@@ -488,21 +488,38 @@ class SplitMoEActorCritic(ActorCritic):
                 if 'weight' in name: nn.init.orthogonal_(param)
                 elif 'bias' in name: nn.init.constant_(param, 0)
 
+        self.single_gate = single_gate
         self.gate_input_norm = nn.LayerNorm(self.latent_dim)
-        self.leg_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_leg_experts))
-        self.wheel_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_wheel_experts))
 
-        self._init_gate(self.leg_gate)
-        self._init_gate(self.wheel_gate)
+        if self.single_gate:
+            # --- Ablation A1: single merged gate over one unified expert pool ---
+            # The leg/wheel split is removed: one gate routes to a single pool
+            # whose experts each emit the FULL action (num_actions). Expert count
+            # = num_leg_experts + num_wheel_experts so the pool size matches the
+            # dual-gate model; only the expert output layer and the gate differ.
+            self.num_unified_experts = num_leg_experts + num_wheel_experts
+            self.unified_gate = nn.Sequential(
+                nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, self.num_unified_experts))
+            self._init_gate(self.unified_gate)
+            self.actor_experts = nn.ModuleList([
+                MLP(self.latent_dim, num_actions, hidden_dims=actor_hidden_dims, activation=activation, output_gain=0.01)
+                for _ in range(self.num_unified_experts)
+            ])
+        else:
+            self.leg_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_leg_experts))
+            self.wheel_gate = nn.Sequential(nn.Linear(self.latent_dim, 64), nn.ELU(), nn.Linear(64, num_wheel_experts))
 
-        self.actor_leg_experts = nn.ModuleList([
-            MLP(self.latent_dim, self.num_leg_actions, hidden_dims=actor_hidden_dims, activation=activation, output_gain=0.01) 
-            for _ in range(num_leg_experts)
-        ])
-        self.actor_wheel_experts = nn.ModuleList([
-            MLP(self.latent_dim, self.num_wheel_actions, hidden_dims=actor_hidden_dims, activation=activation, output_gain=0.01) 
-            for _ in range(num_wheel_experts)
-        ])
+            self._init_gate(self.leg_gate)
+            self._init_gate(self.wheel_gate)
+
+            self.actor_leg_experts = nn.ModuleList([
+                MLP(self.latent_dim, self.num_leg_actions, hidden_dims=actor_hidden_dims, activation=activation, output_gain=0.01)
+                for _ in range(num_leg_experts)
+            ])
+            self.actor_wheel_experts = nn.ModuleList([
+                MLP(self.latent_dim, self.num_wheel_actions, hidden_dims=actor_hidden_dims, activation=activation, output_gain=0.01)
+                for _ in range(num_wheel_experts)
+            ])
 
         self.critic_mlp = MLP(self.latent_dim, 1, hidden_dims=critic_hidden_dims, activation=activation, output_gain=1.0)
 
@@ -773,6 +790,24 @@ class SplitMoEActorCritic(ActorCritic):
 
     def _compute_actor_output(self, latent, obs_dict=None, return_aux_loss=False):
         gate_in = self.gate_input_norm(latent)
+
+        if self.single_gate:
+            # --- Ablation A1: one gate, one unified pool, each expert -> full action ---
+            w_uni = F.softmax(self.unified_gate(gate_in), dim=-1)
+            total_action = 0
+            for i, expert in enumerate(self.actor_experts):
+                total_action = total_action + expert(latent) * w_uni[..., i].unsqueeze(-1)
+
+            if not self.training:
+                with torch.no_grad():
+                    self.latest_weights = {
+                        "unified": w_uni.reshape(-1, w_uni.shape[-1]).mean(dim=0).detach()}
+
+            if return_aux_loss:
+                aux_loss = self._calculate_load_balancing_loss_single(w_uni) * self.aux_loss_coef
+                return total_action, aux_loss
+            return total_action
+
         leg_logits = self.leg_gate(gate_in)
         w_leg = F.softmax(leg_logits, dim=-1)
         wheel_logits = self.wheel_gate(gate_in)
@@ -809,6 +844,13 @@ class SplitMoEActorCritic(ActorCritic):
         target_wheel = torch.full_like(wheel_usage, 1.0 / self.num_wheel_experts)
         loss += (wheel_usage - target_wheel).pow(2).sum()
         return loss
+
+    def _calculate_load_balancing_loss_single(self, w):
+        """Load-balancing loss for the single-gate (A1) variant: one usage
+        vector over the unified expert pool, penalized toward uniform."""
+        usage = w.reshape(-1, w.shape[-1]).mean(dim=0)
+        target = torch.full_like(usage, 1.0 / usage.shape[-1])
+        return (usage - target).pow(2).sum()
 
     def _prepare_hidden_state(self, hidden, device):
         if hidden is None: return None
@@ -1073,6 +1115,13 @@ class SplitMoEPPO(PPO):
             )
         else:
             self._critic_param_ids = set()
+
+        # --- Ablation A3: drop the symmetry loss L_sym (env-var gated) ---
+        # ABLATE_NO_SYM_LOSS=1 skips STEP D in update() entirely (no mirror
+        # forward, no L_sym term). Default off → full training unchanged.
+        self._ablate_no_sym_loss = _os.environ.get("ABLATE_NO_SYM_LOSS", "0") == "1"
+        if self._ablate_no_sym_loss and int(_os.environ.get("RANK", "0")) == 0:
+            print("[SplitMoEPPO] ABLATE_NO_SYM_LOSS=1: symmetry loss L_sym DISABLED (ablation A3).")
 
     def _collect_critic_param_ids(self):
         """Identify critic-specific params on the policy model.
@@ -1341,92 +1390,30 @@ class SplitMoEPPO(PPO):
                         
             # -----------------------------------------------------------------
             # STEP D: 对称性正则化 Symmetry Loss
+            #   Ablation A3 (ABLATE_NO_SYM_LOSS=1): skip the whole block — no
+            #   mirror forward pass, no L_sym term. avg_sym_loss stays 0.
             # -----------------------------------------------------------------
-            obs_mirrored_batch = self._mirror_obs(obs_batch)
+            if not getattr(self, "_ablate_no_sym_loss", False):
+                obs_mirrored_batch = self._mirror_obs(obs_batch)
 
-            current_mean = model.distribution.mean.detach() 
-            target_mirrored_actions = current_mean[..., action_swap_idx] * action_neg_mask
+                current_mean = model.distribution.mean.detach()
+                target_mirrored_actions = current_mean[..., action_swap_idx] * action_neg_mask
 
-            actor_hid_batch = hid_states_batch[0]
-            if isinstance(actor_hid_batch, tuple):
-                mirrored_h_batch = (actor_hid_batch[0][1:2], actor_hid_batch[1][1:2])
-            else:
-                mirrored_h_batch = actor_hid_batch[1:2]
-            # # =================================================================
-            # # DEBUG 1: 检查隐藏状态切片是否有效 (只在 epoch 刚开始时打印)
-            # # =================================================================
-            # if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
-            #     print("\n" + "▼"*50)
-            #     print("[DEBUG 1] 正在检查镜像隐藏状态 (Layer 1)")
-            #     if isinstance(actor_hid_batch, tuple):
-            #         print(f"-> 原始 hid_states_batch h shape: {actor_hid_batch[0].shape}")
-            #         max_abs_h = mirrored_h_batch[0].abs().max().item()
-            #         max_abs_c = mirrored_h_batch[1].abs().max().item()
-            #         print(f"-> 切片后 mirrored_h_batch h 最大绝对值: {max_abs_h:.6f}")
-            #         print(f"-> 切片后 mirrored_h_batch c 最大绝对值: {max_abs_c:.6f}")
-            #         if max_abs_h == 0.0:
-            #             print("!! 警告: 提取的隐藏状态 h 全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
-            #     else:
-            #         print(f"-> 原始 hid_states_batch shape: {actor_hid_batch.shape}")
-            #         max_abs = mirrored_h_batch.abs().max().item()
-            #         print(f"-> 切片后 mirrored_h_batch 最大绝对值: {max_abs:.6f}")
-            #         if max_abs == 0.0:
-            #             print("!! 警告: 提取的隐藏状态全是 0，说明 Layer 1 未在 act() 中被正确推进 !!")
-            #     print("▲"*50 + "\n")
-            # # =================================================================
-            # # DEBUG 2: 检查 _mirror_obs 的硬编码维度映射 (已修复 TensorDict)
-            # # =================================================================
-            # if batch_cnt == 0 and getattr(self, "gpu_global_rank", 0) == 0:
-            #     print("\n" + "▼"*50)
-            #     print("[DEBUG 2] 正在检查观测张量的镜像映射")
-                
-            #     # 安全解包 TensorDict，获取纯粹的张量
-            #     if hasattr(obs_batch, "keys"):
-            #         # 兼容 PPO generator 返回的可能形状: [seq_len, batch_size, dim] 或 [batch_size, dim]
-            #         p_orig = obs_batch["policy"][0, 0] if obs_batch["policy"].ndim == 3 else obs_batch["policy"][0]
-            #         p_mirr = obs_mirrored_batch["policy"][0, 0] if obs_mirrored_batch["policy"].ndim == 3 else obs_mirrored_batch["policy"][0]
-            #     else:
-            #         p_orig = obs_batch[0, 0] if obs_batch.ndim == 3 else obs_batch[0]
-            #         p_mirr = obs_mirrored_batch[0, 0] if obs_mirrored_batch.ndim == 3 else obs_mirrored_batch[0]
-                
-            #     print(f"-> Policy 观测总维度: {p_orig.shape[-1]}")
-                
-            #     # 推断 offset 
-            #     has_lin_vel = p_orig.shape[-1] > 57
-            #     print(f"-> 代码推断包含线速度 (has_lin_vel): {has_lin_vel}")
-                
-            #     if has_lin_vel:
-            #         print(f"  [测试线速度 Y] 原值: {p_orig[1].item():.4f} -> 镜像值: {p_mirr[1].item():.4f} (应互为相反数)")
-            #         print(f"  [测试角速度 X] 原值: {p_orig[3].item():.4f} -> 镜像值: {p_mirr[3].item():.4f} (应互为相反数)")
-            #         offset = 12
-            #     else:
-            #         print(f"  [测试角速度 X] 原值: {p_orig[0].item():.4f} -> 镜像值: {p_mirr[0].item():.4f} (应互为相反数)")
-            #         offset = 9
-                
-            #     if p_orig.shape[-1] > offset + 3:
-            #         orig_lf_hip = p_orig[offset + 0].item()
-            #         orig_rf_hip = p_orig[offset + 3].item()
-            #         mirr_lf_hip = p_mirr[offset + 0].item()
-            #         print(f"  [测试关节位移] 原 LF_hip (idx {offset}): {orig_lf_hip:.4f}")
-            #         print(f"  [测试关节位移] 原 RF_hip (idx {offset+3}): {orig_rf_hip:.4f}")
-            #         print(f"  [测试关节位移] 镜像后的 LF_hip 应该是原 RF_hip 的相反数 (-{orig_rf_hip:.4f})")
-            #         print(f"  [测试关节位移] 实际镜像后 LF_hip 值为: {mirr_lf_hip:.4f}")
-                    
-            #         if abs(mirr_lf_hip - (-orig_rf_hip)) > 1e-4:
-            #             print("!! 警告: 镜像映射数值对不上，硬编码 offset 或 action_swap_idx 写错了 !!")
-            #         else:
-            #             print(">> 测试通过: 镜像映射的 offset 和索引完全正确！")
-            #     print("▲"*50 + "\n")
-            # # =================================================================
-            pred_actions = model.act_inference(
-                obs_mirrored_batch, 
-                masks=masks_batch, 
-                hidden_states=mirrored_h_batch
-            )
+                actor_hid_batch = hid_states_batch[0]
+                if isinstance(actor_hid_batch, tuple):
+                    mirrored_h_batch = (actor_hid_batch[0][1:2], actor_hid_batch[1][1:2])
+                else:
+                    mirrored_h_batch = actor_hid_batch[1:2]
 
-            sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions)
-            loss = loss + sym_loss
-            avg_sym_loss += sym_loss.item()
+                pred_actions = model.act_inference(
+                    obs_mirrored_batch,
+                    masks=masks_batch,
+                    hidden_states=mirrored_h_batch
+                )
+
+                sym_loss = torch.nn.functional.mse_loss(pred_actions, target_mirrored_actions)
+                loss = loss + sym_loss
+                avg_sym_loss += sym_loss.item()
 
             # -----------------------------------------------------------------
             # STEP E: 终极单趟反向传播
@@ -1531,6 +1518,8 @@ class SplitMoEPPO(PPO):
                     for i, val in enumerate(w["leg"]): loss_dict[f"Gate/Leg_Expert_{i}"] = val.item()
                 if "wheel" in w:
                     for i, val in enumerate(w["wheel"]): loss_dict[f"Gate/Wheel_Expert_{i}"] = val.item()
+                if "unified" in w:  # Ablation A1: single merged gate
+                    for i, val in enumerate(w["unified"]): loss_dict[f"Gate/Expert_{i}"] = val.item()
             if hasattr(model, "std"):
                 std_np = model.std.detach().cpu().numpy()
                 n_legs = getattr(model, "num_leg_actions", 12)
@@ -1858,8 +1847,9 @@ class SplitMoEActorCriticCfg(RslRlPpoActorCriticCfg):
     latent_dim: int = 256
     rnn_type: str = "gru"
     aux_loss_coef: float = 0.01
+    single_gate: bool = False        # Ablation A1: merge leg/wheel gates into one
 
-    blind_vision: bool = False       
+    blind_vision: bool = False
     use_elevation_ae: bool = True   
     elevation_dim: int = 187      
     use_multilayer_scan: bool = False
