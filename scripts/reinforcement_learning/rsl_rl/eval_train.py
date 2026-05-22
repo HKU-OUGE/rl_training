@@ -55,6 +55,9 @@ parser.add_argument("--ablation", type=str, default="full",
                     choices=["full", "A1", "A2", "A3", "B1", "B2"],
                     help="Ablation variant: full=reference; A1=single merged gate; "
                          "A2=shared critic; A3=no L_sym; B1=no L_bal; B2=blind.")
+parser.add_argument("--train_iters", type=int, default=None,
+                    help="Override max training iterations. cli_args is unavailable "
+                         "here so --max_iterations is NOT honored; use this instead.")
 
 parser.add_argument("--distributed", action="store_true", default=False, help="Run training with multiple GPUs.")
 
@@ -467,9 +470,12 @@ def main():
     _abl_spec = apply_ablation(train_cfg_dict, args.ablation)
     _abl_base_name = train_cfg_dict.get("experiment_name", "h_moe_end2end")
     train_cfg_dict["experiment_name"] = f"{_abl_base_name}_abl_{args.ablation}"
+    if args.train_iters is not None:
+        train_cfg_dict["max_iterations"] = args.train_iters
     if is_master:
         print(f"\n[Ablation] variant = {args.ablation} :: {_abl_spec['desc']}")
         print(f"[Ablation] experiment_name -> {train_cfg_dict['experiment_name']}")
+        print(f"[Ablation] max_iterations -> {train_cfg_dict['max_iterations']}")
         if _abl_spec.get("policy"):
             print(f"[Ablation] policy cfg overrides: {_abl_spec['policy']}")
         if _abl_spec.get("env"):
