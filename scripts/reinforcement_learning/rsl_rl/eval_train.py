@@ -474,6 +474,13 @@ def main():
             print(f"[Ablation] policy cfg overrides: {_abl_spec['policy']}")
         if _abl_spec.get("env"):
             print(f"[Ablation] env vars set: {_abl_spec['env']}")
+        # A2 (shared critic) is only a real contrast vs `full` when the per-rank
+        # critic is actually active — i.e. PER_RANK_TERRAIN=1 + multi-GPU. Without
+        # it the per-rank critic is already off and A2 ablates nothing.
+        if args.ablation == "A2" and os.environ.get("PER_RANK_TERRAIN", "0") != "1":
+            print("[Ablation][WARN] A2 requires PER_RANK_TERRAIN=1 and multi-GPU "
+                  "(--distributed) to differ from 'full'. Without it the per-rank "
+                  "critic is already disabled and this run ablates nothing.")
 
     experiment_name = getattr(args, "experiment_name", train_cfg_dict.get("experiment_name", "h_moe_end2end"))
     if not experiment_name: experiment_name = train_cfg_dict.get("experiment_name", "h_moe_end2end")
