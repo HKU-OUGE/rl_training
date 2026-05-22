@@ -524,7 +524,7 @@ def main():
     if args.keyboard:
         print("[Info] Enabling Keyboard Control")
         print("[Controls] W/A/S/D: Move | Q/E: Rotate")
-        print("[Controls] T/G: Difficulty +/- | H/F: Sub-Terrain +/- | C: Camera | R: Reset")
+        print("[Controls] T/G: Difficulty +/- | H/F: Sub-Terrain +/- | C: Camera | R: Reset | L: Lock/Free Cam")
         env_cfg.scene.num_envs = 1
         env_cfg.terminations.time_out = None
         env_cfg.commands.base_velocity.debug_vis = False
@@ -538,7 +538,7 @@ def main():
         
     elif args.joystick:
         print("[Info] Enabling Direct Linux Joystick Control")
-        print("[Controls] RT/LT: Difficulty +/- | RB/LB: Sub-Terrain +/- | Y: Camera | X: Reset")
+        print("[Controls] RT/LT: Difficulty +/- | RB/LB: Sub-Terrain +/- | Y: Camera | X: Reset | A: Lock/Free Cam")
         env_cfg.scene.num_envs = 1
         env_cfg.terminations.time_out = None
         env_cfg.commands.base_velocity.debug_vis = False
@@ -552,9 +552,18 @@ def main():
         )
 
     if controller is not None:
+        # Camera lock state — defined here (before gym.make) so the patched
+        # velocity-command closure can read it. locked = follow cam (original);
+        # unlocked = free orbit cam, robot holds its last command.
+        camera_locked = True
+        _held_cmd = [None]
         def custom_velocity_commands(env):
             # controller.advance() works for both Se2Keyboard and DirectLinuxGamepad!
             cmds = controller.advance().to(env.device, dtype=torch.float32)
+            if camera_locked or _held_cmd[0] is None:
+                _held_cmd[0] = cmds          # locked: track + remember the command
+            else:
+                cmds = _held_cmd[0]          # unlocked: hold last (joystick drives cam)
             return cmds.unsqueeze(0).repeat(env.num_envs, 1)
 
         for attr_name in dir(env_cfg.observations):
@@ -788,13 +797,21 @@ def main():
     obs, _ = env_wrapped.reset()
     print("\nStarting H-MoE Inference...")
     
-    camera_mode = 0  
-    cur_difficulty = 0 
-    cur_subterrain = 0 
-    
+    camera_mode = 0
+    cur_difficulty = 0
+    cur_subterrain = 0
+
+    # --- free-orbit camera state (used when the camera is unlocked) ----------
+    orbit_azim = 0.0        # rad — azimuth around the robot
+    orbit_elev = 0.45       # rad — elevation (0 = horizon, + = above)
+    orbit_dist = 3.2        # m   — distance from the robot
+    free_eye = None         # last free-cam eye position; once set, locking the
+                            # camera FREEZES it here (until a reset clears it)
+
     y_prev, x_prev = False, False
     rt_prev, lt_prev = False, False
     rb_prev, lb_prev = False, False
+    a_prev = False          # A button (gamepad) / L key — lock/unlock toggle
 
     OFFSET_FORWARD = [ -2.5, 0.0, 1.5 ]
     HEIGHT_TOP = 5.0
@@ -1058,19 +1075,19 @@ def main():
                     f.write(json.dumps(log_dict) + "\n")
             prev_actions = actions.clone()
 
-            actions = policy(obs_dict)
-            
             reset_terrain_needed = False
             ctrl_debug = {}
             is_connected = False
 
             y_curr, x_curr, rt_curr, lt_curr, rb_curr, lb_curr = False, False, False, False, False, False
+            a_curr = False
 
             # --- 获取输入逻辑：手柄 vs 键盘 ---
             if args.joystick and controller is not None:
                 is_connected = controller.connected
                 y_curr = controller.is_button_pressed(3)  # Y
                 x_curr = controller.is_button_pressed(2)  # X
+                a_curr = controller.is_button_pressed(0)  # A — lock/unlock cam
                 rb_curr = controller.is_button_pressed(5) # RB
                 lb_curr = controller.is_button_pressed(4) # LB
                 rt_val = controller.get_axis(5)
@@ -1078,12 +1095,13 @@ def main():
                 ctrl_debug = {'rt': rt_val, 'lt': lt_val, 'rb': rb_curr, 'lb': lb_curr}
                 rt_curr = rt_val > -0.5
                 lt_curr = lt_val > -0.5
-                
+
             elif args.keyboard and kb_ext is not None:
                 is_connected = True
                 # 利用 KeyboardExtension 读取状态 (按一次只触发一帧)
                 y_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.C)
                 x_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.R)
+                a_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.L)
                 rt_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.T)
                 lt_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.G)
                 rb_curr = kb_ext.check_and_clear(carb.input.KeyboardInput.H)
@@ -1096,11 +1114,35 @@ def main():
                 status_message = f"Camera: {mode_names[camera_mode]}"
                 status_timer = 30
                 camera_history.clear()
-            
+
+            if a_curr and not a_prev:
+                camera_locked = not camera_locked
+                if (not camera_locked and free_eye is None
+                        and robot_entity is not None and camera_history):
+                    # first unlock from follow: seed orbit params from current view
+                    rp = robot_entity.data.root_pos_w[0]
+                    d = (camera_history[-1] - rp).detach().cpu()
+                    orbit_dist = float(max(0.8, min(torch.linalg.norm(d).item(), 14.0)))
+                    orbit_azim = float(torch.atan2(d[1], d[0]).item())
+                    orbit_elev = float(np.arcsin(np.clip(d[2].item() / orbit_dist, -1.0, 1.0)))
+                if camera_locked:
+                    status_message = ("Camera FIXED (frozen) — joystick drives robot"
+                                      if free_eye is not None
+                                      else "Camera LOCKED (follow)")
+                else:
+                    status_message = "Camera FREE (L-stick: orbit, R-stick Y: zoom)"
+                status_timer = 45
+                camera_history.clear()
+
             if x_curr and not x_prev:
                 status_message = "Resetting..."
                 status_timer = 30
                 reset_terrain_needed = True
+                # reset also clears the camera state -> back to locked/follow default
+                camera_locked = True
+                free_eye = None
+                orbit_azim, orbit_elev, orbit_dist = 0.0, 0.45, 3.2
+                camera_history.clear()
 
             if num_rows > 1:
                 if rt_curr and not rt_prev:
@@ -1130,6 +1172,7 @@ def main():
             
             # 手柄依然需要 prev 状态记录，键盘由于是 check_and_clear 机制，这里赋值也不影响
             y_prev, x_prev = y_curr, x_curr
+            a_prev = a_curr
             rt_prev, lt_prev = rt_curr, lt_curr
             rb_prev, lb_prev = rb_curr, lb_curr
 
@@ -1191,29 +1234,54 @@ def main():
                     controller_debug=ctrl_debug if args.joystick else None,
                     connected=is_connected
                 )
-            # 统一 Camera Follow 逻辑（适用于手柄和键盘）
+            # 统一 Camera 逻辑（适用于手柄和键盘）
             if robot_entity is not None and (args.joystick or args.keyboard):
                 root_pos = robot_entity.data.root_pos_w[0]
                 root_quat = robot_entity.data.root_quat_w[0]
-                eye, target = None, root_pos
+                dev = root_pos.device
 
-                if camera_mode == 0: 
-                    offset_local = torch.tensor(OFFSET_FORWARD, device=root_pos.device)
-                    offset_world = math_utils.quat_apply(root_quat, offset_local)
-                    eye = root_pos + offset_world
-                elif camera_mode == 1: 
-                    eye = root_pos + torch.tensor([0.0, 0.0, HEIGHT_TOP], device=root_pos.device)
-                    target = root_pos + torch.tensor([0.001, 0.0, 0.0], device=root_pos.device)
-                elif camera_mode == 2: 
-                    offset_local = torch.tensor(OFFSET_BACKWARD, device=root_pos.device)
-                    offset_world = math_utils.quat_apply(root_quat, offset_local)
-                    eye = root_pos + offset_world
-
-                if eye is not None:
-                    camera_history.append(eye)
-                    if len(camera_history) > 50: camera_history.pop(0)
-                    smooth_eye = torch.stack(camera_history).mean(dim=0)
-                    base_env.sim.set_camera_view(smooth_eye.cpu().numpy(), target.cpu().numpy())
+                if not camera_locked:
+                    # ---- FREE: gamepad orbits the camera around the robot ----
+                    # left stick = orbit (azimuth / elevation); right-stick Y = zoom.
+                    if args.joystick and controller is not None:
+                        ax_x = controller.axes.get(0, 0.0)   # left stick X
+                        ax_y = controller.axes.get(1, 0.0)   # left stick Y
+                        ax_z = controller.axes.get(4, 0.0)   # right stick Y
+                        dz = 0.12
+                        if abs(ax_x) > dz: orbit_azim += ax_x * 0.035
+                        if abs(ax_y) > dz: orbit_elev += -ax_y * 0.020
+                        if abs(ax_z) > dz: orbit_dist += ax_z * 0.05
+                        orbit_elev = max(0.05, min(orbit_elev, 1.45))
+                        orbit_dist = max(0.8, min(orbit_dist, 14.0))
+                    ce, se = np.cos(orbit_elev), np.sin(orbit_elev)
+                    ca, sa = np.cos(orbit_azim), np.sin(orbit_azim)
+                    eye = root_pos + torch.tensor(
+                        [orbit_dist * ce * ca, orbit_dist * ce * sa, orbit_dist * se],
+                        device=dev, dtype=root_pos.dtype)
+                    free_eye = eye.detach().clone()          # remember for FIXED mode
+                    base_env.sim.set_camera_view(eye.cpu().numpy(), root_pos.cpu().numpy())
+                elif free_eye is not None:
+                    # ---- FIXED: camera frozen at the adjusted world position;
+                    #      it still looks at the robot, and the joystick is free
+                    #      to drive the robot. Cleared only by a reset.
+                    base_env.sim.set_camera_view(free_eye.cpu().numpy(), root_pos.cpu().numpy())
+                else:
+                    # ---- FOLLOW: original camera_mode follow logic (0/1/2) ----
+                    eye, target = None, root_pos
+                    if camera_mode == 0:
+                        offset_local = torch.tensor(OFFSET_FORWARD, device=dev)
+                        eye = root_pos + math_utils.quat_apply(root_quat, offset_local)
+                    elif camera_mode == 1:
+                        eye = root_pos + torch.tensor([0.0, 0.0, HEIGHT_TOP], device=dev)
+                        target = root_pos + torch.tensor([0.001, 0.0, 0.0], device=dev)
+                    elif camera_mode == 2:
+                        offset_local = torch.tensor(OFFSET_BACKWARD, device=dev)
+                        eye = root_pos + math_utils.quat_apply(root_quat, offset_local)
+                    if eye is not None:
+                        camera_history.append(eye)
+                        if len(camera_history) > 50: camera_history.pop(0)
+                        smooth_eye = torch.stack(camera_history).mean(dim=0)
+                        base_env.sim.set_camera_view(smooth_eye.cpu().numpy(), target.cpu().numpy())
 
     env_wrapped.close()
     if args.joystick and controller is not None:
