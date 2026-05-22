@@ -140,10 +140,14 @@ def apply_eval_overrides(env_cfg, args):
             if hasattr(env_cfg.curriculum, name):
                 setattr(env_cfg.curriculum, name, None)
 
-    # ---- 6) Terrain: spread across all levels, no curriculum ----
+    # ---- 6) Terrain: spread spawns across all difficulty levels ----
+    # Keep terrain_generator.curriculum unchanged: it controls the *mesh layout* —
+    # curriculum mode assigns each column one fixed sub-terrain (contiguous), which
+    # is exactly what save_outputs()'s col_to_subterrain mapping assumes. Env-level
+    # level promotion/demotion is already disabled via curriculum.terrain_levels =
+    # None (step 5), so envs stay locked without disabling generator curriculum.
     tgen = env_cfg.scene.terrain.terrain_generator
     if tgen is not None:
-        tgen.curriculum = False
         env_cfg.scene.terrain.max_init_terrain_level = int(tgen.num_rows) - 1
         print(f"[eval] terrain: {tgen.num_rows} rows × {tgen.num_cols} cols, "
               f"sub_terrains={list(tgen.sub_terrains.keys())}")
@@ -332,7 +336,7 @@ TERM_NAME_TO_ENUM = {
 }
 
 
-def handle_dones(t, dones, info, bufs):
+def handle_dones(t, dones, info, bufs, base_env):
     """For envs that just done for the first time, populate term_cause, term_step, reward_terms."""
     if not dones.any():
         return None  # no key discovery this step
@@ -356,23 +360,24 @@ def handle_dones(t, dones, info, bufs):
         discovered = ("reward_terms", rew_names)
         print(f"[eval] discovered {len(rew_names)} reward terms")
 
-    # ---- discover termination names on first opportunity ----
-    if "_term_keys" not in bufs:
-        term_keys = [k for k in log.keys() if k.startswith("Episode_Termination/")]
-        bufs["_term_keys"] = term_keys
-        print(f"[eval] discovered termination keys: {[k.replace('Episode_Termination/', '') for k in term_keys]}")
-
     # ---- per-env: find which termination fired ----
-    for term_key in bufs["_term_keys"]:
-        name = term_key.replace("Episode_Termination/", "")
+    # IsaacLab's TerminationManager.reset() writes Episode_Termination/* into
+    # extras["log"] as an aggregated scalar (a count of resetting envs), NOT a
+    # per-env tensor. Read per-env termination dones straight from the manager —
+    # its _term_dones still hold this step's values until the next compute().
+    tm = base_env.termination_manager
+    if "_term_discovered" not in bufs:
+        bufs["_term_discovered"] = True
+        print(f"[eval] termination terms: {list(tm.active_terms)}")
+    for name in tm.active_terms:
         enum_val = TERM_NAME_TO_ENUM.get(name, 127)
-        val = log.get(term_key)
-        if val is None:
+        try:
+            term_done = tm.get_term(name)
+        except Exception:
+            term_done = getattr(tm, "_term_dones", {}).get(name)
+        if term_done is None:
             continue
-        if not isinstance(val, torch.Tensor):
-            continue  # scalar episode-mean (not per-env); skip
-        # val is (N,) bool; assign enum for fresh envs where val=True
-        hit = val.to(torch.bool) & fresh
+        hit = term_done.to(torch.bool) & fresh
         bufs["term_cause"][hit] = enum_val
 
     # default: any fresh env still with term_cause==-1 → time_out (episode_length hit)
@@ -543,6 +548,10 @@ def main():
         n_bwd = int((vel_cmd[:, 0] < 0).sum())
         print(f"[eval] cmd_vx_bidir override: {n_fwd} forward, {n_bwd} backward "
               f"(|vx| in [{args.cmd_vx_min_abs}, {args.cmd_vx_max}])")
+        # obs was produced by reset() before this override, so it still embeds the
+        # reset-time random command. Refresh it so step 0's policy(obs) — and the
+        # recorded bufs["cmd"][:,0] — both reflect the bidir command.
+        obs = env_wrapped.get_observations()
 
     # Capture terrain constants
     base_env = env_wrapped.unwrapped
@@ -597,7 +606,7 @@ def main():
             obs, _, dones, info = env_wrapped.step(actions)
 
             # Event handling
-            handle_dones(t, dones, info, bufs)
+            handle_dones(t, dones, info, bufs, base_env)
 
             if (t + 1) % 50 == 0:
                 done_frac = bufs["first_done"].float().mean().item()
@@ -621,7 +630,7 @@ def main():
                 break
             actions = policy(obs)
             obs, _, dones, info = env_wrapped.step(actions)
-            handle_dones(T + d, dones, info, bufs)
+            handle_dones(T + d, dones, info, bufs, base_env)
         post_drain_done = bufs["first_done"].sum().item()
         print(f"[eval] drain steps captured {post_drain_done - pre_drain_done} extra dones")
 

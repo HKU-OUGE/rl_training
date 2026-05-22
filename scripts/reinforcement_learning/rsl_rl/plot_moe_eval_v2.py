@@ -137,18 +137,18 @@ def env_subterrain_name(types, summary):
 def short_terrain_label(name: str) -> str:
     """Short, paper-friendly labels (avoid wide x-tick)."""
     table = {
-        "pyramid_stairs": "stairs↑",
-        "pyramid_stairs_inv": "stairs↓",
-        "stepping_stones": "stones",
-        "rail": "rail",
-        "hurdle_pole": "hurdle-p",
-        "hurdle_board": "hurdle-b",
-        "hurdle_wall": "hurdle-w",
+        "pyramid_stairs": "upstairs",
+        "pyramid_stairs_inv": "downstairs",
+        "stepping_stones": "gap",
+        "rail": "bar",
+        "hurdle_pole": "baffle-p",
+        "hurdle_board": "baffle-b",
+        "hurdle_wall": "baffle",
         "pit": "pit",
         "boxes": "boxes",
         "random_rough": "rough",
-        "hf_pyramid_slope": "slope↑",
-        "hf_pyramid_slope_inv": "slope↓",
+        "hf_pyramid_slope": "upslope",
+        "hf_pyramid_slope_inv": "downslope",
     }
     return table.get(name, name)
 
@@ -395,12 +395,13 @@ def plot_gate_tsne(raw, summary, valid_mask, out_dir):
         m = labels == name
         if not m.any():
             continue
+        lbl = short_terrain_label(name)
+        lbl = lbl[:1].upper() + lbl[1:]
         ax.scatter(Y[m, 0], Y[m, 1], s=8, alpha=0.65,
                    color=cmap(i / max(1, n_sub - 1)),
-                   label=short_terrain_label(name), edgecolors="none")
+                   label=lbl, edgecolors="none")
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
-    ax.set_title("Gate-output cluster per sub-terrain")
     ax.set_xticks([])
     ax.set_yticks([])
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
@@ -408,6 +409,245 @@ def plot_gate_tsne(raw, summary, valid_mask, out_dir):
               handlelength=0.6, labelspacing=0.4, borderpad=0.2)
 
     out = out_dir / "paper_04_gate_tsne.pdf"
+    _save(fig, out)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Plot 05 — Leg gate routing t-SNE  (wheel gate is covered by plot 06)
+# ---------------------------------------------------------------------------
+
+def _eta2(X, groups):
+    """Fraction of total variance in X (N,D) explained by categorical groups.
+
+    eta^2 = SS_between / SS_total. 0 = factor explains nothing, 1 = all.
+    """
+    gtot = X.mean(axis=0)
+    ss_tot = float(((X - gtot) ** 2).sum())
+    if ss_tot <= 0:
+        return 0.0
+    ss_between = 0.0
+    for g in np.unique(groups):
+        m = groups == g
+        ss_between += int(m.sum()) * float(((X[m].mean(axis=0) - gtot) ** 2).sum())
+    return ss_between / ss_tot
+
+
+def plot_leg_routing(raw, summary, valid_mask, out_dir):
+    """Leg-gate routing t-SNE, colored by terrain.
+
+    The wheel gate is covered separately by plot_wheel_violin — a ternary
+    simplex of the 3-D wheel gate packs every env into a tiny central blob and
+    reads as undifferentiated even though terrain explains ~80% of its variance.
+    With bidirectional command data the leg t-SNE is split into forward /
+    backward panels, since direction is the dominant routing axis and pooling
+    it masks the terrain structure; eta^2 (fraction of gate-vector variance
+    explained) is computed within each direction.
+    """
+    try:
+        from sklearn.manifold import TSNE
+    except ImportError:
+        print("[warn] sklearn not installed, skipping leg-routing plot")
+        return None
+
+    gate_leg = raw["gate_leg"].astype(np.float32)
+    cmd = raw["cmd"].astype(np.float32)
+    types = raw["terrain_types"]
+    term_step = raw["term_step"]
+    sub_names = summary["sub_terrain_names"]
+    sub_per_env = env_subterrain_name(types, summary)
+
+    E, T, _ = gate_leg.shape
+    step_mask = np.zeros((E, T), dtype=bool)
+    for e in range(E):
+        last = int(term_step[e]) if term_step[e] >= 0 else T
+        step_mask[e, :max(last, 1)] = True
+
+    def _mean(gate):
+        sums = (gate * step_mask[..., None]).sum(axis=1)
+        cnts = step_mask.sum(axis=1, keepdims=True).clip(min=1)
+        return sums / cnts
+
+    leg_means = _mean(gate_leg)
+    vx = _mean(cmd)[:, 0]
+
+    kept = np.isin(sub_per_env, sub_names) & valid_mask
+    leg_means = leg_means[kept]
+    labels = sub_per_env[kept]
+    vx = vx[kept]
+
+    if leg_means.shape[0] < 5:
+        print(f"[warn] too few envs for leg-routing ({leg_means.shape[0]}), skipping")
+        return None
+
+    n_sub = len(sub_names)
+    cmap = plt.cm.tab20
+
+    def _disp(name):
+        lbl = short_terrain_label(name)
+        return lbl[:1].upper() + lbl[1:]
+
+    def _tsne(X):
+        kw = dict(n_components=2,
+                  perplexity=min(30, max(5, X.shape[0] // 10)),
+                  random_state=0, init="pca", learning_rate="auto")
+        try:
+            return TSNE(**kw).fit_transform(X)
+        except TypeError:
+            kw.pop("learning_rate", None)
+            return TSNE(**kw).fit_transform(X)
+
+    def _leg_panel(ax, X, lbls, title):
+        Y = _tsne(X)
+        for i, name in enumerate(sub_names):
+            m = lbls == name
+            if m.any():
+                ax.scatter(Y[m, 0], Y[m, 1], s=7, alpha=0.65,
+                           color=cmap(i / max(1, n_sub - 1)),
+                           label=_disp(name), edgecolors="none")
+        ax.set_xlabel("t-SNE 1")
+        ax.set_ylabel("t-SNE 2")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(title, fontsize=8)
+
+    bidir = bool((vx > 0).any() and (vx < 0).any())
+
+    if bidir:
+        fwd, bwd = vx > 0, vx < 0
+        eta_lf = _eta2(leg_means[fwd], labels[fwd])
+        eta_lb = _eta2(leg_means[bwd], labels[bwd])
+        eta_l_dir = _eta2(leg_means, (vx > 0).astype(int))
+        print(f"[info] leg-routing (bidir) eta^2  direction={eta_l_dir:.2f}  "
+              f"terrain|fwd={eta_lf:.2f}  terrain|bwd={eta_lb:.2f}")
+        fig, (axf, axb) = plt.subplots(1, 2, figsize=(7.4, 3.6))
+        _leg_panel(axf, leg_means[fwd], labels[fwd],
+                   f"Leg gate t-SNE — forward\nterrain $\\eta^2$={eta_lf:.2f}")
+        _leg_panel(axb, leg_means[bwd], labels[bwd],
+                   f"Leg gate t-SNE — backward\nterrain $\\eta^2$={eta_lb:.2f}")
+        fig.suptitle(f"Leg gate routing  (direction $\\eta^2$={eta_l_dir:.2f})",
+                     fontsize=9)
+        legend_ax = axf
+        rect = [0, 0.08, 1, 0.93]
+    else:
+        eta_leg = _eta2(leg_means, labels)
+        print(f"[info] leg-routing (1-dir) eta^2: terrain={eta_leg:.2f}")
+        fig, ax = plt.subplots(figsize=(4.8, 4.2))
+        _leg_panel(ax, leg_means, labels,
+                   f"Leg gate ({leg_means.shape[1]}-D) routing — t-SNE\n"
+                   f"terrain $\\eta^2$={eta_leg:.2f}")
+        legend_ax = None
+        rect = None
+
+    if legend_ax is not None:
+        # bidir: shared terrain legend below the two panels
+        handles, leg_labels = legend_ax.get_legend_handles_labels()
+        fig.legend(handles, leg_labels, loc="lower center",
+                   ncol=min(8, len(leg_labels)), fontsize=6, frameon=False,
+                   markerscale=1.6, handlelength=0.6, columnspacing=1.0,
+                   bbox_to_anchor=(0.5, -0.02))
+        fig.tight_layout(rect=rect)
+    else:
+        # single panel: place the terrain legend inside the axes, in the
+        # emptiest corner (t-SNE leaves blank space matplotlib can find).
+        ax.legend(loc="best", ncol=2, fontsize=5.5, frameon=True,
+                  framealpha=0.75, edgecolor="0.7", markerscale=1.3,
+                  handlelength=0.6, handletextpad=0.4, columnspacing=0.8,
+                  labelspacing=0.3, borderpad=0.4)
+        fig.tight_layout()
+    out = out_dir / "paper_05_leg_routing.pdf"
+    _save(fig, out)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Plot 06 — Wheel gate per-expert violins
+# ---------------------------------------------------------------------------
+
+def plot_wheel_violin(raw, summary, valid_mask, out_dir):
+    """Per-expert violin view of wheel-expert differentiation by terrain.
+
+    One panel per wheel expert (W0/W1/W2); within each, a horizontal violin per
+    terrain shows the distribution of that expert's gate weight across envs,
+    colored by terrain with terrain names on the shared y-axis. Restricted to
+    forward envs when the eval is bidirectional, since direction otherwise
+    dominates and masks the terrain structure.
+    """
+    gate_wheel = raw["gate_wheel"].astype(np.float32)
+    cmd = raw["cmd"].astype(np.float32)
+    types = raw["terrain_types"]
+    term_step = raw["term_step"]
+    sub_names = summary["sub_terrain_names"]
+    sub_per_env = env_subterrain_name(types, summary)
+
+    E, T, K_wh = gate_wheel.shape
+    step_mask = np.zeros((E, T), dtype=bool)
+    for e in range(E):
+        last = int(term_step[e]) if term_step[e] >= 0 else T
+        step_mask[e, :max(last, 1)] = True
+    cnts = step_mask.sum(axis=1, keepdims=True).clip(min=1)
+    wh = (gate_wheel * step_mask[..., None]).sum(axis=1) / cnts
+    vx = (cmd[..., 0] * step_mask).sum(axis=1) / cnts[:, 0]
+
+    kept = np.isin(sub_per_env, sub_names) & valid_mask
+    wh, labels, vx = wh[kept], sub_per_env[kept], vx[kept]
+    if wh.shape[0] < 5:
+        print("[warn] too few envs for wheel-violin plot, skipping")
+        return None
+
+    note = ""
+    if (vx > 0).any() and (vx < 0).any():
+        fmask = vx > 0
+        wh, labels = wh[fmask], labels[fmask]
+        note = " (forward envs)"
+
+    present = [n for n in sub_names if (labels == n).any()]
+    disp = []
+    for n in present:
+        s = short_terrain_label(n)
+        disp.append(s[:1].upper() + s[1:])
+    nT = len(present)
+    expert_names = [f"W{i}" for i in range(K_wh)]
+
+    cmap = plt.cm.tab20
+    n_sub = len(sub_names)
+
+    def _tcolor(name):
+        return cmap(sub_names.index(name) / max(1, n_sub - 1))
+
+    # compact single-column figure: 3 panels kept side by side
+    fig, axes = plt.subplots(1, K_wh, figsize=(3.5, 2.4), sharey=True)
+    if K_wh == 1:
+        axes = [axes]
+    for j, ax in enumerate(axes):
+        data = [wh[labels == n][:, j] for n in present]
+        parts = ax.violinplot(data, positions=range(1, nT + 1), vert=False,
+                              showmeans=True, widths=0.85)
+        for body, n in zip(parts["bodies"], present):
+            body.set_facecolor(_tcolor(n))
+            body.set_edgecolor("0.3")
+            body.set_linewidth(0.4)
+            body.set_alpha(0.78)
+        for key in ("cmeans", "cbars", "cmins", "cmaxes"):
+            if key in parts:
+                parts[key].set_color("0.3")
+                parts[key].set_linewidth(0.6)
+        col = wh[:, j]  # per-panel x-range, tight to this expert's own data
+        cpad = (float(col.max()) - float(col.min())) * 0.12
+        ax.set_xlim(float(col.min()) - cpad, float(col.max()) + cpad)
+        ax.set_title(expert_names[j], fontsize=7)
+        ax.tick_params(labelsize=4.5)
+        ax.locator_params(axis="x", nbins=4)
+    # terrain labels on the shared y-axis (only the first panel carries them)
+    axes[0].set_yticks(range(1, nT + 1))
+    axes[0].set_yticklabels(disp, fontsize=5)
+    axes[0].set_ylim(0.4, nT + 0.6)
+    axes[0].invert_yaxis()  # first terrain at the top
+    axes[K_wh // 2].set_xlabel("gate weight", fontsize=6)
+    fig.suptitle(f"Wheel expert weight distribution per terrain{note}",
+                 fontsize=7)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    out = out_dir / "paper_06_wheel_violin.pdf"
     _save(fig, out)
     return out
 
@@ -496,16 +736,24 @@ def main():
     p.add_argument("--success_dist", type=float, default=None,
                    help="override success threshold (m); default = summary value")
     p.add_argument("--exclude_terrains", type=str,
-                   default="hurdle_pole,hurdle_board",
-                   help="comma-separated sub-terrain names to drop from "
-                        "all plots (default keeps only the best hurdle type)")
+                   default="hurdle_pole,hurdle_board,random_rough,boxes",
+                   help="comma-separated sub-terrain names to drop from all "
+                        "plots (default keeps only the best hurdle type and "
+                        "drops the trivial rough/boxes terrains)")
+    p.add_argument("--level_cap", type=str,
+                   default="stepping_stones:19,pit:19",
+                   help="per-terrain max difficulty row (inclusive); envs of "
+                        "that sub-terrain on higher rows are dropped from all "
+                        "plots. Format 'name:row,name:row'. Empty disables. "
+                        "Default caps gap/pit at L15-19 (above is mostly "
+                        "failure noise).")
     p.add_argument("--no_tsne", action="store_true",
                    help="skip t-SNE plot (sklearn dependency, slow)")
     args = p.parse_args()
 
     if args.data_dir is None:
-        base = Path("/home/ouge/Software/rl_training/logs/moe_eval/"
-                    "split_moe_teacher_parallel")
+        repo_root = Path(__file__).resolve().parents[3]
+        base = repo_root / "logs" / "moe_eval" / "split_moe_teacher_parallel"
         data_dir = latest_run(base)
     else:
         data_dir = Path(args.data_dir)
@@ -520,13 +768,14 @@ def main():
 
     success_mask, displacement, valid_mask = compute_success(raw, success_dist)
 
+    sub_per_env = env_subterrain_name(raw["terrain_types"], summary)
+
     # Apply terrain exclusion: drop envs whose sub-terrain is in the exclude
     # list, and also drop those names from summary so they don't appear in
     # any plot.
     exclude = set(s.strip() for s in args.exclude_terrains.split(",")
                   if s.strip())
     if exclude:
-        sub_per_env = env_subterrain_name(raw["terrain_types"], summary)
         keep_env = ~np.isin(sub_per_env, list(exclude))
         n_dropped_envs = int((~keep_env).sum())
         valid_mask = valid_mask & keep_env
@@ -535,6 +784,26 @@ def main():
         ]
         print(f"[info] excluded terrains: {sorted(exclude)} "
               f"({n_dropped_envs} envs dropped)")
+
+    # Apply per-terrain difficulty cap: drop envs of the named sub-terrains
+    # whose difficulty row exceeds the cap. The terrain still appears in plots,
+    # just truncated — high-difficulty gap/pit are mostly failures that only
+    # add noise to the aggregates.
+    caps = {}
+    for tok in args.level_cap.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        name, _, row = tok.partition(":")
+        caps[name.strip()] = int(row)
+    if caps:
+        levels = raw["terrain_levels"]
+        cap_drop = np.zeros(len(levels), dtype=bool)
+        for name, max_row in caps.items():
+            cap_drop |= (sub_per_env == name) & (levels > max_row)
+        n_cap = int((cap_drop & valid_mask).sum())
+        valid_mask = valid_mask & ~cap_drop
+        print(f"[info] level cap {caps}: {n_cap} envs dropped (row > cap)")
 
     n_total = len(displacement)
     n_valid = int(valid_mask.sum())
@@ -563,6 +832,12 @@ def main():
         f4 = plot_gate_tsne(raw, summary, valid_mask, out_dir)
         if f4:
             print(f"[done] {f4}")
+        f5 = plot_leg_routing(raw, summary, valid_mask, out_dir)
+        if f5:
+            print(f"[done] {f5}")
+    f6 = plot_wheel_violin(raw, summary, valid_mask, out_dir)
+    if f6:
+        print(f"[done] {f6}")
 
 
 if __name__ == "__main__":
