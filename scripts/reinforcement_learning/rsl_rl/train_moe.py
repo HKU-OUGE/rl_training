@@ -298,6 +298,7 @@ def main():
                   f"{list(chosen.sub_terrains.keys())} "
                   f"(num_rows={chosen.num_rows}, curriculum={chosen.curriculum})")
         else:
+            chosen = None
             print(f"[rank={local_rank}] WARN: out of RANK_TERRAIN_MAP range, "
                   f"using default terrain from task cfg")
 
