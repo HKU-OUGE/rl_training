@@ -40,6 +40,12 @@ parser.add_argument("--num_leg_experts", type=int, default=None)
 parser.add_argument("--latent_sample_envs", type=int, default=500, help="Subsample envs for GRU latent buffer")
 parser.add_argument("--latent_sample_stride", type=int, default=10, help="Subsample stride for GRU latent")
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--ablation", type=str, default="full",
+                    choices=["full", "A1", "A2", "A3", "B1", "B2"],
+                    help="Ablation variant whose ckpt to eval. 'full' = baseline (default). "
+                         "A1/B2 require architecture/runtime overrides; A2/A3/B1 are inference-"
+                         "equivalent to baseline (only training-time differences). Output goes to "
+                         "logs/moe_eval/split_moe_teacher_parallel_abl_{X}/ts_iter{N}/ when != full.")
 
 AppLauncher.add_app_launcher_args(parser)
 args, _ = parser.parse_known_args()
@@ -506,6 +512,24 @@ def main():
         train_cfg_dict["policy"]["num_leg_experts"] = args.num_leg_experts
     for k in ["checkpoint_wheel", "checkpoint_leg", "freeze_experts"]:
         train_cfg_dict["policy"].pop(k, None)
+
+    # === Ablation cfg overrides (matches eval_train.py ABLATIONS registry) ===
+    # Only flags that change the constructed network or its forward path matter at
+    # eval-time. A2/A3/B1 are training-only diffs (critic placement / loss terms)
+    # → leaving them inference-equivalent to full is intentional.
+    _ABL_POLICY_OVERRIDES = {
+        "A1": {"single_gate": True},          # different architecture
+        "B2": {"blind_vision": True},          # zero exteroception at fwd
+        # A2/A3/B1: no policy override needed
+    }
+    if args.ablation != "full":
+        for k, v in _ABL_POLICY_OVERRIDES.get(args.ablation, {}).items():
+            train_cfg_dict["policy"][k] = v
+        # Route output + ckpt resolution to the ablation's experiment_name
+        train_cfg_dict["experiment_name"] = f"split_moe_teacher_parallel_abl_{args.ablation}"
+        print(f"[eval][ablation={args.ablation}] policy overrides: "
+              f"{_ABL_POLICY_OVERRIDES.get(args.ablation, {})}")
+
     experiment_name = train_cfg_dict.get("experiment_name", "split_moe_teacher_parallel")
 
     # --- checkpoint ---
