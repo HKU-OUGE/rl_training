@@ -940,6 +940,13 @@ def main():
                         "into forward/backward panels and paper_06 wheel violin "
                         "uses forward-only envs. With this flag, both plots pool "
                         "forward + backward into a single view colored by terrain.")
+    p.add_argument("--wheel_dir_encoding", type=str, default=None,
+                   choices=[None, "panels", "merged", "shape_split", "shape_side",
+                            "fill_split", "fill_overlay"],
+                   help="Override --dir_encoding just for paper_06 wheel violin. "
+                        "Useful when leg-routing (paper_05) and wheel violin want "
+                        "different visual styles (e.g. fill_overlay for paper_05 "
+                        "but merged for paper_06). Defaults to --dir_encoding.")
     p.add_argument("--dir_encoding", type=str, default="panels",
                    choices=["panels", "merged", "shape_split", "shape_side",
                             "fill_split", "fill_overlay"],
@@ -1041,9 +1048,10 @@ def main():
                               dir_encoding=args.dir_encoding)
         if f5:
             print(f"[done] {f5}")
+    wheel_enc = args.wheel_dir_encoding or args.dir_encoding
     f6 = plot_wheel_violin(raw, summary, valid_mask, out_dir,
                            merge_directions=args.merge_directions,
-                           dir_encoding=args.dir_encoding)
+                           dir_encoding=wheel_enc)
     if f6:
         print(f"[done] {f6}")
 
