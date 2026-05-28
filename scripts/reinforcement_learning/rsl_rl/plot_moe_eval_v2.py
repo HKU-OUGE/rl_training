@@ -838,10 +838,11 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
     axes[0].set_yticklabels(disp, fontsize=5)
     axes[0].set_ylim(0.4, nT + 0.6)
     axes[0].invert_yaxis()  # first terrain at the top
-    # center the x-label under the whole figure rather than just the middle panel
-    fig.supxlabel("gate weight", fontsize=7, y=0.02)
     fig.suptitle("Wheel expert weight distribution per terrain", fontsize=7)
-    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.06, 1, 0.95])
+    # supxlabel after tight_layout so it sits just under the axes row, not at
+    # the bottom of the figure window (y=0.02 was visibly detached).
+    fig.supxlabel("gate weight", fontsize=7, y=0.07)
     out = out_dir / "paper_06_wheel_violin.pdf"
     _save(fig, out)
     return out
