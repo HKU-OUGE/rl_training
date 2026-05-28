@@ -527,7 +527,7 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
         eta_l_dir = _eta2(leg_means, (vx > 0).astype(int))
         print(f"[info] leg-routing ({dir_encoding}) eta^2: terrain={eta_leg:.2f}  direction={eta_l_dir:.2f}")
         Y = _tsne(leg_means)
-        fig, ax = plt.subplots(figsize=(5.2, 4.4))
+        fig, ax = plt.subplots(figsize=(4.4, 4.4))
         fwd = vx > 0
         for i, name in enumerate(sub_names):
             color = cmap(i / max(1, n_sub - 1))
@@ -575,16 +575,22 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
         ax.set_xlabel("t-SNE 1"); ax.set_ylabel("t-SNE 2")
         ax.set_title(f"terrain $\\eta^2$={eta_leg:.2f}  direction $\\eta^2$={eta_l_dir:.2f}",
                      fontsize=8)
-        # Two legends: terrain (right) + direction (lower-right of plot)
+        # Two legends placed INSIDE the axes (matplotlib finds the emptiest
+        # corner via loc='best'). White-ish frame keeps them readable on top
+        # of the scatter cloud.
         terr_handles, terr_labels = ax.get_legend_handles_labels()
-        leg_terr = ax.legend(terr_handles, terr_labels, loc="center left",
-                             bbox_to_anchor=(1.02, 0.65), fontsize=6, frameon=False,
-                             markerscale=1.2, handlelength=0.6, labelspacing=0.3,
-                             title="terrain")
+        leg_terr = ax.legend(terr_handles, terr_labels, loc="best",
+                             fontsize=6, frameon=True, framealpha=0.85,
+                             edgecolor="0.7", facecolor="white",
+                             markerscale=1.2, handlelength=0.6,
+                             labelspacing=0.3, borderpad=0.4,
+                             title="terrain", title_fontsize=6)
         ax.add_artist(leg_terr)
-        ax.legend(handles=dir_handles, loc="center left",
-                  bbox_to_anchor=(1.02, 0.12), fontsize=6, frameon=False,
-                  handlelength=0.6, labelspacing=0.4, title="direction")
+        ax.legend(handles=dir_handles, loc="lower right",
+                  fontsize=6, frameon=True, framealpha=0.85,
+                  edgecolor="0.7", facecolor="white",
+                  handlelength=0.6, labelspacing=0.4, borderpad=0.4,
+                  title="direction", title_fontsize=6)
         out = out_dir / "paper_05_leg_routing.pdf"
         _save(fig, out)
         return out
