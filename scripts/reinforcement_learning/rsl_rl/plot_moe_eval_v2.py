@@ -380,7 +380,9 @@ def plot_gate_tsne(raw, summary, valid_mask, out_dir):
         random_state=0,
         init="pca",
         learning_rate="auto",
+        n_jobs=1,  # single thread → fully deterministic given fixed random_state
     )
+    np.random.seed(0)
     try:
         Y = TSNE(**tsne_kwargs).fit_transform(X)
     except TypeError:  # older sklearn
@@ -490,13 +492,16 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
         return lbl[:1].upper() + lbl[1:]
 
     def _tsne(X):
+        np.random.seed(0)
         kw = dict(n_components=2,
                   perplexity=min(30, max(5, X.shape[0] // 10)),
-                  random_state=0, init="pca", learning_rate="auto")
+                  random_state=0, init="pca", learning_rate="auto",
+                  n_jobs=1)  # single thread → fully deterministic
         try:
             return TSNE(**kw).fit_transform(X)
         except TypeError:
             kw.pop("learning_rate", None)
+            kw.pop("n_jobs", None)
             return TSNE(**kw).fit_transform(X)
 
     def _leg_panel(ax, X, lbls, title):
@@ -568,8 +573,7 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
                                   markersize=5, label="backward (▲)")]
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_xlabel("t-SNE 1"); ax.set_ylabel("t-SNE 2")
-        ax.set_title(f"Leg gate routing ({dir_encoding})\n"
-                     f"terrain $\\eta^2$={eta_leg:.2f}  direction $\\eta^2$={eta_l_dir:.2f}",
+        ax.set_title(f"terrain $\\eta^2$={eta_leg:.2f}  direction $\\eta^2$={eta_l_dir:.2f}",
                      fontsize=8)
         # Two legends: terrain (right) + direction (lower-right of plot)
         terr_handles, terr_labels = ax.get_legend_handles_labels()
@@ -829,10 +833,10 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
     axes[0].set_yticklabels(disp, fontsize=5)
     axes[0].set_ylim(0.4, nT + 0.6)
     axes[0].invert_yaxis()  # first terrain at the top
-    axes[K_wh // 2].set_xlabel("gate weight", fontsize=6)
-    fig.suptitle(f"Wheel expert weight distribution per terrain{note}",
-                 fontsize=7)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    # center the x-label under the whole figure rather than just the middle panel
+    fig.supxlabel("gate weight", fontsize=7, y=0.02)
+    fig.suptitle("Wheel expert weight distribution per terrain", fontsize=7)
+    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
     out = out_dir / "paper_06_wheel_violin.pdf"
     _save(fig, out)
     return out
