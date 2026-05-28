@@ -530,13 +530,16 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
                 continue
             m_fwd, m_bwd = m_t & fwd, m_t & ~fwd
             if dir_encoding in ("fill_split", "fill_overlay"):
-                # filled circle for fwd, filled diamond for bwd (both solid, smooth)
+                # filled circle for fwd, open triangle for bwd.
+                # Triangle has 3 clear edges that stand out in dense overlap
+                # better than open circles (which read as "empty" / missing data).
                 if m_fwd.any():
                     ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=10, alpha=0.7,
                                color=color, marker="o", label=_disp(name), edgecolors="none")
                 if m_bwd.any():
-                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=14, alpha=0.7,
-                               color=color, marker="D", label=None, edgecolors="none")
+                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=18, alpha=0.7,
+                               facecolors="none", edgecolors=color, linewidths=0.7,
+                               marker="^", label=None)
             else:
                 # shape_split / shape_side: filled circle for fwd, triangle for bwd
                 if m_fwd.any():
@@ -550,8 +553,8 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
         if dir_encoding in ("fill_split", "fill_overlay"):
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
                                   markersize=5, label="forward (●)"),
-                           Line2D([0], [0], marker="D", color="0.3", linestyle="",
-                                  markersize=5, label="backward (◆)")]
+                           Line2D([0], [0], marker="^", color="0.3", linestyle="",
+                                  markerfacecolor="none", markersize=5, label="backward (△)")]
         else:
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
                                   markersize=5, label="forward (●)"),
