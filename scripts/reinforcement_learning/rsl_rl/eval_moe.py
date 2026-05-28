@@ -57,6 +57,10 @@ parser.add_argument("--cap_pit_depth", type=float, default=0.72,
                          "difficulty at the baseline's L26-equivalent (above which even the full "
                          "policy fails). Set 0.8 to restore the training-time range; <=0 disables "
                          "the cap entirely.")
+parser.add_argument("--keep_double_pit", action="store_true",
+                    help="Keep double_pit=True (training-time setting). Default behavior is to "
+                         "force single pit at eval-time for deployment-realistic conditions "
+                         "(typical paper convention: one obstacle per episode).")
 
 AppLauncher.add_app_launcher_args(parser)
 args, _ = parser.parse_known_args()
@@ -181,21 +185,26 @@ def apply_eval_overrides(env_cfg, args):
             print("[eval] terminations.illegal_contact = None "
                   "(default; pass --keep_illegal_contact to restore)")
 
-    # ---- 9) Cap pit_depth at deployment-realistic ceiling ----
+    # ---- 9) Pit eval overrides: cap depth + single pit by default ----
     # pit at L27-29 (depths ~0.74-0.80 m) is physically out of reach for the M20
     # quad-leg+wheel platform — even the converged baseline fails 100% there. To
     # avoid drowning the per-row metric in unreachable rows, cap the parametric
     # max so the 30 eval rows span only the baseline's competent range.
-    if args.cap_pit_depth > 0.0:
-        tgen = env_cfg.scene.terrain.terrain_generator
-        if tgen is not None and "pit" in tgen.sub_terrains:
-            pit_cfg = tgen.sub_terrains["pit"]
+    # double_pit (back-to-back pits) is a training-time hardening trick; for
+    # deployment-realistic eval and paper-convention comparison, drop to single.
+    tgen = env_cfg.scene.terrain.terrain_generator
+    if tgen is not None and "pit" in tgen.sub_terrains:
+        pit_cfg = tgen.sub_terrains["pit"]
+        if args.cap_pit_depth > 0.0:
             lo, hi = pit_cfg.pit_depth_range
             new_hi = float(args.cap_pit_depth)
             if hi > new_hi:
                 pit_cfg.pit_depth_range = (lo, new_hi)
                 print(f"[eval] pit_depth_range capped: ({lo}, {hi}) -> ({lo}, {new_hi}) "
                       f"(new L29 ≈ old L{int(round((new_hi-lo)/(hi-lo)*29))})")
+        if not args.keep_double_pit and getattr(pit_cfg, "double_pit", False):
+            pit_cfg.double_pit = False
+            print("[eval] pit.double_pit = False (default; pass --keep_double_pit to restore)")
 
     return env_cfg
 
