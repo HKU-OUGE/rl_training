@@ -530,22 +530,18 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
                 continue
             m_fwd, m_bwd = m_t & fwd, m_t & ~fwd
             if dir_encoding in ("fill_split", "fill_overlay"):
-                # filled circle for fwd (white halo edge), open triangle for bwd
-                # (white outer halo then colored triangle on top).
-                # White halos visually separate overlapping markers in dense scatter.
+                # filled circle for fwd, filled triangle for bwd, both with white
+                # halo edges. White halos separate overlapping markers in dense
+                # scatter; bwd as filled triangle is more visible than open shapes
+                # while still being identifiable by shape.
                 if m_fwd.any():
                     ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=14, alpha=0.85,
                                color=color, marker="o", label=_disp(name),
                                edgecolors="white", linewidths=0.35)
                 if m_bwd.any():
-                    # 1st pass: thicker white triangle behind
-                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=22, alpha=0.85,
-                               facecolors="none", edgecolors="white", linewidths=1.6,
-                               marker="^", label=None)
-                    # 2nd pass: colored triangle on top
-                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=22, alpha=0.85,
-                               facecolors="none", edgecolors=color, linewidths=0.8,
-                               marker="^", label=None)
+                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=18, alpha=0.85,
+                               color=color, marker="^", label=None,
+                               edgecolors="white", linewidths=0.35)
             else:
                 # shape_split / shape_side: filled circle for fwd, filled triangle for bwd
                 # (both with white halo edge to separate overlapping markers)
@@ -563,7 +559,7 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
                                   markersize=5, label="forward (●)"),
                            Line2D([0], [0], marker="^", color="0.3", linestyle="",
-                                  markerfacecolor="none", markersize=5, label="backward (△)")]
+                                  markersize=5, label="backward (▲)")]
         else:
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
                                   markersize=5, label="forward (●)"),
