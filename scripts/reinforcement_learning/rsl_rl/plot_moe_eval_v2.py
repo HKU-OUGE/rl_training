@@ -563,14 +563,14 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
         from matplotlib.lines import Line2D
         if dir_encoding in ("fill_split", "fill_overlay"):
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
-                                  markersize=5, label="forward (●)"),
+                                  markersize=5, label="forward"),
                            Line2D([0], [0], marker="^", color="0.3", linestyle="",
-                                  markersize=5, label="backward (▲)")]
+                                  markersize=5, label="backward")]
         else:
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
-                                  markersize=5, label="forward (●)"),
+                                  markersize=5, label="forward"),
                            Line2D([0], [0], marker="^", color="0.3", linestyle="",
-                                  markersize=5, label="backward (▲)")]
+                                  markersize=5, label="backward")]
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_xlabel("t-SNE 1"); ax.set_ylabel("t-SNE 2")
         ax.set_title(f"terrain $\\eta^2$={eta_leg:.2f}  direction $\\eta^2$={eta_l_dir:.2f}",
