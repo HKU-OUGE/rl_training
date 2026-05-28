@@ -577,20 +577,19 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
                      fontsize=8)
         # Two legends placed INSIDE the axes (matplotlib finds the emptiest
         # corner via loc='best'). White-ish frame keeps them readable on top
-        # of the scatter cloud.
+        # of the scatter cloud. No section titles — the markers speak for
+        # themselves (colored swatches = terrain, ●/▲ pair = direction).
         terr_handles, terr_labels = ax.get_legend_handles_labels()
         leg_terr = ax.legend(terr_handles, terr_labels, loc="best",
                              fontsize=6, frameon=True, framealpha=0.85,
                              edgecolor="0.7", facecolor="white",
                              markerscale=1.2, handlelength=0.6,
-                             labelspacing=0.3, borderpad=0.4,
-                             title="terrain", title_fontsize=6)
+                             labelspacing=0.3, borderpad=0.4)
         ax.add_artist(leg_terr)
         ax.legend(handles=dir_handles, loc="lower right",
                   fontsize=6, frameon=True, framealpha=0.85,
                   edgecolor="0.7", facecolor="white",
-                  handlelength=0.6, labelspacing=0.4, borderpad=0.4,
-                  title="direction", title_fontsize=6)
+                  handlelength=0.6, labelspacing=0.4, borderpad=0.4)
         out = out_dir / "paper_05_leg_routing.pdf"
         _save(fig, out)
         return out
