@@ -156,6 +156,7 @@ def short_terrain_label(name: str) -> str:
 def _save(fig, out_pdf: Path):
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_pdf, format="pdf")
+    fig.savefig(out_pdf.with_suffix(".svg"), format="svg")
     fig.savefig(out_pdf.with_suffix(".png"), format="png", dpi=200)
     plt.close(fig)
     return out_pdf
