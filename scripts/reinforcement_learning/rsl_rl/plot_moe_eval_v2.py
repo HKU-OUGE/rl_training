@@ -397,9 +397,9 @@ def plot_gate_tsne(raw, summary, valid_mask, out_dir):
             continue
         lbl = short_terrain_label(name)
         lbl = lbl[:1].upper() + lbl[1:]
-        ax.scatter(Y[m, 0], Y[m, 1], s=8, alpha=0.65,
+        ax.scatter(Y[m, 0], Y[m, 1], s=12, alpha=0.8,
                    color=cmap(i / max(1, n_sub - 1)),
-                   label=lbl, edgecolors="none")
+                   label=lbl, edgecolors="white", linewidths=0.3)
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
     ax.set_xticks([])
@@ -503,9 +503,9 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
         for i, name in enumerate(sub_names):
             m = lbls == name
             if m.any():
-                ax.scatter(Y[m, 0], Y[m, 1], s=7, alpha=0.65,
+                ax.scatter(Y[m, 0], Y[m, 1], s=10, alpha=0.8,
                            color=cmap(i / max(1, n_sub - 1)),
-                           label=_disp(name), edgecolors="none")
+                           label=_disp(name), edgecolors="white", linewidths=0.3)
         ax.set_xlabel("t-SNE 1")
         ax.set_ylabel("t-SNE 2")
         ax.set_xticks([])
@@ -530,24 +530,33 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
                 continue
             m_fwd, m_bwd = m_t & fwd, m_t & ~fwd
             if dir_encoding in ("fill_split", "fill_overlay"):
-                # filled circle for fwd, open triangle for bwd.
-                # Triangle has 3 clear edges that stand out in dense overlap
-                # better than open circles (which read as "empty" / missing data).
+                # filled circle for fwd (white halo edge), open triangle for bwd
+                # (white outer halo then colored triangle on top).
+                # White halos visually separate overlapping markers in dense scatter.
                 if m_fwd.any():
-                    ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=10, alpha=0.7,
-                               color=color, marker="o", label=_disp(name), edgecolors="none")
+                    ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=14, alpha=0.85,
+                               color=color, marker="o", label=_disp(name),
+                               edgecolors="white", linewidths=0.35)
                 if m_bwd.any():
-                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=18, alpha=0.7,
-                               facecolors="none", edgecolors=color, linewidths=0.7,
+                    # 1st pass: thicker white triangle behind
+                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=22, alpha=0.85,
+                               facecolors="none", edgecolors="white", linewidths=1.6,
+                               marker="^", label=None)
+                    # 2nd pass: colored triangle on top
+                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=22, alpha=0.85,
+                               facecolors="none", edgecolors=color, linewidths=0.8,
                                marker="^", label=None)
             else:
-                # shape_split / shape_side: filled circle for fwd, triangle for bwd
+                # shape_split / shape_side: filled circle for fwd, filled triangle for bwd
+                # (both with white halo edge to separate overlapping markers)
                 if m_fwd.any():
-                    ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=10, alpha=0.7,
-                               color=color, marker="o", label=_disp(name), edgecolors="none")
+                    ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=14, alpha=0.85,
+                               color=color, marker="o", label=_disp(name),
+                               edgecolors="white", linewidths=0.35)
                 if m_bwd.any():
-                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=14, alpha=0.7,
-                               color=color, marker="^", label=None, edgecolors="none")
+                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=18, alpha=0.85,
+                               color=color, marker="^", label=None,
+                               edgecolors="white", linewidths=0.35)
         # add a separate legend entry pair (color-neutral) for direction
         from matplotlib.lines import Line2D
         if dir_encoding in ("fill_split", "fill_overlay"):
