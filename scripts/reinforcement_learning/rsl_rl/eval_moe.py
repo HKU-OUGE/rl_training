@@ -52,6 +52,11 @@ parser.add_argument("--ablation", type=str, default="full",
                          "A1/B2 require architecture/runtime overrides; A2/A3/B1 are inference-"
                          "equivalent to baseline (only training-time differences). Output goes to "
                          "logs/moe_eval/split_moe_teacher_parallel_abl_{X}/ts_iter{N}/ when != full.")
+parser.add_argument("--cap_pit_depth", type=float, default=0.72,
+                    help="Cap pit_depth_range max at this value (m). Default 0.72 caps eval pit "
+                         "difficulty at the baseline's L26-equivalent (above which even the full "
+                         "policy fails). Set 0.8 to restore the training-time range; <=0 disables "
+                         "the cap entirely.")
 
 AppLauncher.add_app_launcher_args(parser)
 args, _ = parser.parse_known_args()
@@ -175,6 +180,22 @@ def apply_eval_overrides(env_cfg, args):
             env_cfg.terminations.illegal_contact = None
             print("[eval] terminations.illegal_contact = None "
                   "(default; pass --keep_illegal_contact to restore)")
+
+    # ---- 9) Cap pit_depth at deployment-realistic ceiling ----
+    # pit at L27-29 (depths ~0.74-0.80 m) is physically out of reach for the M20
+    # quad-leg+wheel platform — even the converged baseline fails 100% there. To
+    # avoid drowning the per-row metric in unreachable rows, cap the parametric
+    # max so the 30 eval rows span only the baseline's competent range.
+    if args.cap_pit_depth > 0.0:
+        tgen = env_cfg.scene.terrain.terrain_generator
+        if tgen is not None and "pit" in tgen.sub_terrains:
+            pit_cfg = tgen.sub_terrains["pit"]
+            lo, hi = pit_cfg.pit_depth_range
+            new_hi = float(args.cap_pit_depth)
+            if hi > new_hi:
+                pit_cfg.pit_depth_range = (lo, new_hi)
+                print(f"[eval] pit_depth_range capped: ({lo}, {hi}) -> ({lo}, {new_hi}) "
+                      f"(new L29 ≈ old L{int(round((new_hi-lo)/(hi-lo)*29))})")
 
     return env_cfg
 
