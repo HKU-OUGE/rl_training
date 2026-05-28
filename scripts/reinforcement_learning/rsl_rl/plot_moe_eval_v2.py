@@ -530,14 +530,13 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
                 continue
             m_fwd, m_bwd = m_t & fwd, m_t & ~fwd
             if dir_encoding in ("fill_split", "fill_overlay"):
-                # filled circle for fwd, open circle for bwd
+                # filled circle for fwd, filled diamond for bwd (both solid, smooth)
                 if m_fwd.any():
                     ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=10, alpha=0.7,
-                               color=color, label=_disp(name), edgecolors="none")
+                               color=color, marker="o", label=_disp(name), edgecolors="none")
                 if m_bwd.any():
                     ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=14, alpha=0.7,
-                               facecolors="none", edgecolors=color, linewidths=0.6,
-                               label=None)
+                               color=color, marker="D", label=None, edgecolors="none")
             else:
                 # shape_split / shape_side: filled circle for fwd, triangle for bwd
                 if m_fwd.any():
@@ -550,9 +549,9 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
         from matplotlib.lines import Line2D
         if dir_encoding in ("fill_split", "fill_overlay"):
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
-                                  markersize=5, label="forward (filled)"),
-                           Line2D([0], [0], marker="o", color="0.3", linestyle="",
-                                  markerfacecolor="none", markersize=5, label="backward (open)")]
+                                  markersize=5, label="forward (●)"),
+                           Line2D([0], [0], marker="D", color="0.3", linestyle="",
+                                  markersize=5, label="backward (◆)")]
         else:
             dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
                                   markersize=5, label="forward (●)"),
@@ -750,13 +749,19 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
                 # bwd: outline only, overlay on same row
                 if len(bdata):
                     pb = ax.violinplot([bdata], positions=[base], vert=False,
-                                       showmeans=False, widths=0.85)
+                                       showmeans=True, widths=0.85)
                     for body in pb["bodies"]:
                         body.set_facecolor("none")
                         body.set_edgecolor(_tcolor(n))
                         body.set_linewidth(1.2)
                         body.set_alpha(1.0)
-                    for key in ("cmeans", "cbars", "cmins", "cmaxes"):
+                    # Match fwd's helper-line styling but dashed for bwd so the two
+                    # means (fwd solid / bwd dashed) are visually distinguishable.
+                    if "cmeans" in pb:
+                        pb["cmeans"].set_color("0.3")
+                        pb["cmeans"].set_linewidth(0.6)
+                        pb["cmeans"].set_linestyles("dashed")
+                    for key in ("cbars", "cmins", "cmaxes"):
                         if key in pb:
                             pb[key].set_visible(False)
         elif fwd_mask_global is not None and dir_encoding in ("shape_split", "fill_split"):
