@@ -61,6 +61,12 @@ parser.add_argument("--keep_double_pit", action="store_true",
                     help="Keep double_pit=True (training-time setting). Default behavior is to "
                          "force single pit at eval-time for deployment-realistic conditions "
                          "(typical paper convention: one obstacle per episode).")
+parser.add_argument("--cap_stone_distance", type=float, default=0.58,
+                    help="Cap stepping_stones.stone_distance_range max at this value (m). "
+                         "Default 0.58 caps eval at baseline's L20-equivalent — at distances "
+                         "≥0.6m the M20 platform cannot reach the next stone (leg span limit), "
+                         "and L21-L28 sit at 0-50% pass even for the converged baseline. Set "
+                         "0.8 to restore the training-time range; <=0 disables the cap.")
 
 AppLauncher.add_app_launcher_args(parser)
 args, _ = parser.parse_known_args()
@@ -205,6 +211,19 @@ def apply_eval_overrides(env_cfg, args):
         if not args.keep_double_pit and getattr(pit_cfg, "double_pit", False):
             pit_cfg.double_pit = False
             print("[eval] pit.double_pit = False (default; pass --keep_double_pit to restore)")
+
+    # ---- 10) Cap stepping_stones.stone_distance at deployment-realistic ceiling ----
+    # At stone_distance >=0.6m the M20 platform cannot reach the next stone, and the
+    # baseline pass rate sits at 0-50% across L21-L28. Cap so the 30 rows span only
+    # the competent range (analogous to pit cap above).
+    if args.cap_stone_distance > 0.0 and tgen is not None and "stepping_stones" in tgen.sub_terrains:
+        ss_cfg = tgen.sub_terrains["stepping_stones"]
+        lo, hi = ss_cfg.stone_distance_range
+        new_hi = float(args.cap_stone_distance)
+        if hi > new_hi:
+            ss_cfg.stone_distance_range = (lo, new_hi)
+            print(f"[eval] stepping_stones.stone_distance_range capped: ({lo}, {hi}) -> "
+                  f"({lo}, {new_hi}) (new L29 ≈ old L{int(round((new_hi-lo)/(hi-lo)*29))})")
 
     return env_cfg
 
@@ -528,6 +547,56 @@ def save_outputs(bufs, env_cfg, args, ckpt_path, experiment_name, iter_num):
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     print(f"[eval] summary.json written → {out_dir}/summary.json")
+
+    # --- terrain_config.json: final applied terrain cfg + eval-time overrides ---
+    sub_cfg_dump = {}
+    for name, c in tgen.sub_terrains.items():
+        entry = {"class": type(c).__name__, "proportion": float(c.proportion)}
+        for attr in ("step_height_range", "step_width", "platform_width", "border_width",
+                     "holes", "stone_height_max", "stone_width_range", "stone_distance_range",
+                     "holes_depth", "rail_thickness_range", "rail_height_range",
+                     "hurdle_height_range", "bar_thickness", "bar_width", "mode",
+                     "pit_depth_range", "double_pit", "grid_width", "grid_height_range",
+                     "noise_range", "noise_step", "slope_range"):
+            if hasattr(c, attr):
+                v = getattr(c, attr)
+                entry[attr] = list(v) if isinstance(v, tuple) else v
+        sub_cfg_dump[name] = entry
+    terrain_cfg = {
+        "_doc": ("Final applied terrain configuration AFTER eval-time overrides. "
+                 "Diff vs production cfg shows what apply_eval_overrides changed."),
+        "size_m": list(tgen.size),
+        "border_width_m": float(tgen.border_width),
+        "num_rows": int(tgen.num_rows),
+        "num_cols": int(tgen.num_cols),
+        "horizontal_scale": float(tgen.horizontal_scale),
+        "vertical_scale": float(tgen.vertical_scale),
+        "slope_threshold": float(tgen.slope_threshold),
+        "use_cache": bool(tgen.use_cache),
+        "curriculum": bool(tgen.curriculum),
+        "max_init_terrain_level": int(env_cfg.scene.terrain.max_init_terrain_level),
+        "sub_terrains": sub_cfg_dump,
+        "eval_overrides_applied": {
+            "illegal_contact_disabled": (not args.keep_illegal_contact),
+            "cap_pit_depth": float(args.cap_pit_depth) if args.cap_pit_depth > 0 else None,
+            "force_single_pit": (not args.keep_double_pit),
+            "cap_stone_distance": float(args.cap_stone_distance) if args.cap_stone_distance > 0 else None,
+            "zero_obs_noise": bool(args.zero_obs_noise),
+        },
+        "termination_terms_active": list(getattr(env_cfg.terminations, "__dict__", {}).keys()),
+        "episode_length_s": float(env_cfg.episode_length_s),
+        "command": {
+            "cmd_vx": float(args.cmd_vx),
+            "cmd_vx_bidir": bool(args.cmd_vx_bidir),
+            "lin_vel_y": list(env_cfg.commands.base_velocity.ranges.lin_vel_y),
+            "ang_vel_z": list(env_cfg.commands.base_velocity.ranges.ang_vel_z),
+            "heading": list(env_cfg.commands.base_velocity.ranges.heading),
+        },
+        "success_dist_m": float(args.success_dist),
+    }
+    with open(os.path.join(out_dir, "terrain_config.json"), "w") as f:
+        json.dump(terrain_cfg, f, indent=2)
+    print(f"[eval] terrain_config.json written → {out_dir}/terrain_config.json")
 
     return out_dir
 
