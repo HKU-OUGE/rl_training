@@ -433,7 +433,8 @@ def _eta2(X, groups):
     return ss_between / ss_tot
 
 
-def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False):
+def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
+                     dir_encoding="panels"):
     """Leg-gate routing t-SNE, colored by terrain.
 
     The wheel gate is covered separately by plot_wheel_violin — a ternary
@@ -513,6 +514,69 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False):
 
     bidir = bool((vx > 0).any() and (vx < 0).any())
 
+    # dir_encoding takes precedence over merge_directions
+    if dir_encoding in ("shape_split", "shape_side", "fill_split", "fill_overlay") and bidir:
+        # Single panel, color=terrain, shape/fill=direction
+        eta_leg = _eta2(leg_means, labels)
+        eta_l_dir = _eta2(leg_means, (vx > 0).astype(int))
+        print(f"[info] leg-routing ({dir_encoding}) eta^2: terrain={eta_leg:.2f}  direction={eta_l_dir:.2f}")
+        Y = _tsne(leg_means)
+        fig, ax = plt.subplots(figsize=(5.2, 4.4))
+        fwd = vx > 0
+        for i, name in enumerate(sub_names):
+            color = cmap(i / max(1, n_sub - 1))
+            m_t = labels == name
+            if not m_t.any():
+                continue
+            m_fwd, m_bwd = m_t & fwd, m_t & ~fwd
+            if dir_encoding in ("fill_split", "fill_overlay"):
+                # filled circle for fwd, open circle for bwd
+                if m_fwd.any():
+                    ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=10, alpha=0.7,
+                               color=color, label=_disp(name), edgecolors="none")
+                if m_bwd.any():
+                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=14, alpha=0.7,
+                               facecolors="none", edgecolors=color, linewidths=0.6,
+                               label=None)
+            else:
+                # shape_split / shape_side: filled circle for fwd, triangle for bwd
+                if m_fwd.any():
+                    ax.scatter(Y[m_fwd, 0], Y[m_fwd, 1], s=10, alpha=0.7,
+                               color=color, marker="o", label=_disp(name), edgecolors="none")
+                if m_bwd.any():
+                    ax.scatter(Y[m_bwd, 0], Y[m_bwd, 1], s=14, alpha=0.7,
+                               color=color, marker="^", label=None, edgecolors="none")
+        # add a separate legend entry pair (color-neutral) for direction
+        from matplotlib.lines import Line2D
+        if dir_encoding in ("fill_split", "fill_overlay"):
+            dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
+                                  markersize=5, label="forward (filled)"),
+                           Line2D([0], [0], marker="o", color="0.3", linestyle="",
+                                  markerfacecolor="none", markersize=5, label="backward (open)")]
+        else:
+            dir_handles = [Line2D([0], [0], marker="o", color="0.3", linestyle="",
+                                  markersize=5, label="forward (●)"),
+                           Line2D([0], [0], marker="^", color="0.3", linestyle="",
+                                  markersize=5, label="backward (▲)")]
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xlabel("t-SNE 1"); ax.set_ylabel("t-SNE 2")
+        ax.set_title(f"Leg gate routing ({dir_encoding})\n"
+                     f"terrain $\\eta^2$={eta_leg:.2f}  direction $\\eta^2$={eta_l_dir:.2f}",
+                     fontsize=8)
+        # Two legends: terrain (right) + direction (lower-right of plot)
+        terr_handles, terr_labels = ax.get_legend_handles_labels()
+        leg_terr = ax.legend(terr_handles, terr_labels, loc="center left",
+                             bbox_to_anchor=(1.02, 0.65), fontsize=6, frameon=False,
+                             markerscale=1.2, handlelength=0.6, labelspacing=0.3,
+                             title="terrain")
+        ax.add_artist(leg_terr)
+        ax.legend(handles=dir_handles, loc="center left",
+                  bbox_to_anchor=(1.02, 0.12), fontsize=6, frameon=False,
+                  handlelength=0.6, labelspacing=0.4, title="direction")
+        out = out_dir / "paper_05_leg_routing.pdf"
+        _save(fig, out)
+        return out
+
     if bidir and not merge_directions:
         fwd, bwd = vx > 0, vx < 0
         eta_lf = _eta2(leg_means[fwd], labels[fwd])
@@ -566,7 +630,8 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False):
 # Plot 06 — Wheel gate per-expert violins
 # ---------------------------------------------------------------------------
 
-def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False):
+def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
+                      dir_encoding="panels"):
     """Per-expert violin view of wheel-expert differentiation by terrain.
 
     One panel per wheel expert (W0/W1/W2); within each, a horizontal violin per
@@ -598,10 +663,19 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False)
         return None
 
     note = ""
+    fwd_mask_global = None  # for split/side encoding below
     if (vx > 0).any() and (vx < 0).any():
-        if merge_directions:
+        if dir_encoding in ("shape_split", "fill_split"):
+            note = " (split: top=fwd, bottom=bwd)"
+            fwd_mask_global = vx > 0
+        elif dir_encoding == "shape_side":
+            note = " (side-by-side: fwd | bwd per terrain)"
+            fwd_mask_global = vx > 0
+        elif dir_encoding == "fill_overlay":
+            note = " (overlay: filled=fwd, outline=bwd)"
+            fwd_mask_global = vx > 0
+        elif merge_directions or dir_encoding == "merged":
             note = " (fwd + bwd merged)"
-            # use all envs as-is
         else:
             fmask = vx > 0
             wh, labels = wh[fmask], labels[fmask]
@@ -625,19 +699,111 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False)
     fig, axes = plt.subplots(1, K_wh, figsize=(3.5, 2.4), sharey=True)
     if K_wh == 1:
         axes = [axes]
-    for j, ax in enumerate(axes):
-        data = [wh[labels == n][:, j] for n in present]
-        parts = ax.violinplot(data, positions=range(1, nT + 1), vert=False,
-                              showmeans=True, widths=0.85)
-        for body, n in zip(parts["bodies"], present):
-            body.set_facecolor(_tcolor(n))
+
+    def _style_bodies(parts, color, alpha=0.78):
+        for body in parts["bodies"]:
+            body.set_facecolor(color)
             body.set_edgecolor("0.3")
             body.set_linewidth(0.4)
-            body.set_alpha(0.78)
+            body.set_alpha(alpha)
         for key in ("cmeans", "cbars", "cmins", "cmaxes"):
             if key in parts:
                 parts[key].set_color("0.3")
                 parts[key].set_linewidth(0.6)
+
+    for j, ax in enumerate(axes):
+        if fwd_mask_global is not None and dir_encoding == "shape_side":
+            # Two violins per terrain, fwd above, bwd just below — half spacing
+            for ti, n in enumerate(present):
+                m_t = labels == n
+                fdata = wh[m_t & fwd_mask_global][:, j]
+                bdata = wh[m_t & ~fwd_mask_global][:, j]
+                base = ti + 1
+                if len(fdata):
+                    pf = ax.violinplot([fdata], positions=[base - 0.18], vert=False,
+                                       showmeans=True, widths=0.30)
+                    _style_bodies(pf, _tcolor(n), alpha=0.85)
+                if len(bdata):
+                    pb = ax.violinplot([bdata], positions=[base + 0.18], vert=False,
+                                       showmeans=True, widths=0.30)
+                    _style_bodies(pb, _tcolor(n), alpha=0.45)
+        elif fwd_mask_global is not None and dir_encoding == "fill_overlay":
+            # Overlay: per terrain row, draw fwd as filled violin + bwd as outline-only
+            for ti, n in enumerate(present):
+                m_t = labels == n
+                fdata = wh[m_t & fwd_mask_global][:, j]
+                bdata = wh[m_t & ~fwd_mask_global][:, j]
+                base = ti + 1
+                # fwd: filled
+                if len(fdata):
+                    pf = ax.violinplot([fdata], positions=[base], vert=False,
+                                       showmeans=True, widths=0.85)
+                    for body in pf["bodies"]:
+                        body.set_facecolor(_tcolor(n))
+                        body.set_edgecolor(_tcolor(n))
+                        body.set_linewidth(0.6)
+                        body.set_alpha(0.75)
+                    for key in ("cmeans", "cbars", "cmins", "cmaxes"):
+                        if key in pf:
+                            pf[key].set_color("0.3")
+                            pf[key].set_linewidth(0.6)
+                # bwd: outline only, overlay on same row
+                if len(bdata):
+                    pb = ax.violinplot([bdata], positions=[base], vert=False,
+                                       showmeans=False, widths=0.85)
+                    for body in pb["bodies"]:
+                        body.set_facecolor("none")
+                        body.set_edgecolor(_tcolor(n))
+                        body.set_linewidth(1.2)
+                        body.set_alpha(1.0)
+                    for key in ("cmeans", "cbars", "cmins", "cmaxes"):
+                        if key in pb:
+                            pb[key].set_visible(False)
+        elif fwd_mask_global is not None and dir_encoding in ("shape_split", "fill_split"):
+            # Split violin — manually plot fwd (top half) and bwd (bottom half) of each terrain row
+            for ti, n in enumerate(present):
+                m_t = labels == n
+                fdata = wh[m_t & fwd_mask_global][:, j]
+                bdata = wh[m_t & ~fwd_mask_global][:, j]
+                base = ti + 1
+                # Top half violin = fwd (clip path to upper half of position)
+                if len(fdata):
+                    pf = ax.violinplot([fdata], positions=[base], vert=False,
+                                       showmeans=False, widths=0.85)
+                    for body in pf["bodies"]:
+                        v = body.get_paths()[0].vertices
+                        v[:, 1] = np.clip(v[:, 1], base, base + 0.5)  # top half only
+                        body.set_facecolor(_tcolor(n))
+                        body.set_edgecolor("0.3")
+                        body.set_linewidth(0.4)
+                        body.set_alpha(0.85)
+                    for key in ("cmeans", "cbars", "cmins", "cmaxes"):
+                        if key in pf: pf[key].set_visible(False)
+                if len(bdata):
+                    pb = ax.violinplot([bdata], positions=[base], vert=False,
+                                       showmeans=False, widths=0.85)
+                    for body in pb["bodies"]:
+                        v = body.get_paths()[0].vertices
+                        v[:, 1] = np.clip(v[:, 1], base - 0.5, base)  # bottom half only
+                        body.set_facecolor(_tcolor(n))
+                        body.set_edgecolor("0.3")
+                        body.set_linewidth(0.4)
+                        body.set_alpha(0.45)
+                    for key in ("cmeans", "cbars", "cmins", "cmaxes"):
+                        if key in pb: pb[key].set_visible(False)
+        else:
+            data = [wh[labels == n][:, j] for n in present]
+            parts = ax.violinplot(data, positions=range(1, nT + 1), vert=False,
+                                  showmeans=True, widths=0.85)
+            for body, n in zip(parts["bodies"], present):
+                body.set_facecolor(_tcolor(n))
+                body.set_edgecolor("0.3")
+                body.set_linewidth(0.4)
+                body.set_alpha(0.78)
+            for key in ("cmeans", "cbars", "cmins", "cmaxes"):
+                if key in parts:
+                    parts[key].set_color("0.3")
+                    parts[key].set_linewidth(0.6)
         col = wh[:, j]  # per-panel x-range, tight to this expert's own data
         cpad = (float(col.max()) - float(col.min())) * 0.12
         ax.set_xlim(float(col.min()) - cpad, float(col.max()) + cpad)
@@ -760,6 +926,19 @@ def main():
                         "into forward/backward panels and paper_06 wheel violin "
                         "uses forward-only envs. With this flag, both plots pool "
                         "forward + backward into a single view colored by terrain.")
+    p.add_argument("--dir_encoding", type=str, default="panels",
+                   choices=["panels", "merged", "shape_split", "shape_side",
+                            "fill_split", "fill_overlay"],
+                   help="How to encode forward/backward direction in paper_05 and "
+                        "paper_06 when eval is bidirectional. panels=default (fwd/bwd "
+                        "in separate panels for tsne, fwd-only for violin). "
+                        "merged=pool fwd+bwd by terrain only. shape_split=tsne uses "
+                        "marker shape (●/▲), violin uses split halves. "
+                        "shape_side=same tsne, violin uses side-by-side pair per "
+                        "terrain. fill_split=tsne uses filled/open markers, violin "
+                        "uses split halves. fill_overlay=tsne fill+open, violin "
+                        "overlays bwd (outline-only) on top of fwd (filled) per row. "
+                        "Overrides --merge_directions when set.")
     args = p.parse_args()
 
     if args.data_dir is None:
@@ -844,11 +1023,13 @@ def main():
         if f4:
             print(f"[done] {f4}")
         f5 = plot_leg_routing(raw, summary, valid_mask, out_dir,
-                              merge_directions=args.merge_directions)
+                              merge_directions=args.merge_directions,
+                              dir_encoding=args.dir_encoding)
         if f5:
             print(f"[done] {f5}")
     f6 = plot_wheel_violin(raw, summary, valid_mask, out_dir,
-                           merge_directions=args.merge_directions)
+                           merge_directions=args.merge_directions,
+                           dir_encoding=args.dir_encoding)
     if f6:
         print(f"[done] {f6}")
 
