@@ -35,6 +35,12 @@ parser.add_argument("--output_dir", type=str, default=None, help="Override outpu
 parser.add_argument("--strict_per_terrain", action="store_true",
                     help="(unimplemented in v1; raises NotImplementedError) Restart sim per sub-terrain")
 parser.add_argument("--zero_obs_noise", action="store_true", help="Disable obs-level AdditiveUniformNoiseCfg")
+parser.add_argument("--keep_illegal_contact", action="store_true",
+                    help="Keep illegal_contact as a hard termination. Default behavior is "
+                         "to DISABLE it because (a) training uses PER_RANK_NO_ILLEGAL_CONTACT=1 "
+                         "so the policy learned to tolerate transient base contact, and (b) real "
+                         "robots are not killed by a single contact event. Set this flag to "
+                         "reproduce pre-2026-05 eval numbers.")
 parser.add_argument("--num_wheel_experts", type=int, default=None)
 parser.add_argument("--num_leg_experts", type=int, default=None)
 parser.add_argument("--latent_sample_envs", type=int, default=500, help="Subsample envs for GRU latent buffer")
@@ -162,6 +168,13 @@ def apply_eval_overrides(env_cfg, args):
     if args.zero_obs_noise:
         _zero_obs_noise(env_cfg.observations)
         print("[eval] obs noise zeroed")
+
+    # ---- 8) illegal_contact termination: disabled by default (see flag help) ----
+    if not args.keep_illegal_contact:
+        if hasattr(env_cfg.terminations, "illegal_contact") and env_cfg.terminations.illegal_contact is not None:
+            env_cfg.terminations.illegal_contact = None
+            print("[eval] terminations.illegal_contact = None "
+                  "(default; pass --keep_illegal_contact to restore)")
 
     return env_cfg
 
