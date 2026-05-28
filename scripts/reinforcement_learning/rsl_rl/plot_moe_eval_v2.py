@@ -433,7 +433,7 @@ def _eta2(X, groups):
     return ss_between / ss_tot
 
 
-def plot_leg_routing(raw, summary, valid_mask, out_dir):
+def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False):
     """Leg-gate routing t-SNE, colored by terrain.
 
     The wheel gate is covered separately by plot_wheel_violin — a ternary
@@ -513,7 +513,7 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir):
 
     bidir = bool((vx > 0).any() and (vx < 0).any())
 
-    if bidir:
+    if bidir and not merge_directions:
         fwd, bwd = vx > 0, vx < 0
         eta_lf = _eta2(leg_means[fwd], labels[fwd])
         eta_lb = _eta2(leg_means[bwd], labels[bwd])
@@ -531,10 +531,12 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir):
         rect = [0, 0.08, 1, 0.93]
     else:
         eta_leg = _eta2(leg_means, labels)
-        print(f"[info] leg-routing (1-dir) eta^2: terrain={eta_leg:.2f}")
+        tag = "bidir merged" if (bidir and merge_directions) else "1-dir"
+        print(f"[info] leg-routing ({tag}) eta^2: terrain={eta_leg:.2f}")
         fig, ax = plt.subplots(figsize=(4.8, 4.2))
+        title_dir = " (fwd + bwd merged)" if (bidir and merge_directions) else ""
         _leg_panel(ax, leg_means, labels,
-                   f"Leg gate ({leg_means.shape[1]}-D) routing — t-SNE\n"
+                   f"Leg gate ({leg_means.shape[1]}-D) routing — t-SNE{title_dir}\n"
                    f"terrain $\\eta^2$={eta_leg:.2f}")
         legend_ax = None
         rect = None
@@ -564,7 +566,7 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir):
 # Plot 06 — Wheel gate per-expert violins
 # ---------------------------------------------------------------------------
 
-def plot_wheel_violin(raw, summary, valid_mask, out_dir):
+def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False):
     """Per-expert violin view of wheel-expert differentiation by terrain.
 
     One panel per wheel expert (W0/W1/W2); within each, a horizontal violin per
@@ -597,9 +599,13 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir):
 
     note = ""
     if (vx > 0).any() and (vx < 0).any():
-        fmask = vx > 0
-        wh, labels = wh[fmask], labels[fmask]
-        note = " (forward envs)"
+        if merge_directions:
+            note = " (fwd + bwd merged)"
+            # use all envs as-is
+        else:
+            fmask = vx > 0
+            wh, labels = wh[fmask], labels[fmask]
+            note = " (forward envs)"
 
     present = [n for n in sub_names if (labels == n).any()]
     disp = []
@@ -736,10 +742,10 @@ def main():
     p.add_argument("--success_dist", type=float, default=None,
                    help="override success threshold (m); default = summary value")
     p.add_argument("--exclude_terrains", type=str,
-                   default="hurdle_pole,hurdle_board,random_rough,boxes",
+                   default="hurdle_pole,hurdle_board",
                    help="comma-separated sub-terrain names to drop from all "
-                        "plots (default keeps only the best hurdle type and "
-                        "drops the trivial rough/boxes terrains)")
+                        "plots. Default keeps only the canonical 'wall' hurdle "
+                        "and drops the thin variants (pole, board).")
     p.add_argument("--level_cap", type=str,
                    default="stepping_stones:19,pit:19",
                    help="per-terrain max difficulty row (inclusive); envs of "
@@ -749,6 +755,11 @@ def main():
                         "failure noise).")
     p.add_argument("--no_tsne", action="store_true",
                    help="skip t-SNE plot (sklearn dependency, slow)")
+    p.add_argument("--merge_directions", action="store_true",
+                   help="Bidirectional eval default: paper_05 leg-routing splits "
+                        "into forward/backward panels and paper_06 wheel violin "
+                        "uses forward-only envs. With this flag, both plots pool "
+                        "forward + backward into a single view colored by terrain.")
     args = p.parse_args()
 
     if args.data_dir is None:
@@ -832,10 +843,12 @@ def main():
         f4 = plot_gate_tsne(raw, summary, valid_mask, out_dir)
         if f4:
             print(f"[done] {f4}")
-        f5 = plot_leg_routing(raw, summary, valid_mask, out_dir)
+        f5 = plot_leg_routing(raw, summary, valid_mask, out_dir,
+                              merge_directions=args.merge_directions)
         if f5:
             print(f"[done] {f5}")
-    f6 = plot_wheel_violin(raw, summary, valid_mask, out_dir)
+    f6 = plot_wheel_violin(raw, summary, valid_mask, out_dir,
+                           merge_directions=args.merge_directions)
     if f6:
         print(f"[done] {f6}")
 
