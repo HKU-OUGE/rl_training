@@ -352,8 +352,28 @@ def install_hooks(model):
             rnn_out = rnn_out[-1]
         sink["rnn_out"] = rnn_out.detach()
 
-    model.leg_gate.register_forward_hook(make_hook("leg_logits"))
-    model.wheel_gate.register_forward_hook(make_hook("wheel_logits"))
+    # Handle SplitMoE (leg_gate + wheel_gate) vs A1 single_gate (unified_gate).
+    if hasattr(model, "leg_gate") and hasattr(model, "wheel_gate"):
+        model.leg_gate.register_forward_hook(make_hook("leg_logits"))
+        model.wheel_gate.register_forward_hook(make_hook("wheel_logits"))
+    elif hasattr(model, "unified_gate"):
+        # A1 (single_gate=True): the gate outputs num_leg + num_wheel logits over
+        # a single unified expert pool. Split into (nL, nW) partitions so the
+        # existing (N, T, nL) gate_leg and (N, T, nW) gate_wheel buffers fit.
+        # Analyses keyed on "which leg expert"/"which wheel expert" then see
+        # the contiguous first-nL and last-nW slices of the unified routing —
+        # not semantically the same as SplitMoE but mechanically compatible.
+        nL = int(model.num_leg_experts)
+        def _split_hook(module, inp, out):
+            t = out
+            if t.ndim == 3:
+                t = t[-1]
+            t = t.detach()
+            sink["leg_logits"] = t[..., :nL]
+            sink["wheel_logits"] = t[..., nL:]
+        model.unified_gate.register_forward_hook(_split_hook)
+    else:
+        raise AttributeError("Policy has neither leg_gate+wheel_gate nor unified_gate")
     model.rnn.register_forward_hook(rnn_hook)
     return sink
 
