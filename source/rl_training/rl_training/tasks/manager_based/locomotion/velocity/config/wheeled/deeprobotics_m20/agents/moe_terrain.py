@@ -2487,7 +2487,7 @@ class MlpHeadActorCriticCfg(SplitMoEActorCriticCfg):
 class MlpBaselinePPOCfg(RslRlOnPolicyRunnerCfg):
     """MLP-head baseline trained on the same moe_teacher_env for fair vs SplitMoE comparison."""
     num_steps_per_env = 36
-    max_iterations = 20000
+    max_iterations = 15000  # match ablation iter count for head-to-head comparison
     save_interval = 200
     experiment_name = "mlp_baseline_teacher_parallel"
     empirical_normalization = False
