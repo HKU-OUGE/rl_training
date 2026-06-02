@@ -145,3 +145,46 @@ gym.register(
 )
 
 
+# Obstacle-course eval tasks (single linear course, 6 patches in fixed order,
+# 4 difficulty levels). Used by scripts/reinforcement_learning/rsl_rl/eval_course.py.
+gym.register(
+    id="Course-MoE-Teacher-Deeprobotics-M20-easy-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.course_env_cfg:DeeproboticsM20CourseEasyEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitMoEPPOCfg",
+    },
+)
+
+gym.register(
+    id="Course-MoE-Teacher-Deeprobotics-M20-med-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.course_env_cfg:DeeproboticsM20CourseMedEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitMoEPPOCfg",
+    },
+)
+
+gym.register(
+    id="Course-MoE-Teacher-Deeprobotics-M20-hard-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.course_env_cfg:DeeproboticsM20CourseHardEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitMoEPPOCfg",
+    },
+)
+
+gym.register(
+    id="Course-MoE-Teacher-Deeprobotics-M20-extreme-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.course_env_cfg:DeeproboticsM20CourseExtremeEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitMoEPPOCfg",
+    },
+)
+
+

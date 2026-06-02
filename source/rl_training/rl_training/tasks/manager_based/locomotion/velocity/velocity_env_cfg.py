@@ -625,7 +625,7 @@ class RewardsCfg:
     feet_air_time_variance = RewTerm(
         func=mdp.feet_air_time_variance_penalty,
         weight=0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="")},
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel")},
     )
 
     feet_gait = RewTerm(
@@ -715,7 +715,7 @@ class RewardsCfg:
         weight=0.0,
         params={
             "std": math.sqrt(0.25),
-            "asset_cfg": SceneEntityCfg("robot", body_names=""),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_wheel"),
             "stance_width": float,
         },
     )
@@ -846,7 +846,9 @@ class LocomotionVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
         for attr in dir(self.rewards):
             if not attr.startswith("__"):
                 reward_attr = getattr(self.rewards, attr)
-                if not callable(reward_attr) and reward_attr.weight == 0:
+                if reward_attr is None or callable(reward_attr):
+                    continue
+                if getattr(reward_attr, "weight", None) == 0:
                     setattr(self.rewards, attr, None)
 
 

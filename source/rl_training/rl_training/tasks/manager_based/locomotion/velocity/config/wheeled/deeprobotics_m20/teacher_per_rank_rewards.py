@@ -231,6 +231,8 @@ def apply_scan_rewards(env_cfg) -> None:
     r.feet_air_time.params["threshold"] = 0.25
     r.feet_air_time.params["sensor_cfg"].body_names = [env_cfg.foot_link_name]
     r.feet_air_time_long.params["sensor_cfg"].body_names = [env_cfg.foot_link_name]
+    r.feet_air_time_variance.params["sensor_cfg"].body_names = [env_cfg.foot_link_name]
+    r.feet_distance_y_exp.params["asset_cfg"].body_names = [env_cfg.foot_link_name]
     r.feet_contact.weight = 0
     r.feet_contact.params["sensor_cfg"].body_names = [env_cfg.foot_link_name]
     r.feet_contact_without_cmd.weight = 0.1

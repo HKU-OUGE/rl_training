@@ -20,4 +20,13 @@ from .moe_teacher_env_cfg import DeeproboticsM20MoETeacherEnvCfg
 class DeeproboticsM20LocoMoETeacherEnvCfg(DeeproboticsM20MoETeacherEnvCfg):
     """Same env as SplitMoE — variable-isolated: only the policy architecture changes."""
 
-    pass
+    def __post_init__(self):
+        super().__post_init__()
+        # parent only calls disable_zero_weight_rewards when class name matches
+        # exactly, so subclasses miss it; do it explicitly here.
+        self.disable_zero_weight_rewards()
+        # belt-and-suspenders: nuke specific weight=0 terms with broken
+        # body_names defaults that disable_zero_weight_rewards may have missed
+        # (e.g. because a per-rank apply path resets them after disable runs).
+        self.rewards.feet_air_time_variance = None
+        self.rewards.feet_distance_y_exp = None

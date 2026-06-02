@@ -236,9 +236,14 @@ def plot_success_heatmap(raw, summary, success_mask, valid_mask, out_dir):
 # Plot 02 — Routing specialization (heatmap of expert weight by terrain)
 # ---------------------------------------------------------------------------
 
-def plot_routing_specialization(raw, summary, valid_mask, out_dir):
+def plot_routing_specialization(raw, summary, valid_mask, out_dir, unified=False):
     gate_leg = raw["gate_leg"].astype(np.float32)     # (E, T, K_leg)
     gate_wheel = raw["gate_wheel"].astype(np.float32) # (E, T, K_wh)
+    if unified:
+        # A1: leg/wheel split is purely the install_hooks index slice. Re-pool
+        # the 9 experts into one gate (no leg/wheel separation).
+        gate_leg = np.concatenate([gate_leg, gate_wheel], axis=-1)
+        gate_wheel = gate_leg[..., :0]  # empty, signals "no second panel"
     types = raw["terrain_types"]
     term_step = raw["term_step"]
     sub_names = summary["sub_terrain_names"]
@@ -276,6 +281,39 @@ def plot_routing_specialization(raw, summary, valid_mask, out_dir):
             wh_mat[i] = wm
             leg_entropy[i] = _entropy(lm) / np.log(K_leg)
             wh_entropy[i] = _entropy(wm) / np.log(K_wh)
+
+    if unified:
+        # 2-panel: unified gate weight | normalized entropy bars
+        fig, (ax1, ax3) = plt.subplots(
+            1, 2, figsize=(7.5, 2.6),
+            gridspec_kw={"width_ratios": [K_leg + 0.5, 5.0], "wspace": 0.45},
+        )
+        im = ax1.imshow(leg_mat, cmap=CMAP_SEQ, vmin=0,
+                        vmax=leg_mat.max() if not np.isnan(leg_mat).all() else 1,
+                        aspect="auto", origin="lower", interpolation="nearest")
+        ax1.set_xticks(range(K_leg))
+        ax1.set_xticklabels([f"E{i+1}" for i in range(K_leg)])
+        ax1.set_yticks(range(len(sub_names)))
+        ax1.set_yticklabels([short_terrain_label(n) for n in sub_names])
+        ax1.set_title("Unified gate weight (9 experts)")
+        ax1.tick_params(axis="both", which="both", bottom=False, left=False)
+        cb = fig.colorbar(im, ax=ax1, fraction=0.025, pad=0.02)
+        cb.outline.set_linewidth(0.4)
+        cb.ax.tick_params(labelsize=6, width=0.4, length=2)
+        y = np.arange(len(sub_names))
+        ax3.barh(y, leg_entropy, height=0.7, color=ACCENT, edgecolor="none")
+        ax3.set_yticks(range(len(sub_names)))
+        ax3.set_yticklabels([short_terrain_label(n) for n in sub_names])
+        ax3.set_xlim(0, 1)
+        ax3.set_xlabel("Normalized gate entropy")
+        ax3.set_title("Specialization (lower = peaked)")
+        ax3.tick_params(axis="y", which="both", left=False)
+        ax3.grid(axis="x", linestyle=":", linewidth=0.4, color="#cccccc",
+                 alpha=0.8, zorder=0)
+        ax3.set_axisbelow(True)
+        out = out_dir / "paper_02_routing_specialization.pdf"
+        _save(fig, out)
+        return out
 
     # 3-panel: leg-routing | wheel-routing | normalized entropy bars
     fig, (ax1, ax2, ax3) = plt.subplots(
@@ -648,7 +686,7 @@ def plot_leg_routing(raw, summary, valid_mask, out_dir, merge_directions=False,
 # ---------------------------------------------------------------------------
 
 def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
-                      dir_encoding="panels"):
+                      dir_encoding="panels", unified=False):
     """Per-expert violin view of wheel-expert differentiation by terrain.
 
     One panel per wheel expert (W0/W1/W2); within each, a horizontal violin per
@@ -657,7 +695,13 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
     forward envs when the eval is bidirectional, since direction otherwise
     dominates and masks the terrain structure.
     """
-    gate_wheel = raw["gate_wheel"].astype(np.float32)
+    if unified:
+        # A1: 9 unified experts (no leg/wheel split). Show 9 violin panels.
+        gate_wheel = np.concatenate(
+            [raw["gate_leg"].astype(np.float32),
+             raw["gate_wheel"].astype(np.float32)], axis=-1)
+    else:
+        gate_wheel = raw["gate_wheel"].astype(np.float32)
     cmd = raw["cmd"].astype(np.float32)
     types = raw["terrain_types"]
     term_step = raw["term_step"]
@@ -704,7 +748,8 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
         s = short_terrain_label(n)
         disp.append(s[:1].upper() + s[1:])
     nT = len(present)
-    expert_names = [f"W{i}" for i in range(K_wh)]
+    expert_names = [f"E{i+1}" for i in range(K_wh)] if unified \
+        else [f"W{i}" for i in range(K_wh)]
 
     cmap = plt.cm.tab20
     n_sub = len(sub_names)
@@ -712,8 +757,9 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
     def _tcolor(name):
         return cmap(sub_names.index(name) / max(1, n_sub - 1))
 
-    # compact single-column figure: 3 panels kept side by side
-    fig, axes = plt.subplots(1, K_wh, figsize=(3.5, 2.4), sharey=True)
+    # compact single-column figure; widen for unified mode (9 panels)
+    fig_width = max(3.5, 1.15 * K_wh) if unified else 3.5
+    fig, axes = plt.subplots(1, K_wh, figsize=(fig_width, 2.4), sharey=True)
     if K_wh == 1:
         axes = [axes]
 
@@ -841,7 +887,9 @@ def plot_wheel_violin(raw, summary, valid_mask, out_dir, merge_directions=False,
     # tight_layout first so axes settle, then suptitle/supxlabel are placed
     # close to the axes (default y was visibly detached from the plot edges).
     fig.tight_layout(rect=[0, 0.06, 1, 0.90])
-    fig.suptitle("Wheel expert weight distribution per terrain", fontsize=7, y=0.93)
+    title = "Unified expert weight distribution per terrain (9 experts)" if unified \
+        else "Wheel expert weight distribution per terrain"
+    fig.suptitle(title, fontsize=7, y=0.93)
     fig.supxlabel("gate weight", fontsize=7, y=0.07)
     out = out_dir / "paper_06_wheel_violin.pdf"
     _save(fig, out)
@@ -957,6 +1005,12 @@ def main():
                         "Useful when leg-routing (paper_05) and wheel violin want "
                         "different visual styles (e.g. fill_overlay for paper_05 "
                         "but merged for paper_06). Defaults to --dir_encoding.")
+    p.add_argument("--unified_gate", action="store_true",
+                   help="A1 (single_gate=True) mode: treat the 9 experts as a "
+                        "single unified pool (no leg/wheel split). paper_02 "
+                        "shows one 9-expert weight panel; paper_05 is skipped "
+                        "(would duplicate paper_04); paper_06 renders 9 "
+                        "expert violins instead of 3 wheel ones.")
     p.add_argument("--dir_encoding", type=str, default="panels",
                    choices=["panels", "merged", "shape_split", "shape_side",
                             "fill_split", "fill_overlay"],
@@ -1045,7 +1099,8 @@ def main():
 
     f1, overall = plot_success_heatmap(raw, summary, success_mask, valid_mask, out_dir)
     print(f"[done] {f1}")
-    f2 = plot_routing_specialization(raw, summary, valid_mask, out_dir)
+    f2 = plot_routing_specialization(raw, summary, valid_mask, out_dir,
+                                     unified=args.unified_gate)
     print(f"[done] {f2}")
     f3 = plot_velocity_tracking(raw, summary, valid_mask, out_dir)
     print(f"[done] {f3}")
@@ -1053,15 +1108,19 @@ def main():
         f4 = plot_gate_tsne(raw, summary, valid_mask, out_dir)
         if f4:
             print(f"[done] {f4}")
-        f5 = plot_leg_routing(raw, summary, valid_mask, out_dir,
-                              merge_directions=args.merge_directions,
-                              dir_encoding=args.dir_encoding)
-        if f5:
-            print(f"[done] {f5}")
+        if args.unified_gate:
+            print("[info] paper_05 skipped (unified gate = duplicate of paper_04)")
+        else:
+            f5 = plot_leg_routing(raw, summary, valid_mask, out_dir,
+                                  merge_directions=args.merge_directions,
+                                  dir_encoding=args.dir_encoding)
+            if f5:
+                print(f"[done] {f5}")
     wheel_enc = args.wheel_dir_encoding or args.dir_encoding
     f6 = plot_wheel_violin(raw, summary, valid_mask, out_dir,
                            merge_directions=args.merge_directions,
-                           dir_encoding=wheel_enc)
+                           dir_encoding=wheel_enc,
+                           unified=args.unified_gate)
     if f6:
         print(f"[done] {f6}")
 

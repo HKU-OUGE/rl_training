@@ -371,6 +371,14 @@ def main():
                 print(f"[rank={local_rank}] termination → illegal_contact KEPT (base-die on flat/slope/noise/mixed)")
 
 
+    for term_name in ("feet_air_time_variance", "feet_distance_y_exp"):
+        term = getattr(env_cfg.rewards, term_name, None)
+        print(f"[FORCE-DISABLE] {term_name}: term={term}", flush=True)
+        if term is not None:
+            print(f"[FORCE-DISABLE] {term_name} weight={term.weight}", flush=True)
+            setattr(env_cfg.rewards, term_name, None)
+            print(f"[FORCE-DISABLE] {term_name} after setattr: {getattr(env_cfg.rewards, term_name, 'MISSING')}", flush=True)
+
     render_mode = "rgb_array" if args.video else None
     env = gym.make(args.task, cfg=env_cfg, render_mode=render_mode)
 

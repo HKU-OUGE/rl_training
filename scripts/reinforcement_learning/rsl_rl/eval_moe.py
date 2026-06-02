@@ -47,7 +47,7 @@ parser.add_argument("--latent_sample_envs", type=int, default=500, help="Subsamp
 parser.add_argument("--latent_sample_stride", type=int, default=10, help="Subsample stride for GRU latent")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--ablation", type=str, default="full",
-                    choices=["full", "A1", "A2", "A3", "B1", "B2"],
+                    choices=["full", "A1", "A2", "A3", "B1", "B2", "locomoe", "mlp_baseline"],
                     help="Ablation variant whose ckpt to eval. 'full' = baseline (default). "
                          "A1/B2 require architecture/runtime overrides; A2/A3/B1 are inference-"
                          "equivalent to baseline (only training-time differences). Output goes to "
@@ -761,6 +761,13 @@ def main():
             # Step env
             obs, _, dones, info = env_wrapped.step(actions)
 
+            # Reset GRU hidden state for auto-reset envs (mirrors eval_course +
+            # training rollout). Recorded traces are already gated to each env's
+            # first attempt via first_done, so this is defensive consistency
+            # rather than a correctness fix, but it keeps post-done envs sane.
+            if dones.any() and hasattr(model, "reset"):
+                model.reset(dones.bool())
+
             # Event handling
             handle_dones(t, dones, info, bufs, base_env)
 
@@ -786,6 +793,8 @@ def main():
                 break
             actions = policy(obs)
             obs, _, dones, info = env_wrapped.step(actions)
+            if dones.any() and hasattr(model, "reset"):
+                model.reset(dones.bool())
             handle_dones(T + d, dones, info, bufs, base_env)
         post_drain_done = bufs["first_done"].sum().item()
         print(f"[eval] drain steps captured {post_drain_done - pre_drain_done} extra dones")
