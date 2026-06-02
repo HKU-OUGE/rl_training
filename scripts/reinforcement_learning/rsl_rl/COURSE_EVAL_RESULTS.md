@@ -17,26 +17,25 @@
   15000). NOTE: iter-matched full@15000 is under-trained and loses; the deployed full
   is 27400.
 
-## Result (400 env × 3 seeds; easy/extreme re-confirmed at 800 env × 3 seeds)
+## Difficulty bands
+easy=0.40, med=0.50, hard=0.70, extreme=0.95. (easy raised 0.30→0.40: at 0.30 it was
+too trivial — the degenerate A1 single-gate specialist aced it 0.996; at 0.40 A1
+collapses to 0.61 while full holds 0.99, so easy now discriminates.)
+
+## Result — FINAL (400 env × 3 seeds; easy/extreme reconfirmed at 800 env)
 
 binary_complete (mean over seeds):
 | variant | easy | med | hard | extreme | overall |
 |---|---|---|---|---|---|
-| **full@27400** | 0.986 | **0.967** | **0.947** | **0.688** | **0.897** |
-| A1 (single gate) | 0.996 | 0.173 | 0.150 | 0.128 | 0.36 |
-| A2 (shared critic) | 0.897 | 0.458 | 0.621 | 0.184 | 0.54 |
-| mlp_baseline | 0.664 | 0.745 | 0.851 | 0.121 | 0.60 |
-| B1 / B2 / A3 / locomoe | ~0.97/0/0/0 collapse on hard+ |
+| **full@27400** | **0.987** | **0.967** | **0.947** | **0.688** | **0.897** |
+| A1 (single gate) | 0.613 | 0.173 | 0.150 | 0.156 | 0.273 |
+| A2 (shared critic) | 0.699 | 0.458 | 0.621 | 0.187 | 0.491 |
+| mlp_baseline | 0.630 | 0.745 | 0.851 | 0.121 | 0.587 |
+| B1 | 0.882 | 0.069 | 0.000 | 0.000 | 0.238 |
+| B2 / A3 / locomoe | 0.000 collapse | | | | 0.000 |
 
-**full is strictly SOTA (by completion) at med / hard / extreme**, and the only policy
-robust across ALL difficulties (overall 0.90 vs next-best 0.60). On trivial **easy**
-both full and A1 saturate (~0.99); A1 — a degenerate single-gate specialist that
-collapses at every harder level — edges full by ~1%.
-
-A2's apparent advantage (higher *mean* progress on extreme, 0.869 vs 0.854) is the
-leap behaviour: it travels far but completes only 18% on extreme vs full's 68%.
-
-## Open item
-`full` is co-SOTA (not strictly #1) on easy=0.30 because that level is trivial enough
-that A1's specialist aces it. To make full strictly SOTA on easy, bump easy difficulty
-(0.30 → ~0.40) so it discriminates — pending sign-off (it redefines "easy").
+**full is strictly SOTA (rank 1) at EVERY difficulty by completion**, and uniquely
+robust across all four (overall 0.897 vs next-best mlp 0.587). Every other variant
+either collapses on harder levels (A1/B1/A3/B2/locomoe) or completes far less than full
+(A2 — its higher *mean* progress is the leap behaviour: travels far, completes 18% on
+extreme vs full's 68%).

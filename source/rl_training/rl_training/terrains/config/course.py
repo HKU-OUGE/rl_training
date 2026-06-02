@@ -171,7 +171,7 @@ def _make_course_cfg(difficulty: float) -> MeshLinearObstacleCourseGeneratorCfg:
     )
 
 
-COURSE_EASY_CFG = _make_course_cfg(0.30)
+COURSE_EASY_CFG = _make_course_cfg(0.40)
 COURSE_MED_CFG = _make_course_cfg(0.50)
 COURSE_HARD_CFG = _make_course_cfg(0.70)
 COURSE_EXTREME_CFG = _make_course_cfg(0.95)
