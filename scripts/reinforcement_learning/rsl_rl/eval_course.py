@@ -52,6 +52,10 @@ parser.add_argument("--checkpoint", type=str, default="model_*.pt",
                     help="Checkpoint glob.")
 parser.add_argument("--output_dir", type=str, default=None,
                     help="Override output dir.")
+parser.add_argument("--heading_stiffness", type=float, default=None,
+                    help="Override course heading_control_stiffness. Lower = weaker "
+                         "yaw auto-correction (robot must self-stabilize heading). "
+                         "0 disables heading rescue entirely (cmd_wz fixed at 0).")
 parser.add_argument("--num_wheel_experts", type=int, default=None)
 parser.add_argument("--num_leg_experts", type=int, default=None)
 parser.add_argument("--latent_sample_envs", type=int, default=200)
@@ -368,6 +372,18 @@ def main():
 
     env_cfg = parse_env_cfg(task, device=DEVICE, num_envs=args.num_envs)
     env_cfg.seed = args.seed
+
+    # Optional heading-rescue override: the course default railroads yaw to +x
+    # with stiffness=1.0. Lowering it forces the robot to self-stabilize heading;
+    # 0 disables yaw command entirely (tests gait stability without rescue).
+    if args.heading_stiffness is not None:
+        cmds = env_cfg.commands.base_velocity
+        cmds.heading_control_stiffness = float(args.heading_stiffness)
+        if args.heading_stiffness == 0.0:
+            cmds.heading_command = False
+            cmds.rel_heading_envs = 0.0
+            cmds.ranges.ang_vel_z = (0.0, 0.0)
+        print(f"[eval_course] heading_control_stiffness overridden -> {args.heading_stiffness}")
 
     # train cfg — branches by ablation. LocoMoE / MlpBaseline are SEPARATE
     # architectures (not just cfg overrides on SplitMoE), so we load their

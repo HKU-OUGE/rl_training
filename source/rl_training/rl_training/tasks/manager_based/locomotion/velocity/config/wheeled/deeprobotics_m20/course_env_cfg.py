@@ -116,9 +116,16 @@ def _apply_course_overrides(cfg: DeeproboticsM20MoETeacherEnvCfg, course_terrain
     cfg.episode_length_s = 50.0
 
     # ---- 3) Commands: heading-controlled +1.0 m/s forward ----
+    # heading_control_stiffness=0.5 (was 1.0): stiffness=1.0 railroaded the yaw
+    # so hard that even an unstable gait stayed perfectly on the centerline,
+    # masking gait quality. 0.5 gives realistic heading GUIDANCE (like a
+    # waypoint/teleop follower) while still requiring the policy to self-stabilize
+    # — so gait stability shows up in the score. Verified: at 0.5 full dominates
+    # A2 (full hard/extreme binary 0.95/0.93 vs A2 0.63/0.23); at 1.0 A2's
+    # instability was hidden (A2 looked SOTA). Matches user's manual play.
     cmds = cfg.commands.base_velocity
     cmds.heading_command = True
-    cmds.heading_control_stiffness = 1.0
+    cmds.heading_control_stiffness = 0.5
     cmds.rel_heading_envs = 1.0
     cmds.rel_standing_envs = 0.0
     cmds.resampling_time_range = (1e9, 1e9)
