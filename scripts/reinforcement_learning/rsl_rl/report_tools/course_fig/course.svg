@@ -1,109 +1,73 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 220" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 196" font-family="'Nimbus Sans','Helvetica Neue',Helvetica,Arial,sans-serif">
   <defs>
-    <linearGradient id="gGround" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e2d4b2"/><stop offset="1" stop-color="#cbb88d"/>
-    </linearGradient>
-    <linearGradient id="gObst" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e9dcbd"/><stop offset="1" stop-color="#d2c094"/>
-    </linearGradient>
-    <linearGradient id="gBar" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e25b4a"/><stop offset="1" stop-color="#bc3826"/>
-    </linearGradient>
-    <linearGradient id="gVoid" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#cbe3ef"/><stop offset="1" stop-color="#9cc4da"/>
-    </linearGradient>
-    <linearGradient id="gBody" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3e556b"/><stop offset="1" stop-color="#2b3b4c"/>
-    </linearGradient>
-    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
-      <feDropShadow dx="0" dy="1.6" stdDeviation="1.6" flood-color="#3a2f1d" flood-opacity="0.22"/>
-    </filter>
-    <marker id="ah" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-      <path d="M0,0 L7,3.5 L0,7 Z" fill="#555"/>
-    </marker>
-    <marker id="ahb" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-      <path d="M0,0 L7,3.5 L0,7 Z" fill="#2f7d9e"/>
+    <marker id="dim" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6" fill="none" stroke="#333" stroke-width="0.9"/>
     </marker>
   </defs>
   <style>
-    .lab{font-size:15px;font-weight:700;fill:#3a3a3a;text-anchor:middle}
-    .sub{font-size:10.5px;fill:#7a6a4f;text-anchor:middle}
-    .dim{font-size:15px;font-style:italic;fill:#555;text-anchor:middle}
-    .dimv{font-size:13px;font-style:italic;fill:#2f7d9e;text-anchor:middle}
-    .edge{fill:none;stroke:#7a6747;stroke-width:1.1}
-    .note{font-size:12px;fill:#888;text-anchor:middle}
-    .arr{stroke:#555;stroke-width:1.1;marker-start:url(#ah);marker-end:url(#ah)}
-    .arrv{stroke:#2f7d9e;stroke-width:1.1;marker-start:url(#ahb);marker-end:url(#ahb)}
+    .terr{fill:#deded6;stroke:#2f2f2f;stroke-width:1.1;stroke-linejoin:round}
+    .bar{fill:#4a4a4a;stroke:#222;stroke-width:1}
+    .lab{font-size:13.5px;fill:#1f1f1f;text-anchor:middle;letter-spacing:.2px}
+    .sym{font-size:14px;font-style:italic;fill:#222;text-anchor:middle}
+    .ext{stroke:#5a5a5a;stroke-width:0.6}
+    .dml{stroke:#333;stroke-width:0.9;marker-start:url(#dim);marker-end:url(#dim)}
+    .note{font-size:10.5px;fill:#7a7a7a}
+    .rob{fill:#6a6a6a;stroke:#3f3f3f;stroke-width:0.8}
   </style>
 
-  <!-- ===== thin ground band (track) ===== -->
-  <g filter="url(#soft)">
-    <rect x="8" y="128" width="1024" height="15" rx="3" fill="url(#gGround)"/>
-  </g>
-  <line x1="8" y1="128" x2="1032" y2="128" stroke="#b9a679" stroke-width="0.8"/>
-
-  <!-- ===== obstacles (left -> right) ===== -->
-  <!-- slope -->
-  <g filter="url(#soft)">
-    <path d="M250,128 L286,92 L356,92 L392,128 Z" fill="url(#gObst)" class="edge"/>
-  </g>
-  <!-- stairs -->
-  <g filter="url(#soft)">
-    <path d="M430,128 L430,112 L452,112 L452,96 L474,96 L474,80 L520,80 L520,96 L542,96 L542,112 L564,112 L564,128 Z"
-          fill="url(#gObst)" class="edge"/>
-  </g>
-  <!-- rail (step-over) -->
-  <g filter="url(#soft)">
-    <rect x="624" y="92" width="13" height="38" rx="4" fill="url(#gObst)" class="edge"/>
-  </g>
-  <!-- stepping stones: two blocks + void notch -->
-  <g filter="url(#soft)">
-    <rect x="700" y="118" width="44" height="12" rx="3" fill="url(#gObst)" class="edge"/>
-    <rect x="778" y="118" width="44" height="12" rx="3" fill="url(#gObst)" class="edge"/>
-  </g>
-  <path d="M744,128 L744,162 L778,162 L778,128" fill="url(#gVoid)" stroke="#7fb0c9" stroke-width="0.9"/>
-  <rect x="744" y="126" width="34" height="4" fill="#fff" opacity="0.55"/>
-  <!-- step-up platform -->
-  <g filter="url(#soft)">
-    <path d="M872,128 L872,86 L972,86 L972,128 Z" fill="url(#gObst)" class="edge"/>
-  </g>
-  <!-- crawl-under hurdle: floating bar -->
-  <g filter="url(#soft)"><rect x="148" y="78" width="36" height="9" rx="3.5" fill="url(#gBar)"/></g>
-
-  <!-- ===== M20 robot (wheeled-legged, side view) ===== -->
-  <g transform="translate(40,0)">
-    <!-- legs -->
-    <path d="M14,112 L8,127" stroke="#22303d" stroke-width="3.4" stroke-linecap="round"/>
-    <path d="M48,112 L54,127" stroke="#22303d" stroke-width="3.4" stroke-linecap="round"/>
-    <!-- body -->
-    <g filter="url(#soft)"><rect x="6" y="98" width="50" height="18" rx="7" fill="url(#gBody)"/></g>
-    <rect x="40" y="92" width="12" height="9" rx="3" fill="#2b3b4c"/> <!-- head/sensor -->
-    <circle cx="46" cy="95" r="1.7" fill="#7fd0ff"/>
-    <!-- wheels -->
-    <circle cx="8" cy="127" r="9" fill="#1c2731" stroke="#3e556b" stroke-width="2"/>
-    <circle cx="8" cy="127" r="3" fill="#52708a"/>
-    <circle cx="54" cy="127" r="9" fill="#1c2731" stroke="#3e556b" stroke-width="2"/>
-    <circle cx="54" cy="127" r="3" fill="#52708a"/>
-    <text x="31" y="86" class="sub" fill="#3e556b" font-weight="700">M20</text>
+  <!-- ===== terrain cross-section (continuous solid) ===== -->
+  <path class="terr" d="M18,118 L245,118 L281,84 L351,84 L387,118
+    L425,118 L425,104 L447,104 L447,90 L469,90 L469,76 L515,76 L515,90 L537,90 L537,104 L559,104 L559,118
+    L612,118 L612,80 L628,80 L628,118
+    L700,118 L700,110 L730,110 L730,144 L768,144 L768,110 L800,110 L800,118
+    L868,118 L868,76 L968,76 L968,118
+    L1022,118 L1022,150 L18,150 Z"/>
+  <!-- engineering 'solid ground' hatch ticks under the section -->
+  <g stroke="#9a9a9a" stroke-width="0.7">
+    <line x1="18" y1="150" x2="1022" y2="150"/>
+    <!-- ticks generated below -->
+    <line x1="30" y1="150" x2="24" y2="156"/><line x1="43" y1="150" x2="37" y2="156"/><line x1="56" y1="150" x2="50" y2="156"/><line x1="69" y1="150" x2="63" y2="156"/><line x1="82" y1="150" x2="76" y2="156"/><line x1="95" y1="150" x2="89" y2="156"/><line x1="108" y1="150" x2="102" y2="156"/><line x1="121" y1="150" x2="115" y2="156"/><line x1="134" y1="150" x2="128" y2="156"/><line x1="147" y1="150" x2="141" y2="156"/><line x1="160" y1="150" x2="154" y2="156"/><line x1="173" y1="150" x2="167" y2="156"/><line x1="186" y1="150" x2="180" y2="156"/><line x1="199" y1="150" x2="193" y2="156"/><line x1="212" y1="150" x2="206" y2="156"/><line x1="225" y1="150" x2="219" y2="156"/><line x1="238" y1="150" x2="232" y2="156"/><line x1="251" y1="150" x2="245" y2="156"/><line x1="264" y1="150" x2="258" y2="156"/><line x1="277" y1="150" x2="271" y2="156"/><line x1="290" y1="150" x2="284" y2="156"/><line x1="303" y1="150" x2="297" y2="156"/><line x1="316" y1="150" x2="310" y2="156"/><line x1="329" y1="150" x2="323" y2="156"/><line x1="342" y1="150" x2="336" y2="156"/><line x1="355" y1="150" x2="349" y2="156"/><line x1="368" y1="150" x2="362" y2="156"/><line x1="381" y1="150" x2="375" y2="156"/><line x1="394" y1="150" x2="388" y2="156"/><line x1="407" y1="150" x2="401" y2="156"/><line x1="420" y1="150" x2="414" y2="156"/><line x1="433" y1="150" x2="427" y2="156"/><line x1="446" y1="150" x2="440" y2="156"/><line x1="459" y1="150" x2="453" y2="156"/><line x1="472" y1="150" x2="466" y2="156"/><line x1="485" y1="150" x2="479" y2="156"/><line x1="498" y1="150" x2="492" y2="156"/><line x1="511" y1="150" x2="505" y2="156"/><line x1="524" y1="150" x2="518" y2="156"/><line x1="537" y1="150" x2="531" y2="156"/><line x1="550" y1="150" x2="544" y2="156"/><line x1="563" y1="150" x2="557" y2="156"/><line x1="576" y1="150" x2="570" y2="156"/><line x1="589" y1="150" x2="583" y2="156"/><line x1="602" y1="150" x2="596" y2="156"/><line x1="615" y1="150" x2="609" y2="156"/><line x1="628" y1="150" x2="622" y2="156"/><line x1="641" y1="150" x2="635" y2="156"/><line x1="654" y1="150" x2="648" y2="156"/><line x1="667" y1="150" x2="661" y2="156"/><line x1="680" y1="150" x2="674" y2="156"/><line x1="693" y1="150" x2="687" y2="156"/><line x1="706" y1="150" x2="700" y2="156"/><line x1="719" y1="150" x2="713" y2="156"/><line x1="732" y1="150" x2="726" y2="156"/><line x1="745" y1="150" x2="739" y2="156"/><line x1="758" y1="150" x2="752" y2="156"/><line x1="771" y1="150" x2="765" y2="156"/><line x1="784" y1="150" x2="778" y2="156"/><line x1="797" y1="150" x2="791" y2="156"/><line x1="810" y1="150" x2="804" y2="156"/><line x1="823" y1="150" x2="817" y2="156"/><line x1="836" y1="150" x2="830" y2="156"/><line x1="849" y1="150" x2="843" y2="156"/><line x1="862" y1="150" x2="856" y2="156"/><line x1="875" y1="150" x2="869" y2="156"/><line x1="888" y1="150" x2="882" y2="156"/><line x1="901" y1="150" x2="895" y2="156"/><line x1="914" y1="150" x2="908" y2="156"/><line x1="927" y1="150" x2="921" y2="156"/><line x1="940" y1="150" x2="934" y2="156"/><line x1="953" y1="150" x2="947" y2="156"/><line x1="966" y1="150" x2="960" y2="156"/><line x1="979" y1="150" x2="973" y2="156"/><line x1="992" y1="150" x2="986" y2="156"/><line x1="1005" y1="150" x2="999" y2="156"/><line x1="1018" y1="150" x2="1012" y2="156"/>
   </g>
 
-  <!-- ===== labels ===== -->
-  <text class="lab" x="166" y="52">hurdle</text><text class="sub" x="166" y="66">crawl under</text>
-  <text class="lab" x="321" y="52">slope</text><text class="sub" x="321" y="66">up / down</text>
-  <text class="lab" x="497" y="52">stairs</text><text class="sub" x="497" y="66">up / down</text>
-  <text class="lab" x="630" y="52">rail</text><text class="sub" x="630" y="66">step over</text>
-  <text class="lab" x="761" y="48">stepping stones</text><text class="sub" x="761" y="62">jump the void</text>
-  <text class="lab" x="922" y="52">step-up</text><text class="sub" x="922" y="66">climb</text>
+  <!-- crawl-under hurdle bar (floating obstacle) -->
+  <rect class="bar" x="150" y="72" width="38" height="8" rx="1"/>
 
-  <!-- ===== dimension callouts (symbolic) ===== -->
-  <line class="arr" x1="200" y1="128" x2="200" y2="82.5"/>
-  <text class="dim" x="212" y="110">h<tspan dy="4" font-size="10" font-style="normal">1</tspan></text>
-  <line class="arrv" x1="744" y1="150" x2="778" y2="150"/>
-  <text class="dimv" x="761" y="146">l<tspan dy="3" font-size="9" font-style="normal">1</tspan></text>
-  <line class="arr" x1="982" y1="128" x2="982" y2="86"/>
-  <text class="dim" x="994" y="110">h<tspan dy="4" font-size="10" font-style="normal">2</tspan></text>
+  <!-- ===== M20 robot: minimal flat silhouette (scale) ===== -->
+  <g transform="translate(44,0)">
+    <path class="rob" d="M10,109 L6,118" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+    <path class="rob" d="M44,109 L48,118" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+    <rect class="rob" x="4" y="98" width="46" height="13" rx="3"/>
+    <rect class="rob" x="36" y="93" width="10" height="7" rx="1.5"/>
+    <circle class="rob" cx="6" cy="118" r="6.5"/>
+    <circle class="rob" cx="48" cy="118" r="6.5"/>
+    <text x="27" y="90" class="note" text-anchor="middle" fill="#555">M20</text>
+  </g>
 
-  <!-- ===== direction of travel ===== -->
-  <line x1="40" y1="194" x2="122" y2="194" stroke="#9a9a9a" stroke-width="1.3" marker-end="url(#ah)"/>
-  <text class="note" style="text-anchor:start" x="132" y="198">direction of travel</text>
+  <!-- ===== obstacle labels ===== -->
+  <text class="lab" x="169" y="44">hurdle</text>
+  <text class="lab" x="316" y="44">slope</text>
+  <text class="lab" x="492" y="44">stairs</text>
+  <text class="lab" x="620" y="44">rail</text>
+  <text class="lab" x="750" y="44">stepping stones</text>
+  <text class="lab" x="918" y="44">step-up</text>
+
+  <!-- ===== dimensions (engineering style) ===== -->
+  <!-- h1: hurdle clearance -->
+  <line class="ext" x1="188" y1="80" x2="216" y2="80"/>
+  <line class="ext" x1="188" y1="118" x2="216" y2="118"/>
+  <line class="dml" x1="211" y1="81" x2="211" y2="117"/>
+  <text class="sym" x="223" y="103">h<tspan dy="3.5" font-size="9.5" font-style="normal">1</tspan></text>
+  <!-- l1: stepping-stone gap -->
+  <line class="dml" x1="731" y1="130" x2="767" y2="130"/>
+  <text class="sym" x="749" y="126">l<tspan dy="3" font-size="9" font-style="normal">1</tspan></text>
+  <text class="note" x="749" y="141" text-anchor="middle" font-style="italic">void</text>
+  <!-- h2: step-up height -->
+  <line class="ext" x1="968" y1="76" x2="994" y2="76"/>
+  <line class="ext" x1="968" y1="118" x2="994" y2="118"/>
+  <line class="dml" x1="989" y1="77" x2="989" y2="117"/>
+  <text class="sym" x="1001" y="101">h<tspan dy="3.5" font-size="9.5" font-style="normal">2</tspan></text>
+
+  <!-- direction of travel -->
+  <line x1="40" y1="176" x2="116" y2="176" stroke="#8f8f8f" stroke-width="1" marker-end="url(#dim)"/>
+  <text class="note" x="126" y="180">direction of travel</text>
 </svg>
