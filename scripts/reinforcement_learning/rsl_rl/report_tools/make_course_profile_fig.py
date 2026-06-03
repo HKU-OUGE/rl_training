@@ -102,15 +102,13 @@ ax.text(0.5 * (vx0 + vx1), -0.27, r"$l_1$", fontsize=7, ha="center", va="bottom"
 ax.text(0.5 * (vx0 + vx1), -0.52, "void", fontsize=5.5, ha="center", color="#3d6b82", style="italic", zorder=11)
 vdim(15.55, 0.0, 0.44, r"$h_2$")    # step-up height
 
-ax.set_xlim(0.3, 16.9); ax.set_ylim(BASE - 0.04, 1.02)
+ax.set_xlim(0.3, 16.9); ax.set_ylim(BASE - 0.04, 0.96)
 ax.set_xlabel("distance along course (m) — robot enters from the left", fontsize=8.5)
 ax.set_ylabel("height above\ntrack (m)", fontsize=8.5)
 ax.set_aspect("equal", adjustable="box")
 for s in ("top", "right", "left"):
     ax.spines[s].set_visible(False)
 ax.tick_params(labelsize=7.5, length=2); ax.set_yticks([-0.5, 0.0, 0.5])
-ax.set_title("Obstacle-course centerline profile  (difficulty $d=0.70$; the six patches repeat for two cycles, 33.2 m total)",
-             fontsize=9.5, color="#222", pad=8)
 plt.tight_layout()
 plt.savefig("/tmp/course_profile_pretty.pdf", bbox_inches="tight")
 plt.savefig("/tmp/course_profile_pretty.png", dpi=200, bbox_inches="tight")
