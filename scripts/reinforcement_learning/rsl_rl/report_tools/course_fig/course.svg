@@ -1,7 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 196" font-family="'Nimbus Sans','Helvetica Neue',Helvetica,Arial,sans-serif">
   <defs>
-    <marker id="dim" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto">
+    <!-- end arrowhead: points along the line (outward at the end) -->
+    <marker id="ae" markerWidth="9" markerHeight="8" refX="6.3" refY="3" orient="auto">
       <path d="M0,0 L7,3 L0,6" fill="none" stroke="#333" stroke-width="0.9"/>
+    </marker>
+    <!-- start arrowhead: points opposite the line (outward at the start) -->
+    <marker id="as" markerWidth="9" markerHeight="8" refX="0.7" refY="3" orient="auto">
+      <path d="M7,0 L0,3 L7,6" fill="none" stroke="#333" stroke-width="0.9"/>
     </marker>
   </defs>
   <style>
@@ -10,7 +15,7 @@
     .lab{font-size:13.5px;fill:#1f1f1f;text-anchor:middle;letter-spacing:.2px}
     .sym{font-size:14px;font-style:italic;fill:#222;text-anchor:middle}
     .ext{stroke:#5a5a5a;stroke-width:0.6}
-    .dml{stroke:#333;stroke-width:0.9;marker-start:url(#dim);marker-end:url(#dim)}
+    .dml{stroke:#333;stroke-width:0.9;marker-start:url(#as);marker-end:url(#ae)}
     .note{font-size:10.5px;fill:#7a7a7a}
     .rob{fill:#6a6a6a;stroke:#3f3f3f;stroke-width:0.8}
   </style>
@@ -34,13 +39,13 @@
 
   <!-- ===== M20 robot: minimal flat silhouette (scale) ===== -->
   <g transform="translate(44,0)">
-    <path class="rob" d="M10,109 L6,118" stroke-width="2.6" fill="none" stroke-linecap="round"/>
-    <path class="rob" d="M44,109 L48,118" stroke-width="2.6" fill="none" stroke-linecap="round"/>
-    <rect class="rob" x="4" y="98" width="46" height="13" rx="3"/>
-    <rect class="rob" x="36" y="93" width="10" height="7" rx="1.5"/>
+    <!-- symmetric wheeled-legged body: 2 legs + 2 wheels, no head -->
+    <path class="rob" d="M12,109 L6,118" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+    <path class="rob" d="M42,109 L48,118" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+    <rect class="rob" x="6" y="99" width="42" height="12" rx="4"/>
     <circle class="rob" cx="6" cy="118" r="6.5"/>
     <circle class="rob" cx="48" cy="118" r="6.5"/>
-    <text x="27" y="90" class="note" text-anchor="middle" fill="#555">M20</text>
+    <text x="27" y="92" class="note" text-anchor="middle" fill="#555">M20</text>
   </g>
 
   <!-- ===== obstacle labels ===== -->
@@ -68,6 +73,6 @@
   <text class="sym" x="1001" y="101">h<tspan dy="3.5" font-size="9.5" font-style="normal">2</tspan></text>
 
   <!-- direction of travel -->
-  <line x1="40" y1="176" x2="116" y2="176" stroke="#8f8f8f" stroke-width="1" marker-end="url(#dim)"/>
+  <line x1="40" y1="176" x2="116" y2="176" stroke="#8f8f8f" stroke-width="1" marker-end="url(#ae)"/>
   <text class="note" x="126" y="180">direction of travel</text>
 </svg>
