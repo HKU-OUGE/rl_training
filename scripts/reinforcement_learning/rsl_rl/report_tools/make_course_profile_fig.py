@@ -58,16 +58,20 @@ bar_pts = list(zip(bx, blo, bhi))
 GROUND, GEDGE = "#cdbb98", "#6e5d45"
 BAR, BAREDGE = "#c0392b", "#7d241a"
 VOID, ROBOT = "#bcd6e6", "#33475b"
-BASE = -0.58
+THIN, VOID_D = -0.15, -0.32          # thin ground slab below track; displayed void depth
+sl = (1.8 - 0.45) / 2.0; vx0 = 11.4 + sl; vx1 = vx0 + 0.45   # stepping-stone void x-range
 plt.rcParams.update({"font.family": "DejaVu Sans", "pdf.fonttype": 42})
-fig, ax = plt.subplots(figsize=(13, 2.9))
+fig, ax = plt.subplots(figsize=(13, 2.5))
 
-# solid terrain: fill baseline -> top profile, plus a crisp top contour
-ax.fill_between(xs, BASE, ground_top, facecolor=GROUND, edgecolor="none", zorder=2)
-ax.plot(xs, ground_top, color=GEDGE, lw=0.8, zorder=4, solid_capstyle="round")
-# pit/void: where the surface dips well below the track (stepping-stones gap)
-ax.fill_between(xs, BASE, ground_top, where=ground_top < -0.12, facecolor=VOID,
-                edgecolor="none", zorder=3)
+# thin solid ground slab (track) + obstacles on top
+top_g = np.maximum(ground_top, THIN)
+ax.fill_between(xs, THIN, top_g, facecolor=GROUND, edgecolor="none", zorder=2)
+ax.plot(xs, np.where(ground_top < THIN - 1e-3, np.nan, ground_top), color=GEDGE, lw=0.8,
+        zorder=4, solid_capstyle="round")                       # top contour (skips the void)
+ax.plot([xs[0], xs[-1]], [THIN, THIN], color=GEDGE, lw=0.8, zorder=4)   # slab underside
+# stepping-stone void: a pit cut below the track
+ax.add_patch(MplPoly([(vx0, 0), (vx0, VOID_D), (vx1, VOID_D), (vx1, 0)], closed=True,
+                     facecolor=VOID, edgecolor=GEDGE, lw=0.7, zorder=3))
 ax.axhline(0, color="#9a8f78", lw=0.6, ls=(0, (4, 3)), zorder=2)   # track datum
 
 # crawl-under hurdle bar (red) from the floating ray hits
@@ -96,19 +100,18 @@ def vdim(x, z0, z1, txt, c="#444"):
     ax.annotate("", (x, z1), (x, z0), arrowprops=dict(arrowstyle="<->", color=c, lw=0.8), zorder=11)
     ax.text(x + 0.12, 0.5 * (z0 + z1), txt, fontsize=6, va="center", color=c, zorder=11)
 vdim(2.62, 0.0, 0.41, r"$h_1$")     # hurdle clearance
-sl = (1.8 - 0.45) / 2.0; vx0 = 11.4 + sl; vx1 = vx0 + 0.45
-ax.annotate("", (vx1, -0.30), (vx0, -0.30), arrowprops=dict(arrowstyle="<->", color="#3d6b82", lw=0.8), zorder=11)
-ax.text(0.5 * (vx0 + vx1), -0.27, r"$l_1$", fontsize=7, ha="center", va="bottom", color="#3d6b82", zorder=11)
-ax.text(0.5 * (vx0 + vx1), -0.52, "void", fontsize=5.5, ha="center", color="#3d6b82", style="italic", zorder=11)
+ax.annotate("", (vx1, -0.16), (vx0, -0.16), arrowprops=dict(arrowstyle="<->", color="#3d6b82", lw=0.8), zorder=11)
+ax.text(0.5 * (vx0 + vx1), -0.11, r"$l_1$", fontsize=7, ha="center", va="bottom", color="#3d6b82", zorder=11)
+ax.text(0.5 * (vx0 + vx1), -0.30, "void", fontsize=5.5, ha="center", va="top", color="#3d6b82", style="italic", zorder=11)
 vdim(15.55, 0.0, 0.44, r"$h_2$")    # step-up height
 
-ax.set_xlim(0.3, 16.9); ax.set_ylim(BASE - 0.04, 0.96)
+ax.set_xlim(0.3, 16.9); ax.set_ylim(VOID_D - 0.10, 0.96)
 ax.set_xlabel("distance along course (m) — robot enters from the left", fontsize=8.5)
 ax.set_ylabel("height above\ntrack (m)", fontsize=8.5)
 ax.set_aspect("equal", adjustable="box")
 for s in ("top", "right", "left"):
     ax.spines[s].set_visible(False)
-ax.tick_params(labelsize=7.5, length=2); ax.set_yticks([-0.5, 0.0, 0.5])
+ax.tick_params(labelsize=7.5, length=2); ax.set_yticks([0.0, 0.5])
 plt.tight_layout()
 plt.savefig("/tmp/course_profile_pretty.pdf", bbox_inches="tight")
 plt.savefig("/tmp/course_profile_pretty.png", dpi=200, bbox_inches="tight")
