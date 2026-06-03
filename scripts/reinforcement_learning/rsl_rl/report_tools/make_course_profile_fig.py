@@ -95,11 +95,12 @@ for name, cx in [("hurdle", 2.25), ("slope", 4.5), ("stairs", 7.25), ("rail", 9.
 def vdim(x, z0, z1, txt, c="#444"):
     ax.annotate("", (x, z1), (x, z0), arrowprops=dict(arrowstyle="<->", color=c, lw=0.8), zorder=11)
     ax.text(x + 0.12, 0.5 * (z0 + z1), txt, fontsize=6, va="center", color=c, zorder=11)
-vdim(2.62, 0.0, 0.41, "0.41 m")     # hurdle clearance
+vdim(2.62, 0.0, 0.41, r"$h_1$")     # hurdle clearance
 sl = (1.8 - 0.45) / 2.0; vx0 = 11.4 + sl; vx1 = vx0 + 0.45
 ax.annotate("", (vx1, -0.30), (vx0, -0.30), arrowprops=dict(arrowstyle="<->", color="#3d6b82", lw=0.8), zorder=11)
-ax.text(0.5 * (vx0 + vx1), -0.46, "0.45 m\nvoid", fontsize=6, ha="center", color="#3d6b82", style="italic", zorder=11)
-vdim(15.55, 0.0, 0.44, "0.44 m")    # step-up height
+ax.text(0.5 * (vx0 + vx1), -0.27, r"$l_1$", fontsize=7, ha="center", va="bottom", color="#3d6b82", zorder=11)
+ax.text(0.5 * (vx0 + vx1), -0.52, "void", fontsize=5.5, ha="center", color="#3d6b82", style="italic", zorder=11)
+vdim(15.55, 0.0, 0.44, r"$h_2$")    # step-up height
 
 ax.set_xlim(0.3, 16.9); ax.set_ylim(BASE - 0.04, 1.02)
 ax.set_xlabel("distance along course (m) — robot enters from the left", fontsize=8.5)
