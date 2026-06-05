@@ -44,6 +44,16 @@ gym.register(
     },
 )
 
+gym.register(
+    id="Rough-SCAN-MoE-Teacher-Deeprobotics-M20-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.moe_teacher_env_cfg:DeeproboticsM20MoETeacherEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.moe_terrain:SplitSCANMoEPPOCfg",
+    },
+)
+
 # LocoMoE baseline (MoE-Loco, Huang et al., IROS 2025, arXiv:2503.08564).
 # Head-to-head comparison vs SplitMoE: same env, same single-stage PPO loss,
 # only the policy architecture differs (single shared gate over 6 full-action
