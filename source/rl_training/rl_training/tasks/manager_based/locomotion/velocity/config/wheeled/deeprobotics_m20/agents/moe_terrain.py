@@ -1950,9 +1950,9 @@ class SplitMoEPPOCfg(RslRlOnPolicyRunnerCfg):
 class SplitSCANMoEPPOCfg(RslRlOnPolicyRunnerCfg):
     """PPO Configuration for training the Teacher."""
     num_steps_per_env = 36
-    max_iterations = 20000   # bumped from 6000 for full curriculum convergence
+    max_iterations = 30000   # bumped from 6000 for full curriculum convergence
     save_interval = 200
-    experiment_name = "split_moe_teacher_parallel" 
+    experiment_name = "split_moe_scan_parallel" 
     empirical_normalization = False
     
     obs_groups = {"policy": ["policy"], "critic": ["critic"], "estimator": ["estimator"], "noisy_elevation": ["noisy_elevation"]}
