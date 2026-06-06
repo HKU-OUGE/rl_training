@@ -26,6 +26,13 @@ parser.add_argument("--num_leg_experts", type=int, default=None)
 # Checkpoint
 parser.add_argument("--load_run", type=str, default=None)
 parser.add_argument("--checkpoint", type=str, default="model_*.pt")
+parser.add_argument(
+    "--ablation",
+    type=str,
+    default="full",
+    choices=["full", "A1", "A2", "A3", "B1", "B2"],
+    help="Ablation variant for checkpoint compatibility; A1 enables the single merged gate.",
+)
 # Keyboard
 parser.add_argument("--keyboard", action="store_true", default=False, help="Whether to use keyboard.")
 # Export
@@ -602,6 +609,15 @@ def main():
     else: train_cfg_dict = train_cfg
     
     train_cfg_dict["policy"]["class_name"] = "SplitMoEActorCritic"
+
+    if args.ablation == "A1":
+        train_cfg_dict["policy"]["single_gate"] = True
+        train_cfg_dict["experiment_name"] = "split_moe_teacher_parallel_abl_A1"
+    elif args.ablation == "B2":
+        train_cfg_dict["policy"]["blind_vision"] = True
+        train_cfg_dict["experiment_name"] = "split_moe_teacher_parallel_abl_B2"
+    elif args.ablation in ["A2", "A3", "B1"]:
+        train_cfg_dict["experiment_name"] = f"split_moe_teacher_parallel_abl_{args.ablation}"
     
     if args.num_wheel_experts: train_cfg_dict["policy"]["num_wheel_experts"] = args.num_wheel_experts
     if args.num_leg_experts: train_cfg_dict["policy"]["num_leg_experts"] = args.num_leg_experts
